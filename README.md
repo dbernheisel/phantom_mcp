@@ -2,8 +2,8 @@
 
 # Work in progress. Do not use.
 
-[![Hex.pm](https://img.shields.io/hexpm/v/phantom_mcp.svg)](https://hex.pm/packages/phantom_mcp)
-[![Documentation](https://img.shields.io/badge/docs-hexpm-blue.svg)](https://hexdocs.pm/phantom_mcp)
+[![Hex.pm](https://img.shields.io/hexpm/v/phantom.svg)](https://hex.pm/packages/phantom)
+[![Documentation](https://img.shields.io/badge/docs-hexpm-blue.svg)](https://hexdocs.pm/phantom)
 
 <!-- MDOC -->
 
@@ -11,6 +11,7 @@ MCP (Model Context Protocol) framework for Elixir Plug.
 
 This library provides a complete implementation of the [MCP server specification](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) with Plug.
 
+**Only stateless is tested at this moment. Do not expect stateful (`{:noreply, ...}`) to work**
 
 ## Usage Example
 
@@ -183,25 +184,27 @@ defmodule MyApp.MCP do
   import MyApp.MCPRouter, only: [resource_for: 3], warn: false
 
   def suggest_questions(%{"study_id" => study_id} = _params, _request, session) do
-    with {:ok, study} <- Repo.get(Study, study_id) do
-
-    {:reply, %{
-      role: :assistant,
-      # Can be "text", "audio", "image", or "resource"
-      type: "text",
-      # When referencing a resource, supply a `resource: data`
-      # You can use the imported `resource_for` helper that will
-      # construct a response object pointing to the resource.
-      # `resource: resource_for(session, :study, id: study.id)`
-      #
-      # For binary, supply  `data: base64-encoded-content`
-      #
-      # Below is an example of text content:
-      text: "How was your day?",
-      # mime_type can be supplied here, or the default mime_type
-      # defined along with the prompt will be used.
-      mime_type: "text/plain"
-    }, session}
+    case Repo.get(Study, study_id) do
+      {:reply, %{
+        role: :assistant,
+        # Can be "text", "audio", "image", or "resource"
+        type: "text",
+        # When referencing a resource, supply a `resource: data`
+        # You can use the imported `resource_for` helper that will
+        # construct a response object pointing to the resource.
+        # `resource: resource_for(session, :study, id: study.id)`
+        #
+        # For binary, supply  `data: base64-encoded-content`
+        #
+        # Below is an example of text content:
+        text: "How was your day?",
+        # mime_type can be supplied here, or the default mime_type
+        # defined along with the prompt will be used.
+        mime_type: "text/plain"
+      }, session}
+      _ ->
+       {:error, "not found"}
+    end
   end
 
   def study(%{"study_id" => id} = params, _request, session) do

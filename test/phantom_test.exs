@@ -126,7 +126,7 @@ defmodule PhantomTest do
 
       capture_log(fn ->
         error =
-          assert_raise Phantom.Plug.Phantom.ErrorWrapper,
+          assert_raise Phantom.ErrorWrapper,
                        ~r/Exceptions while processing MCP requests/,
                        fn ->
                          :post

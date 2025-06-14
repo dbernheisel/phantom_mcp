@@ -2,7 +2,7 @@ defmodule Phantom.Plug do
   @default_opts [
     origins: ["http://localhost:4000"],
     validate_origin: true,
-    session_timeout: 300_000,
+    session_timeout: 30_000,
     max_request_size: 1_048_576
   ]
 
@@ -352,7 +352,7 @@ defmodule Phantom.Plug do
         send_sse_event(conn, "timeout", %{message: "Session timeout"})
         conn
     after
-      30_000 ->
+      opts.session_timeout ->
         case send_sse_event(conn, "ping", %{}) do
           {:ok, conn} -> stream_session_events(conn, opts)
           {:error, _} -> conn
