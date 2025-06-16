@@ -81,7 +81,7 @@ defmodule Phantom.Request do
 
   @doc false
   def tool_response({:reply, results, session}, _session) do
-    {:reply, Phantom.Tool.call_response(results), session}
+    {:reply, Phantom.Tool.response(results), session}
   end
 
   def tool_response({:error, reason}, session), do: {:error, reason, session}
@@ -89,7 +89,7 @@ defmodule Phantom.Request do
 
   @doc false
   def prompt_response({:reply, results, session}, prompt, _session) do
-    {:reply, Phantom.Prompt.call_response(results, prompt), session}
+    {:reply, Phantom.Prompt.response(results, prompt), session}
   end
 
   def prompt_response({:error, error}, _prompt, session), do: {:error, error, session}
@@ -104,7 +104,7 @@ defmodule Phantom.Request do
   end
 
   def resource_response({:reply, results, session}, uri, resource_template, _session) do
-    {:reply, Phantom.ResourceTemplate.read_response(results, resource_template, uri), session}
+    {:reply, Phantom.ResourceTemplate.response(results, resource_template, uri), session}
   end
 
   def resource_response(other, _uri, _session), do: other

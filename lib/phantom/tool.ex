@@ -54,8 +54,8 @@ defmodule Phantom.Tool do
     })
   end
 
-  @doc false
-  def call_response(results) do
+  @doc "Formats the response from an MCP Router to the MCP specification"
+  def response(results) do
     {results, error?} =
       Enum.reduce(List.wrap(results), {[], false}, fn result, {acc, error?} ->
         result =

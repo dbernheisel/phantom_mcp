@@ -54,8 +54,8 @@ defmodule Phantom.Prompt do
     })
   end
 
-  @doc false
-  def call_response(results, prompt) do
+  @doc "Formats the response from an MCP Router to the MCP specification"
+  def response(results, prompt) do
     messages =
       results
       |> List.wrap()

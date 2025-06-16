@@ -71,10 +71,12 @@ defmodule Phantom.ResourceTemplate do
     String.replace(str, ~r/:\w*/, fn ":" <> var -> "{#{var}}" end)
   end
 
+  @doc false
+  # TODO: not ready
   def updated(uri), do: %{uri: uri}
 
-  @doc false
-  def read_response(results, resource_template, uri) do
+  @doc "Formats the response from an MCP Router to the MCP specification"
+  def response(results, resource_template, uri) do
     %{
       contents:
         results

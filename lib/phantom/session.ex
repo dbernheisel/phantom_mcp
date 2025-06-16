@@ -52,8 +52,9 @@ defmodule Phantom.Session do
     Phoenix.Tracker.list(Phantom.Tracker, "sessions")
   end
 
-  def get(id) do
-    case Phoenix.Tracker.get_by_key(Phantom.Tracker, "sessions", id) do
+  @doc "Get the PID of the SSE stream for the session id"
+  def get_sse_pid(session_id) do
+    case Phoenix.Tracker.get_by_key(Phantom.Tracker, "sessions", session_id) do
       [{pid, _} | _] -> pid
       _ -> nil
     end
@@ -69,37 +70,63 @@ defmodule Phantom.Session do
     %{session | assigns: Map.merge(session.assigns, Map.new(map))}
   end
 
+  @doc false
+  # not ready
   def subscribe_to_resource(%__MODULE__{pubsub: nil}, _uri), do: :error
 
   def subscribe_to_resource(session, uri) do
-    case get(session.id) do
+    case get_sse_pid(session.id) do
       nil -> :error
       pid -> GenServer.cast(pid, {:resource_subscribe, uri})
     end
   end
 
-  def set_log_level(%__MODULE__{pubsub: nil}, _request, _level), do: :error
+  @doc """
+  Sets the log level for the SSE stream.
+  Sets both for the current request for async tasks and the SSE stream
+  """
+  @spec set_log_level(Session.t(), Request.t(), String.t()) :: :ok
+  def set_log_level(%__MODULE__{id: id, pid: pid}, request, level) do
+    GenServer.cast(pid, {:set_log_level, request, level})
 
-  def set_log_level(%__MODULE__{id: id}, request, level) do
-    case get(id) do
+    case get_sse_pid(id) do
       nil -> :error
       pid -> GenServer.cast(pid, {:set_log_level, request, level})
     end
   end
 
+  @doc "Closes the SSE stream for the session"
+  @spec finish(Session.t()) :: :ok
   def finish(%__MODULE__{pid: pid}), do: finish(pid)
   def finish(pid) when is_pid(pid), do: GenServer.cast(pid, :finish)
 
-  def tool_respond(session, request_id, payload) do
-    respond(session, request_id, %{content: List.wrap(payload)})
-  end
-
-  def resource_respond(session, request_id, payload) do
-    respond(session, request_id, %{content: List.wrap(payload)})
-  end
-
   @doc """
-  Send a response for the request for the given session
+  Sends response back to the SSE stream
+
+  This should likely be used in conjunction with:
+
+    - `Phantom.Tool.response(payload)`
+    - `Phantom.ResourceTemplate.response(payload, resource_template, uri)`
+    - `Phantom.Prompt.response(payload, prompt)`
+
+  For example:
+
+     ```elixir
+     session_pid = session.pid
+     request_id = request.id
+
+     Task.async(fn ->
+      Session.respond(
+        session_pid,
+        request_id,
+        Phantom.Tool.call_response(%{
+          type: :audio,
+          data: Base.encode64(File.read!("test/support/game-over.wav")),
+          mime_type: "audio/wav"
+        })
+      )
+     end)
+     ```
   """
   def respond(%__MODULE__{pid: pid}, request_id, payload), do: respond(pid, request_id, payload)
 
@@ -132,7 +159,6 @@ defmodule Phantom.Session do
   defp do_log(%__MODULE__{id: id}, level_num, level_name, domain, payload) do
     case Phoenix.Tracker.get_by_key(Phantom.Tracker, "sessions", id) do
       [{pid, _} | _] ->
-        dbg()
         GenServer.cast(pid, {:log, level_num, level_name, domain, payload})
 
       _ ->
@@ -140,12 +166,16 @@ defmodule Phantom.Session do
     end
   end
 
+  @type log_level ::
+          :emergency | :alert | :critical | :error | :warning | :notice | :info | :debug
+  @spec log(Session.t(), log_level, String.t(), structured_log :: map()) :: :ok
   for {name, level} <- @log_grades do
     def log(session, unquote(name), domain, payload) do
       do_log(session, unquote(level), unquote(name), domain, payload)
     end
 
     @doc "Notify the client with a log at level \"#{name}\""
+    @spec unquote(:"log_#{name}")(Session.t(), String.t(), structured_log :: map()) :: :ok
     def unquote(:"log_#{name}")(session, domain, payload) do
       do_log(session, unquote(level), unquote(name), domain, payload)
     end

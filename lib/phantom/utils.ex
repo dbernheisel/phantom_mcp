@@ -34,11 +34,10 @@ defmodule Phantom.Utils do
 
   def completion_response(results) when is_list(results) do
     %{
-      completion:
-        remove_nils(%{
-          values: Enum.take(List.wrap(results), 100),
-          hasMore: length(results) > 100
-        })
+      completion: %{
+        values: Enum.take(List.wrap(results), 100),
+        hasMore: length(results) > 100
+      }
     }
   end
 

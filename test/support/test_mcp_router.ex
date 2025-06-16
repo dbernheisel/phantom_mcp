@@ -108,7 +108,12 @@ defmodule Test.MCPRouter do
 
     Task.async(fn ->
       Process.sleep(1000)
-      Session.tool_respond(pid, request_id, %{type: "text", text: message})
+
+      Session.respond(
+        pid,
+        request_id,
+        Phantom.Tool.response(%{type: "text", text: message})
+      )
     end)
 
     {:noreply, session}

@@ -1,7 +1,5 @@
 # Phantom MCP
 
-# Work in progress. Do not use.
-
 [![Hex.pm](https://img.shields.io/hexpm/v/phantom.svg)](https://hex.pm/packages/phantom)
 [![Documentation](https://img.shields.io/badge/docs-hexpm-blue.svg)](https://hexdocs.pm/phantom)
 
@@ -11,7 +9,22 @@ MCP (Model Context Protocol) framework for Elixir Plug.
 
 This library provides a complete implementation of the [MCP server specification](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) with Plug.
 
-**Only stateless is tested at this moment. Do not expect stateful (`{:noreply, ...}`) to work**
+## Installation
+
+Add Phantom to your depdendencies:
+
+```elixir
+  {:phantom, "~> 0.1.1"},
+```
+
+Configure MIME to accept SSE
+
+```elixir
+# config/config.exs
+config :mime, :types, %{
+  "text/event-stream" => ["sse"]
+}
+```
 
 ## Usage Example
 
@@ -82,9 +95,6 @@ defmodule MyApp.MCPRouter do
   def connect(session, auth_info) do
     # The `auth_info` will depend on the adapter, in this case it's from
     # Plug, so it will be the request headers.
-    #
-    # You may also decide to resume a broken session if the last_event_id
-    # is provided.
     with {:ok, user} <- MyApp.authenticate(conn, auth_info),
          {:ok, my_session_state} <- MyApp.load_session(session.id) do
       {:ok, assign(session, some_state: my_session_state, user: user)

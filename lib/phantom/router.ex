@@ -206,7 +206,7 @@ defmodule Phantom.Router do
             {:error, Request.invalid_params(), session}
 
           %{handler: _handler, completion_function: nil} ->
-            {:reply, [], session}
+            Request.completion_response({:noreply, [], session}, session)
 
           %{handler: handler, completion_function: function} ->
             Request.completion_response(
@@ -233,7 +233,7 @@ defmodule Phantom.Router do
             {:error, Request.invalid_params(), session}
 
           %{completion_function: nil} ->
-            {:reply, [], session}
+            Request.completion_response({:reply, [], session}, session)
 
           %{handler: handler, completion_function: function} ->
             Request.completion_response(
@@ -256,8 +256,6 @@ defmodule Phantom.Router do
       end
 
       def dispatch_method("resources/subscribe", %{"uri" => uri} = _params, request, session) do
-        dbg(uri)
-
         if session.pubsub do
           {:noreply, session}
         else
@@ -394,6 +392,7 @@ defmodule Phantom.Router do
     end
   end
 
+  @doc "See tool/3"
   defmacro tool(name, opts_or_handler \\ []) do
     {handler, function, opts} =
       cond do
@@ -538,6 +537,7 @@ defmodule Phantom.Router do
     end
   end
 
+  @doc "See prompt/3"
   defmacro prompt(name, opts_or_handler \\ []) do
     {handler, function, opts} =
       cond do
@@ -659,6 +659,7 @@ defmodule Phantom.Router do
     :ok
   end
 
+  @doc false
   def warn_against_conflicts(entity) do
     entity
     |> Enum.group_by(& &1.name)
