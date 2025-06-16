@@ -11,7 +11,7 @@ This library provides a complete implementation of the [MCP server specification
 
 ## Installation
 
-Add Phantom to your depdendencies:
+Add Phantom to your dependencies:
 
 ```elixir
   {:phantom, "~> 0.1.1"},
@@ -70,7 +70,8 @@ defmodule MyAppWeb.Router do
     json_decoder: JSON
   plug :dispatch
 
-  # without pubsub defined, SSE is not supported.
+  # without pubsub defined, some features
+  # (logging, resource subscriptions) are not supported.
   forward "/mcp",
     to: Phantom.Plug,
     init_opts: [
@@ -236,15 +237,15 @@ defmodule MyApp.MCP do
   def study(%{"study_id" => id} = params, _request, session) do
     study = Repo.get(Study, id)
     text = Study.to_markdown(study)
-    # Must return a map with a `:text` key
-    # or a `:binary` key with base64-encoded data.
+    # Must return a map with a `:text` key or
+    # a `:binary` key with binary data which will be base64-encoded by Phantom
     {:reply, %{text: text}, session}
   end
 
   def study_cover(%{"study_id" => id} = params, _request, session) do
     study = Repo.get(Study, id)
     binary = File.read!(study.cover.file)
-    # The binary will be Base64-encoded by Phantom
+    # The binary will be base64-encoded by Phantom
     {:reply, %{binary: binary}, session}
   end
 
@@ -311,7 +312,7 @@ Phantom will implement these MCP requests on your behalf:
 - `prompts/get` which will dispatch the request to your handler
 - `resources/list` which will list either the provided resources in the `connect/2` callback, or all resources by default
 - `resources/get` which will dispatch the request to your handler
-- `logging/setLevel` only if pubsub is provided. Logs can be sent to client
+- `logging/setLevel` only if `pubsub` is provided. Logs can be sent to client
 with `Session.log_{level}(session, map_content)`. [See docs](https://modelcontextprotocol.io/specification/2025-03-26/server/utilities/logging#log-levels). Logs are only sent if the client has initiated an SSE stream.
 - `resource/templates/list` which will list available as defined in the router.
 - `tools/list` which will list either the provided tools in the `connect/2` callback, or all tools by default

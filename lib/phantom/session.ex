@@ -121,7 +121,7 @@ defmodule Phantom.Session do
         request_id,
         Phantom.Tool.response(%{
           type: :audio,
-          data: Base.encode64(File.read!("test/support/game-over.wav")),
+          data: File.read!("test/support/game-over.wav"),
           mime_type: "audio/wav"
         })
       )
