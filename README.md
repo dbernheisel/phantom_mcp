@@ -47,7 +47,6 @@ scope "/mcp" do
   pipe_through :mcp
 
   forward "/", Phantom.Plug,
-    pubsub: MyApp.PubSub,
     router: MyApp.MCPRouter
 end
 
@@ -70,12 +69,9 @@ defmodule MyAppWeb.Router do
     json_decoder: JSON
   plug :dispatch
 
-  # without pubsub defined, some features
-  # (logging, resource subscriptions) are not supported.
   forward "/mcp",
     to: Phantom.Plug,
     init_opts: [
-      pubsub: MyApp.PubSub,
       router: MyApp.MCP.Router
     ]
 end
@@ -326,3 +322,40 @@ an abstraction for efficiently providing these as a group to your handler.
 Since the MCP specification is deprecating batched request support in the next version, there is no plan to make this more efficient.
 
 Use the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) to test and verify your MCP server
+
+## Persistent Streams
+
+MCP supports SSE streams to get notifications allow resource subscriptions.
+To support this, Phantom needs to track connection pids in your cluster and uses
+Phoenix.Tracker (`phoenix_pubsub`) to do this.
+
+MCP will typically have multiple connections to facilitate requests:
+
+  1. `POST` for every command, such as `tools/call` or `resources/read`
+  2. `GET` to start an SSE stream for any events such as logs and notifications.
+
+If the client has not initiated the `GET` SSE stream, then the features will
+not be available for that client.
+
+Each `POST` also opens an SSE stream, but immediately closes the connection
+once work has completed.
+
+```elixir
+# Add to your application supervision tree:
+
+{Phoenix.PubSub, name: MyApp.PubSub},
+{Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: MyApp.PubSub]},
+
+# Adjust the Phoenix router options to include the PubSub server
+
+forward "/", Phantom.Plug,
+  router: MyApp.MCPRouter,
+  pubsub: MyApp.PubSub
+
+# or the equivalent Plug.Router options:
+
+forward "/mcp", to: Phantom.Plug, init_opts: [
+  router: MyApp.MCPRouter,
+  pubsub: MyApp.PubSub
+]
+```
