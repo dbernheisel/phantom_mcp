@@ -7,8 +7,9 @@ defmodule Test.Application do
   def start(_type, _args) do
     children = [
       {Phoenix.PubSub, name: Test.PubSub},
+      {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Test.PubSub]},
       Test.PhxEndpoint,
-      {Bandit, port: 4000, ip: {127, 0, 0, 1}, plug: Test.PlugRouter}
+      {Plug.Cowboy, scheme: :http, plug: Test.PlugRouter, port: 4000}
     ]
 
     opts = [strategy: :one_for_one, name: Test.Supervisor]

@@ -53,4 +53,24 @@ defmodule Phantom.Tool do
       annotations: Annotation.to_json(tool.annotations)
     })
   end
+
+  @doc false
+  def call_response(results) do
+    {results, error?} =
+      Enum.reduce(List.wrap(results), {[], false}, fn result, {acc, error?} ->
+        result =
+          Enum.reduce(result, %{}, fn
+            {:text, nil}, acc -> Map.put(acc, :text, "")
+            {:data, nil}, acc -> Map.put(acc, :data, "")
+            {:mime_type, mime_type}, acc -> Map.put(acc, :mimeType, mime_type)
+            {key, value}, acc -> Map.put(acc, key, value)
+          end)
+
+        {result_error?, result} = Map.pop(result, :error, false)
+        {[result | acc], error? || result_error?}
+      end)
+
+    results = Enum.reverse(results)
+    if error?, do: %{content: results, isError: true}, else: %{content: results}
+  end
 end

@@ -70,4 +70,23 @@ defmodule Phantom.ResourceTemplate do
   defp to_uri_6570(str) do
     String.replace(str, ~r/:\w*/, fn ":" <> var -> "{#{var}}" end)
   end
+
+  def updated(uri), do: %{uri: uri}
+
+  @doc false
+  def read_response(results, resource_template, uri) do
+    %{
+      contents:
+        results
+        |> List.wrap()
+        |> Enum.map(fn result ->
+          encode(%{
+            blob: result[:blob],
+            text: result[:text],
+            mimeType: result[:mime_type] || resource_template.mime_type,
+            uri: uri
+          })
+        end)
+    }
+  end
 end

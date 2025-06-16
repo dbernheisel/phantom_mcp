@@ -14,11 +14,13 @@ defmodule Phantom.ErrorWrapper do
         message <>
           "\n\n" <>
           Enum.map_join(exceptions_by_request, "\n\n", fn {request, exception, stacktrace} ->
+            exception = unwrap_plug_wrapper(exception)
+
             """
             Error:
             #{inspect(exception)}
 
-            Request
+            Request:
             #{inspect(request)}
 
             Stacktrace:
@@ -27,4 +29,10 @@ defmodule Phantom.ErrorWrapper do
           end)
     }
   end
+
+  defp unwrap_plug_wrapper(%Plug.Conn.WrapperError{} = error) do
+    Exception.normalize(error.kind, error.reason, error.stack)
+  end
+
+  defp unwrap_plug_wrapper(error), do: error
 end

@@ -1,17 +1,26 @@
 defmodule Test.PhxEndpoint do
   use Phoenix.Endpoint, otp_app: :phantom
 
+  @session_options [
+    store: :cookie,
+    key: "_foo_key",
+    signing_salt: "JJahSh8C",
+    same_site: "Lax"
+  ]
+
   if Code.ensure_loaded?(Tidewave) do
     plug Tidewave
   end
 
-  # Code reloading can be explicitly enabled under the
-  # :code_reloader configuration of your endpoint.
+  socket "/live", Phoenix.LiveView.Socket,
+    websocket: [connect_info: [session: @session_options]],
+    longpoll: [connect_info: [session: @session_options]]
+
   if code_reloading? do
-    socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
-    plug Phoenix.LiveReloader
     plug Phoenix.CodeReloader
   end
+
+  plug Plug.Session, @session_options
 
   plug Plug.Parsers,
     parsers: [{:json, length: 1_000_000}],
@@ -30,19 +39,31 @@ end
 defmodule Test.PhxRouter do
   use Phoenix.Router, helpers: false
   import Plug.Conn
+  import Phoenix.LiveDashboard.Router
 
   Code.ensure_compiled!(Test.MCPRouter)
 
   pipeline :mcp do
-    plug :accepts, ["json"]
+    plug :accepts, ["json", "sse"]
+  end
+
+  pipeline :browser do
+    plug :accepts, ["html"]
+    plug :fetch_session
+    plug :protect_from_forgery
+  end
+
+  scope "/" do
+    pipe_through :browser
+    live_dashboard "/dashboard"
   end
 
   scope "/mcp" do
     pipe_through :mcp
 
     forward "/", Phantom.Plug,
-      port: 5000,
       router: Test.MCPRouter,
+      pubsub: Test.PubSub,
       validate_origin: false
   end
 end

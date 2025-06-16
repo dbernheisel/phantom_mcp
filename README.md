@@ -22,7 +22,7 @@ For Phoenix:
 
 ```elixir
 pipeline :mcp do
-  plug :accepts, ["json"]
+  plug :accepts, ["json", "sse"]
 
   plug Plug.Parsers,
     parsers: [{:json, length: 1_000_000}],
@@ -34,8 +34,14 @@ scope "/mcp" do
   pipe_through :mcp
 
   forward "/", Phantom.Plug,
+    pubsub: MyApp.PubSub,
     router: MyApp.MCPRouter
 end
+
+# Add to your config.exs
+config :mime, :types, %{
+  "text/event-stream" => ["sse"]
+}
 ```
 
 For Plug:
@@ -51,9 +57,13 @@ defmodule MyAppWeb.Router do
     json_decoder: JSON
   plug :dispatch
 
+  # without pubsub defined, SSE is not supported.
   forward "/mcp",
     to: Phantom.Plug,
-    init_opts: [router: MyApp.MCP.Router]
+    init_opts: [
+      pubsub: MyApp.PubSub,
+      router: MyApp.MCP.Router
+    ]
 end
 ```
 
@@ -69,8 +79,13 @@ defmodule MyApp.MCPRouter do
   require Logger
 
   # recommended
-  def connect(session, _last_event_id) do
-    with {:ok, user} <- MyApp.authenticate(conn),
+  def connect(session, auth_info) do
+    # The `auth_info` will depend on the adapter, in this case it's from
+    # Plug, so it will be the request headers.
+    #
+    # You may also decide to resume a broken session if the last_event_id
+    # is provided.
+    with {:ok, user} <- MyApp.authenticate(conn, auth_info),
          {:ok, my_session_state} <- MyApp.load_session(session.id) do
       {:ok, assign(session, some_state: my_session_state, user: user)
     end
@@ -121,6 +136,7 @@ defmodule MyApp.MCPRouter do
     mime_type: "text/markdown"
 
   # Defining available tools
+  # Be mindful, the input_schema is not validated upon requests.
   @description """
   Create a question for the provided Study.
   """
@@ -150,8 +166,8 @@ In the connect callback, you can limit the available tools, prompts, and resourc
 depending on authorization rules by supplying an allow list of names:
 
 ```elixir
-  def connect(session, _last_event_id) do
-    with {:ok, user} <- MyApp.authenticate(session) do
+  def connect(session, headers) do
+    with {:ok, user} <- MyApp.authenticate(session, headers) do
       {:ok,
         session
         |> assign(:user, user)
@@ -194,7 +210,7 @@ defmodule MyApp.MCP do
         # construct a response object pointing to the resource.
         # `resource: resource_for(session, :study, id: study.id)`
         #
-        # For binary, supply  `data: base64-encoded-content`
+        # For binary, supply  `data: binary`
         #
         # Below is an example of text content:
         text: "How was your day?",
@@ -218,7 +234,8 @@ defmodule MyApp.MCP do
   def study_cover(%{"study_id" => id} = params, _request, session) do
     study = Repo.get(Study, id)
     binary = File.read!(study.cover.file)
-    {:reply, %{binary: Base.encode64(binary)}, session}
+    # The binary will be Base64-encoded by Phantom
+    {:reply, %{binary: binary}, session}
   end
 
   import Ecto.Query
@@ -228,24 +245,45 @@ defmodule MyApp.MCP do
         select: s.id,
         where: like(type(:id, :string), "#{value}%"),
         where: s.account_id == ^session.user.account_id,
-        limit: 100
+        order_by: s.id,
+        limit: 101
       )
 
     # You may also return a map with more info:
     # `%{values: study_ids, has_more: true, total: 1_000_000}`
+    # If you return more than 100, then Phantom will set `has_more: true`
+    # and only return the first 100.
     {:reply, study_ids, session}
   end
 
-  def create_question(params, _request, session) do
+  def create_question(params, request, session) do
     %{"study_id" => study_id, "label" => label, "description" => description} = params
 
-    case Study.create_question(study_id, label: label, description: description) do
-      {:ok, question} ->
-        md = Study.Question.to_markdown(question)
-        {:reply, %{type: :text, text: md}, session}
-      _ ->
-        {:reply, %{type: :text, text: "Could not create", error: true}, session}
-    end
+    # For illustrative purposes, we'll make this one async
+    # Please be mindful that any task that doesn't return within
+    # the configured `session_timeout` will be dropped.
+    request_id = request.id
+    pid = session.pid
+
+    Task.async(fn ->
+      Process.sleep(1000)
+      case Study.create_question(study_id, label: label, description: description) do
+        {:ok, question} ->
+          Phantom.Session.tool_respond(pid, request_id, %{
+            mime_type: "text/markdown",
+            type: :text,
+            text: Study.Question.to_markdown(question)
+          })
+        _ ->
+          Phantom.Session.tool_respond(pid, request_id,  %{
+            type: :text,
+            text: "Could not create",
+            error: true
+          })
+      end
+    end)
+
+    {:noreply, session}
   end
 end
 ```
@@ -257,15 +295,17 @@ Phantom will implement these MCP requests on your behalf:
 - `prompts/get` which will dispatch the request to your handler
 - `resources/list` which will list either the provided resources in the `connect/2` callback, or all resources by default
 - `resources/get` which will dispatch the request to your handler
+- `logging/setLevel` only if pubsub is provided. Logs can be sent to client
+with `Session.log_{level}(session, map_content)`. [See docs](https://modelcontextprotocol.io/specification/2025-03-26/server/utilities/logging#log-levels). Logs are only sent if the client has initiated an SSE stream.
 - `resource/templates/list` which will list available as defined in the router.
 - `tools/list` which will list either the provided tools in the `connect/2` callback, or all tools by default
 - `tools/call` which will dispatch the request to your handler
-- `completion/complete` which will dispatch the request to your handler for the given
-prompt or resource
+- `completion/complete` which will dispatch the request to your completion handler for the given prompt or resource.
 - `notification/*` which will be no-op.
 - `ping` pong
 
 Batched requests will also be handled transparently. **please note** there is not
-an abstraction yet for efficiently providing these as a group to your handler.
-The plan is to dispatch the list of params to your handler, and the handler can check
-if the params are a list or not.
+an abstraction for efficiently providing these as a group to your handler.
+Since the MCP specification is deprecating batched request support in the next version, there is no plan to make this more efficient.
+
+Use the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) to test and verify your MCP server

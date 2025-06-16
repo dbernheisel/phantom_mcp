@@ -41,11 +41,14 @@ defmodule Phantom.MixProject do
     [
       {:plug, "~> 1.0"},
       {:telemetry, "~> 1.0"},
+      {:phoenix_pubsub, "~> 2.0"},
       {:uuidv7, "~> 1.0"},
       ## Dev
       {:tidewave, "~> 0.1", only: [:test]},
       {:phoenix, "~> 1.7", only: [:dev, :test]},
       {:bandit, "~> 1.7", only: [:test]},
+      {:plug_cowboy, "~> 2.7", only: [:test]},
+      {:phoenix_live_dashboard, "~> 0.7", only: [:test]},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
     ]
   end

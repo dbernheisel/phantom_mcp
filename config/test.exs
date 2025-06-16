@@ -8,10 +8,11 @@ config :phantom, Test.PhxEndpoint,
     layout: false
   ],
   pubsub_server: Test.PubSub,
-  code_reloader: config_env() == :dev,
+  code_reloader: config_env() == :test,
   http: [ip: {127, 0, 0, 1}, port: 5000],
   server: true,
-  secret_key_base: String.duplicate("a", 64)
+  secret_key_base: String.duplicate("a", 64),
+  live_view: [signing_salt: "SECRET_SALT"]
 
 config :phoenix, :json_library, JSON
 
@@ -19,6 +20,5 @@ config :phoenix, :json_library, JSON
 config :phoenix, :plug_init_mode, :runtime
 
 config :mime, :types, %{
-  "text/event-stream" => [],
-  "text/streamable-http" => []
+  "text/event-stream" => ["sse"]
 }

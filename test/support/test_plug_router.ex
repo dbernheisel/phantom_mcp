@@ -14,7 +14,11 @@ defmodule Test.PlugRouter do
 
   forward "/mcp",
     to: Phantom.Plug,
-    init_opts: [port: 4000, validate_origin: false, router: Test.MCPRouter]
+    init_opts: [
+      validate_origin: false,
+      pubsub: Test.PubSub,
+      router: Test.MCPRouter
+    ]
 
   match _ do
     send_resp(conn, "Not found", 404)

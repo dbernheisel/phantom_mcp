@@ -8,6 +8,7 @@ defmodule PhantomTest do
 
   @opts Phantom.Plug.init(
           router: Test.MCPRouter,
+          pubsub: Test.PubSub,
           validate_origin: false
         )
 
@@ -19,17 +20,15 @@ defmodule PhantomTest do
 
   describe "JSON-RPC requests" do
     test "handles valid JSON-RPC request" do
-      conn =
-        :post
-        |> conn("/mcp", @ping_message)
-        |> put_req_header("content-type", "application/json")
-        |> call(@opts)
+      :post
+      |> conn("/mcp", @ping_message)
+      |> put_req_header("content-type", "application/json")
+      |> call(@opts)
 
+      assert_receive {:conn, conn}
       assert conn.status == 200
-      response = conn.resp_body |> JSON.decode!()
-      assert response["jsonrpc"] == "2.0"
-      assert response["id"] == 1
-      assert response["result"] == %{}
+      expected = %{id: 1, jsonrpc: "2.0", result: %{}}
+      assert_receive {:response, _id, _event, ^expected}
     end
 
     test "dispatches to tools" do
@@ -38,15 +37,21 @@ defmodule PhantomTest do
         arguments: %{message: "hello world"}
       }
 
-      conn =
-        :post
-        |> conn("/mcp", %{jsonrpc: "2.0", id: 1, method: "tools/call", params: params})
-        |> put_req_header("content-type", "application/json")
-        |> call(@opts)
+      :post
+      |> conn("/mcp", %{jsonrpc: "2.0", id: 1, method: "tools/call", params: params})
+      |> put_req_header("content-type", "application/json")
+      |> call(@opts)
 
+      assert_receive {:conn, conn}
       assert conn.status == 200
-      response = JSON.decode!(conn.resp_body)
-      assert [%{"text" => "hello world", "type" => "text"}] = response["result"]["content"]
+
+      response = %{
+        id: 1,
+        jsonrpc: "2.0",
+        result: %{content: [%{text: "hello world", type: "text"}]}
+      }
+
+      assert_receive {:response, _id, _event, ^response}
     end
 
     test "handles batch requests" do
@@ -60,209 +65,200 @@ defmodule PhantomTest do
         }
       ]
 
-      conn =
-        :post
-        |> conn("/mcp", JSON.encode!(batch))
-        |> put_req_header("content-type", "application/json")
-        |> call(@opts)
+      :post
+      |> conn("/mcp", JSON.encode!(batch))
+      |> put_req_header("content-type", "application/json")
+      |> call(@opts)
 
+      assert_receive {:conn, conn}
       assert conn.status == 200
-      [_, _] = responses = JSON.decode!(conn.resp_body)
 
-      assert Enum.find(responses, &(&1["id"] == 1)) == %{
-               "id" => 1,
-               "jsonrpc" => "2.0",
-               "result" => %{}
-             }
+      expected_one = %{
+        id: 1,
+        jsonrpc: "2.0",
+        result: %{}
+      }
 
-      assert Enum.find(responses, &(&1["id"] == 2)) == %{
-               "id" => 2,
-               "jsonrpc" => "2.0",
-               "result" => %{
-                 "content" => [%{"text" => "test", "type" => "text"}]
-               }
-             }
+      assert_receive {:response, _id, _event, ^expected_one}
+
+      expected_two =
+        %{
+          id: 2,
+          jsonrpc: "2.0",
+          result: %{
+            content: [%{text: "test", type: "text"}]
+          }
+        }
+
+      assert_receive {:response, 2, "message", ^expected_two}
     end
 
     test "handles notifications (no id)" do
-      conn =
-        :post
-        |> conn("/mcp", JSON.encode!(%{jsonrpc: "2.0", method: "notification"}))
-        |> put_req_header("content-type", "application/json")
-        |> call(@opts)
+      :post
+      |> conn("/mcp", JSON.encode!(%{jsonrpc: "2.0", method: "notification"}))
+      |> put_req_header("content-type", "application/json")
+      |> call(@opts)
 
-      # Notifications should not return a response in batch, but single notifications still get 200
+      assert_receive {:conn, conn}
       assert conn.status == 200
+      assert_receive {:response, nil, "message", %{id: nil, result: nil, jsonrpc: "2.0"}}
     end
 
     test "returns error for invalid JSON-RPC" do
-      conn =
-        :post
-        |> conn("/mcp", %{method: "foo", id: 1})
-        |> put_req_header("content-type", "application/json")
-        |> call(@opts)
+      :post
+      |> conn("/mcp", %{method: "foo", id: 1})
+      |> put_req_header("content-type", "application/json")
+      |> call(@opts)
 
+      assert_receive {:conn, conn}
       assert conn.status == 200
-      response = conn.resp_body |> JSON.decode!()
-      assert response["error"]["code"] == -32600
-      assert response["error"]["message"] == "Invalid Request"
+
+      assert_receive {:response, 1, "message", error}
+      assert error[:error][:code] == -32600
+      assert error[:error][:message] == "Invalid request"
     end
 
     test "returns error for unknown method" do
-      conn =
-        :post
-        |> conn("/mcp", JSON.encode!(%{jsonrpc: "2.0", method: "unknown", id: 1}))
-        |> put_req_header("content-type", "application/json")
-        |> call(@opts)
+      :post
+      |> conn("/mcp", JSON.encode!(%{jsonrpc: "2.0", method: "unknown", id: 1}))
+      |> put_req_header("content-type", "application/json")
+      |> call(@opts)
 
+      assert_receive {:conn, conn}
       assert conn.status == 200
-      response = conn.resp_body |> JSON.decode!()
-      assert response["error"]["code"] == -32601
-      assert response["error"]["message"] == "Method not found"
+
+      assert_receive {:response, 1, "message", error}
+      assert error[:error][:code] == -32601
+      assert error[:error][:message] == "Method not found"
     end
 
     test "handles router errors" do
       params = %{"name" => "explode_tool"}
+      Process.flag(:trap_exit, true)
 
       capture_log(fn ->
-        error =
-          assert_raise Phantom.ErrorWrapper,
-                       ~r/Exceptions while processing MCP requests/,
-                       fn ->
-                         :post
-                         |> conn("/mcp", %{
-                           jsonrpc: "2.0",
-                           id: 1,
-                           method: "tools/call",
-                           params: params
-                         })
-                         |> put_req_header("content-type", "application/json")
-                         |> call(@opts)
-                       end
+        pid =
+          :post
+          |> conn("/mcp", %{
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: params
+          })
+          |> put_req_header("content-type", "application/json")
+          |> call(@opts)
+
+        assert_receive {:response, 1, "message", error}
+        assert_receive {:EXIT, ^pid, {exception, _stacktrace}}
+
+        assert %{
+                 error: %{code: -32603, message: "boom"},
+                 id: 1,
+                 jsonrpc: "2.0"
+               } = error
+
+        assert %Phantom.ErrorWrapper{} = exception
 
         assert [
                  {
-                   %{
-                     "id" => 1,
-                     "jsonrpc" => "2.0",
-                     "method" => "tools/call",
-                     "params" => %{"name" => "explode_tool"}
-                   },
+                   %{params: %{"name" => "explode_tool"}},
                    %RuntimeError{message: "boom"},
                    _stacktrace
                  }
-               ] = error.exceptions_by_request
+               ] = exception.exceptions_by_request
       end)
     end
   end
 
   describe "HTTP method handling" do
     test "rejects unsupported methods" do
-      conn =
-        :put
-        |> conn("/mcp")
-        |> call(@opts)
+      :put
+      |> conn("/mcp")
+      |> call(@opts)
 
+      assert_receive {:conn, conn}
       assert conn.status == 405
-      resp = conn.resp_body |> JSON.decode!()
-      assert resp["error"]["code"] == -32601
-      assert resp["error"]["message"] == "Method not allowed"
+
+      assert_receive {_, {405, _headers, body}}
+      error = JSON.decode!(body)
+      assert error["error"]["code"] == -32601
+      assert error["error"]["message"] == "Method not allowed"
     end
   end
 
   describe "response formatting" do
     test "sets correct content-type headers" do
-      conn =
-        :post
-        |> conn("/mcp", JSON.encode!(%{jsonrpc: "2.0", method: "ping", id: 1}))
-        |> put_req_header("content-type", "application/json")
-        |> call(@opts)
+      :post
+      |> conn("/mcp", JSON.encode!(%{jsonrpc: "2.0", method: "ping", id: 1}))
+      |> put_req_header("content-type", "application/json")
+      |> call(@opts)
 
-      assert get_resp_header(conn, "content-type") == ["application/json; charset=utf-8"]
-    end
+      assert_receive {:conn, conn}
+      assert conn.status == 200
 
-    test "encodes response as valid JSON" do
-      conn =
-        :post
-        |> conn("/mcp", JSON.encode!(%{jsonrpc: "2.0", method: "ping", id: 1}))
-        |> put_req_header("content-type", "application/json")
-        |> call(@opts)
-
-      assert {:ok, _} = JSON.decode(conn.resp_body)
-    end
-  end
-
-  describe "SSE handling" do
-    test "GET request returns error when session manager disabled" do
-      conn =
-        :get
-        |> conn("/mcp")
-        |> put_req_header("accept", "text/event-stream")
-        |> call(@opts)
-
-      assert conn.status == 405
-      error = conn.resp_body |> JSON.decode!()
-      assert error["error"]["message"] == "SSE not supported"
+      assert get_resp_header(conn, "content-type") == ["text/event-stream; charset=utf-8"]
     end
   end
 
   describe "resource URI matching" do
     test "routes the requested resource to the correct remote handler" do
-      conn =
-        :post
-        |> conn("/mcp", %{
-          jsonrpc: "2.0",
-          id: "1",
-          method: "resources/read",
-          params: %{uri: "test:///example/1"}
-        })
-        |> put_req_header("content-type", "application/json")
-        |> call(@opts)
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: "1",
+        method: "resources/read",
+        params: %{uri: "test:///example/1"}
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(@opts)
 
+      assert_receive {:conn, conn}
       assert conn.status == 200
+      assert_receive {:response, "1", "message", response}
 
       assert %{
-               "jsonrpc" => "2.0",
-               "id" => "1",
-               "result" => %{
-                 "contents" => [
+               jsonrpc: "2.0",
+               id: "1",
+               result: %{
+                 contents: [
                    %{
-                     "mimeType" => "application/json",
-                     "uri" => "test:///example/1",
-                     "text" => ~S|{"id":"1"}|
+                     mimeType: "application/json",
+                     uri: "test:///example/1",
+                     text: ~S|{"id":"1"}|
                    }
                  ]
                }
-             } = JSON.decode!(conn.resp_body)
+             } = response
     end
 
     test "routes the requested resource to the correct function handler" do
-      conn =
-        :post
-        |> conn("/mcp", %{
-          jsonrpc: "2.0",
-          id: "1",
-          method: "resources/read",
-          params: %{uri: "test:///example/1"}
-        })
-        |> put_req_header("content-type", "application/json")
-        |> call(@opts)
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: "1",
+        method: "resources/read",
+        params: %{uri: "test:///example/1"}
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(@opts)
 
+      assert_receive {:conn, conn}
       assert conn.status == 200
+      assert_receive {:response, "1", "message", response}
 
       assert %{
-               "jsonrpc" => "2.0",
-               "id" => "1",
-               "result" => %{
-                 "contents" => [
+               jsonrpc: "2.0",
+               id: "1",
+               result: %{
+                 contents: [
                    %{
-                     "mimeType" => "application/json",
-                     "uri" => "test:///example/1",
-                     "text" => ~S|{"id":"1"}|
+                     mimeType: "application/json",
+                     uri: "test:///example/1",
+                     text: ~S|{"id":"1"}|
                    }
                  ]
                }
-             } = JSON.decode!(conn.resp_body)
+             } = response
     end
   end
 
@@ -272,8 +268,16 @@ defmodule PhantomTest do
             json_decoder: JSON
           )
   defp call(conn, opts) do
-    conn
-    |> Plug.Parsers.call(@parser)
-    |> Phantom.Plug.call(opts)
+    test_pid = self()
+
+    :proc_lib.spawn_link(fn ->
+      send(
+        test_pid,
+        {:conn,
+         conn
+         |> Plug.Parsers.call(@parser)
+         |> Phantom.Plug.call(Map.put(opts, :listener, test_pid))}
+      )
+    end)
   end
 end

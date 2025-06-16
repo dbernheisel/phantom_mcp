@@ -43,26 +43,27 @@ defmodule Phantom.Router do
 
   require Logger
 
-  import Phantom.Utils
+  alias Phantom.Request
+  alias Phantom.Session
 
-  @callback connect(Phantom.Session.t(), String.t() | nil) ::
-              {:ok, Phantom.Session.t()} | {:error, any()}
-  @callback disconnect(Phantom.Session.t()) :: any()
-  @callback terminate(Phantom.Session.t()) :: any()
+  @callback connect(Session.t(), Plug.Conn.headers()) ::
+              {:ok, Session.t()} | {:error, any()}
+  @callback disconnect(Session.t()) :: any()
+  @callback terminate(Session.t()) :: {:ok, any()} | {:error, any()}
 
-  @callback dispatch_method(String.t(), module(), map(), Phantom.Session.t()) ::
-              {:reply, any(), Phantom.Session.t()}
-              | {:noreply, Phantom.Session.t()}
+  @callback dispatch_method(String.t(), module(), map(), Session.t()) ::
+              {:reply, any(), Session.t()}
+              | {:noreply, Session.t()}
               | {:error, %{required(:code) => neg_integer(), required(:message) => binary()},
-                 Phantom.Session.t()}
+                 Session.t()}
 
-  @callback instructions(Phantom.Session.t()) :: {:ok, String.t()}
-  @callback server_info(Phantom.Session.t()) ::
+  @callback instructions(Session.t()) :: {:ok, String.t()}
+  @callback server_info(Session.t()) ::
               {:ok, %{name: String.t(), version: String.t()}} | {:error, any()}
-  @callback list_resources(String.t() | nil, map(), Phantom.Session.t()) ::
-              {:reply, any(), Phantom.Session.t()}
-              | {:noreply, Phantom.Session.t()}
-              | {:error, any(), Phantom.Session.t()}
+  @callback list_resources(String.t() | nil, map(), Session.t()) ::
+              {:reply, any(), Session.t()}
+              | {:noreply, Session.t()}
+              | {:error, any(), Session.t()}
 
   @protocol_version "2025-03-26"
 
@@ -76,8 +77,6 @@ defmodule Phantom.Router do
       import Phantom.Router,
         only: [tool: 2, tool: 3, resource: 3, resource: 4, prompt: 2, prompt: 3]
 
-      import Phantom.Session, only: [assign: 2, assign: 3]
-
       @before_compile Phantom.Router
 
       @name unquote(name)
@@ -87,18 +86,18 @@ defmodule Phantom.Router do
       Module.register_attribute(__MODULE__, :prompt, accumulate: true)
       Module.register_attribute(__MODULE__, :resource_template, accumulate: true)
 
-      def connect(session, _last_event_id), do: {:ok, session}
+      def connect(session, _auth_info), do: {:ok, session}
       def disconnect(session), do: {:ok, session}
-      def terminate(session), do: {:ok, session}
+      def terminate(session), do: {:error, nil}
 
       def instructions(_session), do: {:ok, unquote(instructions)}
       def server_info(_session), do: {:ok, %{name: @name, version: @vsn}}
 
       def list_resources(_cursor, _request, session) do
-        {:error, %{code: -32601, message: "Resources not found"}, session}
+        {:error, Request.not_found(), session}
       end
 
-      def resource_for(%Phantom.Session{} = session, name, path_params \\ []) do
+      def resource_for(%Session{} = session, name, path_params \\ []) do
         resource_templates = Phantom.Cache.get(session, __MODULE__, :resource_templates)
         Phantom.Router.resource_for(resource_templates, name, path_params)
       end
@@ -131,6 +130,8 @@ defmodule Phantom.Router do
 
         with {:ok, protocol_version} <-
                Phantom.Router.validate_protocol(params["protocolVersion"], session) do
+          Session.log_debug(session, "server", %{message: "initialized"})
+
           {:reply,
            %{
              protocolVersion: protocol_version,
@@ -148,23 +149,43 @@ defmodule Phantom.Router do
       end
 
       def dispatch_method("ping", _params, _request, session) do
+        Session.log_debug(session, "server", %{message: "pong"})
         {:reply, %{}, session}
       end
 
       def dispatch_method("tools/list", _params, _request, session) do
+        Session.log_debug(session, "server", %{message: "listed tools"})
         tools = Enum.map(Phantom.Cache.get(session, __MODULE__, :tools), &Phantom.Tool.to_json/1)
         {:reply, %{tools: tools}, session}
       end
 
+      def dispatch_method(
+            "logging/setLevel",
+            %{"level" => log_level},
+            request,
+            session
+          ) do
+        case Session.set_log_level(session, request, log_level) do
+          :ok ->
+            Session.log_debug(session, "server", %{message: "Changing log level to #{log_level}"})
+            {:reply, %{}, session}
+
+          :error ->
+            {:error, Request.closed(), session}
+        end
+      end
+
       def dispatch_method("tools/call", %{"name" => name} = params, request, session) do
+        Session.log_debug(session, "server", %{message: "Calling tool #{name}"})
+
         case Enum.find(Phantom.Cache.get(session, __MODULE__, :tools), &(&1.name == name)) do
           nil ->
-            {:error, %{code: -32602, message: "Tool not found: #{name}"}, session}
+            {:error, Request.invalid_params(), session}
 
           tool ->
             params = Map.get(params, "arguments", %{})
 
-            Phantom.Router.wrap_tool_call(
+            Request.tool_response(
               apply(tool.handler, tool.function, [params, request, session]),
               session
             )
@@ -177,18 +198,18 @@ defmodule Phantom.Router do
               "ref" => %{"type" => "ref/prompt", "name" => name},
               "argument" => %{"name" => arg, "value" => value}
             },
-            request,
+            _request,
             session
           ) do
         case Enum.find(Phantom.Cache.get(session, __MODULE__, :prompts), &(&1.name == name)) do
           nil ->
-            {:error, %{code: -32602, message: "Prompt not found: #{name}"}, session}
+            {:error, Request.invalid_params(), session}
 
           %{handler: _handler, completion_function: nil} ->
-            {:error, %{code: -32601, message: "Completion not supported for #{name}"}, session}
+            {:reply, [], session}
 
           %{handler: handler, completion_function: function} ->
-            Phantom.Router.wrap_completion_call(
+            Request.completion_response(
               apply(handler, function, [arg, value, session]),
               session
             )
@@ -201,7 +222,7 @@ defmodule Phantom.Router do
               "ref" => %{"type" => "ref/resource", "uri" => uri_template},
               "argument" => %{"name" => arg, "value" => value}
             },
-            request,
+            _request,
             session
           ) do
         case Enum.find(
@@ -209,22 +230,22 @@ defmodule Phantom.Router do
                &(&1.uri_template == uri_template)
              ) do
           nil ->
-            {:error, %{code: -32602, message: "Resource template not found: #{uri_template}"},
-             session}
+            {:error, Request.invalid_params(), session}
 
           %{completion_function: nil} ->
-            {:error, %{code: -32601, message: "Completion not supported for #{uri_template}"},
-             session}
+            {:reply, [], session}
 
           %{handler: handler, completion_function: function} ->
-            Phantom.Router.wrap_completion_call(
+            Request.completion_response(
               apply(handler, function, [arg, value, session]),
               session
             )
         end
       end
 
-      def dispatch_method("resources/templates/list", _params, request, session) do
+      def dispatch_method("resources/templates/list", _params, _request, session) do
+        Session.log_debug(session, "server", %{message: "Listing resource templates"})
+
         resource_templates =
           Enum.map(
             Phantom.Cache.get(session, __MODULE__, :resource_templates),
@@ -234,7 +255,18 @@ defmodule Phantom.Router do
         {:reply, %{resourceTemplates: resource_templates}, session}
       end
 
+      def dispatch_method("resources/subscribe", %{"uri" => uri} = _params, request, session) do
+        dbg(uri)
+
+        if session.pubsub do
+          {:noreply, session}
+        else
+          {:error, Request.resource_not_found(), session}
+        end
+      end
+
       def dispatch_method("resources/read", %{"uri" => uri} = _params, request, session) do
+        Session.log_debug(session, "server", %{message: "Reading resource #{uri}"})
         {:ok, %{path: path, scheme: scheme}} = URI.new(uri)
 
         case Enum.find(
@@ -242,17 +274,16 @@ defmodule Phantom.Router do
                &(&1.scheme == scheme)
              ) do
           nil ->
-            {:error, %{code: -32602, message: "Resource not found: #{uri}"}, session}
+            {:error, Request.invalid_params(), session}
 
-          %{router: resource_router} = _resource_template ->
+          %{router: resource_router} = resource_template ->
             path_info =
               for segment <- :binary.split(path, "/", [:global]),
                   segment != "",
                   do: URI.decode(segment)
 
             fake_conn = %Plug.Conn{
-              private: %{phantom_session: session, phantom_request: request, phantom_uri: uri},
-              assigns: %{result: {:reply, nil, session}},
+              assigns: %{request: request, session: session, uri: uri, result: nil},
               method: "POST",
               request_path: path,
               path_info: path_info
@@ -263,43 +294,40 @@ defmodule Phantom.Router do
                 resource_router.call(fake_conn, resource_router.init([]))
               rescue
                 e in Plug.Conn.WrapperError ->
-                  if e.reason == :undef do
+                  if e.reason in ~w[undef function_clause]a do
                     fake_conn
                   else
                     reraise e, __STACKTRACE__
                   end
               end
 
-            case fake_conn do
-              %{assigns: %{result: {:reply, nil, session}}} ->
-                {:error, %{code: -32002, message: "Resource not found", data: %{uri: uri}},
-                 session}
-
-              %{assigns: %{result: {:error, message}}} ->
-                {:error, message, session}
-
-              %{assigns: %{result: result}} ->
-                result
-            end
+            Request.resource_response(
+              fake_conn.assigns.result,
+              uri,
+              resource_template,
+              session
+            )
         end
       end
 
       def dispatch_method("prompts/list", _params, _request, session) do
+        Session.log_debug(session, "server", %{message: "Listing prompts"})
         prompts = Phantom.Cache.get(session, __MODULE__, :prompts)
         {:reply, %{prompts: Enum.map(prompts, &Phantom.Prompt.to_json/1)}, session}
       end
 
       def dispatch_method("prompts/get", %{"name" => name} = params, request, session) do
+        Session.log_debug(session, "server", %{message: "Getting prompt"})
         prompts = Phantom.Cache.get(session, __MODULE__, :prompts)
 
         case Enum.find(prompts, &(&1.name == name)) do
           nil ->
-            {:error, %{code: -32602, message: "Prompt not found: #{name}"}, session}
+            {:error, Request.invalid_params(), session}
 
           prompt ->
             args = Map.get(params, "arguments", %{})
 
-            Phantom.Router.wrap_prompt_call(
+            Request.prompt_response(
               apply(prompt.handler, prompt.function, [args, request, session]),
               prompt,
               session
@@ -308,14 +336,19 @@ defmodule Phantom.Router do
       end
 
       def dispatch_method("resources/list", params, request, session) do
+        Session.log_debug(session, "server", %{message: "Listing resources"})
         list_resources(params["cursor"], request, session)
       end
 
-      def dispatch_method("notification" <> _type, _params, _request, session) do
-        {:notification, session}
+      def dispatch_method("notification" <> type, _params, _request, session) do
+        Session.log_debug(session, "server", %{message: "Acknowledged notification #{type}"})
+        {:reply, nil, session}
       end
 
-      def dispatch_method(_method, _params, _request, _session), do: :not_found
+      def dispatch_method(method, _params, request, session) do
+        Session.log_debug(session, "server", %{message: "Unknown method #{method}"})
+        {:error, Request.not_found(), session}
+      end
 
       @doc false
       defoverridable list_resources: 3, server_info: 1, connect: 2, terminate: 1, instructions: 1
@@ -537,109 +570,30 @@ defmodule Phantom.Router do
   end
 
   @doc false
-  def wrap_completion_call({:reply, results, session}, _session) do
-    {:reply,
-     %{
-       completion:
-         remove_nils(%{
-           values: Enum.take(List.wrap(results[:values] || results), 100),
-           total: results[:total],
-           hasMore: results[:has_more] || false
-         })
-     }, session}
-  end
-
-  def wrap_completion_call({:error, error}, session) do
-    {:error, error, session}
-  end
-
-  def wrap_completion_call({:noreply, session}, _session) do
-    {:noreply, session}
-  end
-
-  @doc false
-  def wrap_prompt_call({:reply, results, session}, prompt, _session) do
-    {:reply,
-     %{
-       description: prompt.description,
-       messages:
-         results
-         |> List.wrap()
-         |> Enum.map(fn result ->
-           Enum.reduce(result, %{content: %{}}, fn
-             {:role, role}, acc ->
-               Map.put(acc, :role, role || "user")
-
-             {:text, text}, acc ->
-               put_in(acc[:content][:text], text || "")
-
-             {:data, data}, acc ->
-               put_in(acc[:content][:data], data || "")
-
-             {:resource, data}, acc ->
-               acc = put_in(acc[:content][:resource], data || %{})
-               put_in(acc[:content][:type], "resource")
-
-             {:mime_type, mime_type}, acc ->
-               put_in(acc[:content][:mimeType], mime_type || "")
-
-             {:type, type}, acc ->
-               put_in(acc[:content][:type], type || "text")
-
-             {key, value}, acc ->
-               Map.put(acc, key, value)
-           end)
-         end)
-     }, session}
-  end
-
-  def wrap_prompt_call({:error, error}, _prompt, session), do: {:error, error, session}
-  def wrap_prompt_call(other, _prompt, _session), do: other
-
-  @doc false
-  def wrap_tool_call({:reply, results, session}, _session) do
-    {results, error?} =
-      Enum.reduce(List.wrap(results), {[], false}, fn result, {acc, _error?} ->
-        result =
-          Enum.reduce(result, %{}, fn
-            {:text, nil}, acc -> Map.put(acc, :text, "")
-            {:data, nil}, acc -> Map.put(acc, :data, "")
-            {:mime_type, mime_type}, acc -> Map.put(acc, :mimeType, mime_type)
-            {key, value}, acc -> Map.put(acc, key, value)
-          end)
-
-        {error?, result} = Map.pop(result, :error, false)
-        {[result | acc], error?}
-      end)
-
-    results = Enum.reverse(results)
-    result = if error?, do: %{content: results, isError: true}, else: %{content: results}
-    {:reply, result, session}
-  end
-
-  def wrap_tool_call({:error, reason}, session), do: {:error, reason, session}
-  def wrap_tool_call(other, _session), do: other
-
-  @doc false
   def validate_protocol(@protocol_version, _), do: {:ok, @protocol_version}
 
   def validate_protocol(unsupported_protocol, session) do
     {:error,
-     %{
-       code: -32602,
-       message: "Unsupported protocol version",
+     Request.invalid_params(
        data: %{
          supported: [@protocol_version],
          requested: unsupported_protocol
        }
-     }, session}
+     ), session}
   end
 
   defmacro __before_compile__(env) do
     env.module
     |> Module.get_attribute(:resource_template)
     |> Enum.map(&elem(&1, 1))
-    |> Phantom.Router.warn_against_conflicts()
+    |> Phantom.Router.warn_against_resource_conflicts()
+
+    for entity <- ~w[tool prompt]a do
+      env.module
+      |> Module.get_attribute(entity)
+      |> Enum.map(&elem(&1, 1))
+      |> Phantom.Router.warn_against_conflicts()
+    end
 
     [
       quote file: env.file, line: env.line, location: :keep, generated: true do
@@ -674,7 +628,7 @@ defmodule Phantom.Router do
               for {_, resource} <- resources do
                 match(resource.path,
                   to: Phantom.ResourcePlug,
-                  private: %{phantom_resource: resource}
+                  assigns: %{resource: resource}
                 )
               end
             end
@@ -685,7 +639,7 @@ defmodule Phantom.Router do
   end
 
   @doc false
-  def warn_against_conflicts(resource_templates) do
+  def warn_against_resource_conflicts(resource_templates) do
     resource_templates
     |> Enum.group_by(&{&1.router, &1.name})
     |> Enum.each(fn
@@ -699,6 +653,25 @@ defmodule Phantom.Router do
         `resource_for(session, name, path_params)` will not work predictably with duplicate names
 
         #{inspect(Enum.map(templates, &{router, &1.handler, &1.function}), pretty: true)}
+        """)
+    end)
+
+    :ok
+  end
+
+  def warn_against_conflicts(entity) do
+    entity
+    |> Enum.group_by(& &1.name)
+    |> Enum.each(fn
+      {_name, [_entity]} ->
+        :ok
+
+      {name, entities} ->
+        Logger.warning("""
+        There are conflicting #{entity}s with the name #{inspect(name)}.
+        Please distinguish them by providing a `:name` option.
+
+        #{inspect(Enum.map(entities, &{&1.handler, &1.function}), pretty: true)}
         """)
     end)
 
@@ -764,15 +737,20 @@ defmodule Phantom.Router do
   @doc false
   def resource_capability(capabilities, router, session) do
     if Enum.any?(Phantom.Cache.get(session, router, :resource_templates)) do
-      Map.put(capabilities, :resources, %{subscribe: false, listChanged: false})
+      Map.put(capabilities, :resources, %{
+        subscribe: not is_nil(session.pubsub),
+        listChanged: false
+      })
     else
       capabilities
     end
   end
 
   @doc false
+  def logging_capability(capabilities, _router, %{pubsub: nil}), do: capabilities
+
   def logging_capability(capabilities, _router, _session) do
-    capabilities
+    Map.put(capabilities, :logging, %{})
   end
 
   @doc false

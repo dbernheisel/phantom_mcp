@@ -53,4 +53,43 @@ defmodule Phantom.Prompt do
       arguments: Enum.map(prompt.arguments, &Argument.to_json/1)
     })
   end
+
+  @doc false
+  def call_response(results, prompt) do
+    messages =
+      results
+      |> List.wrap()
+      |> Enum.map(fn result ->
+        result
+        |> Enum.reduce(%{content: %{}}, fn
+          {:role, role}, acc ->
+            Map.put(acc, :role, role || "user")
+
+          {:text, text}, acc ->
+            put_in(acc[:content][:text], text || "")
+
+          {:data, data}, acc ->
+            put_in(acc[:content][:data], data || "")
+
+          {:resource, data}, acc ->
+            acc = put_in(acc[:content][:resource], data || %{})
+            put_in(acc[:content][:type], "resource")
+
+          {:mime_type, mime_type}, acc ->
+            put_in(acc[:content][:mimeType], mime_type || "")
+
+          {:type, type}, acc ->
+            put_in(acc[:content][:type], type || "text")
+
+          {key, value}, acc ->
+            Map.put(acc, key, value)
+        end)
+        |> encode()
+      end)
+
+    %{
+      description: prompt.description,
+      messages: messages
+    }
+  end
 end
