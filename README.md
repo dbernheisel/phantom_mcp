@@ -279,17 +279,23 @@ defmodule MyApp.MCP do
       Process.sleep(1000)
       case Study.create_question(study_id, label: label, description: description) do
         {:ok, question} ->
-          Phantom.Session.tool_respond(pid, request_id, %{
-            mime_type: "text/markdown",
-            type: :text,
-            text: Study.Question.to_markdown(question)
-          })
+          Phantom.Session.respond(
+            pid,
+            request_id,
+            Phantom.Tool.reponse(%{
+              mime_type: "text/markdown",
+              type: :text,
+              text: Study.Question.to_markdown(question)
+            }))
         _ ->
-          Phantom.Session.tool_respond(pid, request_id,  %{
-            type: :text,
-            text: "Could not create",
-            error: true
-          })
+          Phantom.Session.respond(
+            pid,
+            request_id,
+            Phantom.Tool.response(%{
+              type: :text,
+              text: "Could not create",
+              error: true
+            }))
       end
     end)
 
