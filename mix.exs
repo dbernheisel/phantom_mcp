@@ -55,6 +55,7 @@ defmodule Phantom.MixProject do
 
   defp package do
     [
+      name: :phantom_mcp,
       maintainers: ["David Bernheisel"],
       licenses: ["MIT"],
       links: %{

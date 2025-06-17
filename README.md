@@ -1,7 +1,7 @@
 # Phantom MCP
 
-[![Hex.pm](https://img.shields.io/hexpm/v/phantom.svg)](https://hex.pm/packages/phantom)
-[![Documentation](https://img.shields.io/badge/docs-hexpm-blue.svg)](https://hexdocs.pm/phantom)
+[![Hex.pm](https://img.shields.io/hexpm/v/phantom_mcp.svg)](https://hex.pm/packages/phantom_mcp)
+[![Documentation](https://img.shields.io/badge/docs-hexpm-blue.svg)](https://hexdocs.pm/phantom_mcp)
 
 <!-- MDOC -->
 
@@ -14,7 +14,7 @@ This library provides a complete implementation of the [MCP server specification
 Add Phantom to your dependencies:
 
 ```elixir
-  {:phantom, "~> 0.1.1"},
+  {:phantom_mcp, "~> 0.1.1"},
 ```
 
 Configure MIME to accept SSE
