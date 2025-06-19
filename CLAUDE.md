@@ -36,16 +36,13 @@ When getting documentation on an Elixir function, lookup both the module
 The library is organized into several key modules:
 
 ### Core Protocol (`lib/phantom/`)
-- `Phantom.Protocol` - JSON-RPC 2.0 message parsing, encoding, and validation
+- `Phantom.Request` - JSON-RPC 2.0 message parsing, encoding, and validation
 - `Phantom.Cache` - Manages `:persistent_term` that loads available MCP
   tools, prompts, and resources defined at compile time and added or removed
   at runtime.
 - `Phantom.Session` - Session management with timeouts and data storage
-- `Phantom.Handler` - Behaviour for implementing MCP methods
+- `Phantom.Router` - Behaviour for implementing MCP methods
 - `Phantom.Plug` - Main Plug implementation for HTTP transport with SSE support
-- `Phantom.Server` - Starts a standalone Bandit server that mounts the user's
-    MCP.Plug handlers
-- `Phantom.Console` - Starts a stdio socket
 
 ### Test Structure (`test/`)
 - Comprehensive test coverage for all modules

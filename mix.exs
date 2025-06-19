@@ -4,7 +4,7 @@ defmodule Phantom.MixProject do
   def project do
     [
       aliases: aliases(),
-      app: :phantom,
+      app: :phantom_mcp,
       description: "Elixir MCP (Model Context Protocol) server library with Plug",
       deps: deps(),
       docs: docs(),
@@ -12,43 +12,34 @@ defmodule Phantom.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       package: package(),
       start_permanent: Mix.env() == :prod,
-      version: "0.1.1",
+      version: "0.2.0",
       source_url: "https://github.com/dbernheisel/phantom_mcp"
     ]
   end
 
-  # Run "mix help compile.app" to learn about applications.
-  def application do
-    if Mix.env() == :test do
-      [
-        mod: {Test.Application, []},
-        extra_applications: [:logger, :runtime_tools]
-      ]
-    else
-      [
-        extra_applications: [:logger]
-      ]
-    end
+  def cli do
+    [
+      preferred_envs: [format: :test]
+    ]
   end
 
-  # Specifies which paths to compile per environment.
-  defp elixirc_paths(:dev), do: ["lib"]
+  def application do
+    [
+      extra_applications: [:logger]
+    ]
+  end
+
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
-  # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
       {:plug, "~> 1.0"},
       {:telemetry, "~> 1.0"},
-      {:phoenix_pubsub, "~> 2.0"},
+      {:phoenix_pubsub, "~> 2.0", optional: true},
       {:uuidv7, "~> 1.0"},
-      ## Dev
-      {:tidewave, "~> 0.1", only: [:test]},
-      {:phoenix, "~> 1.7", only: [:dev, :test]},
-      {:bandit, "~> 1.7", only: [:test]},
-      {:plug_cowboy, "~> 2.7", only: [:test]},
-      {:phoenix_live_dashboard, "~> 0.7", only: [:test]},
+      ## Test
+      {:phoenix, "~> 1.7", only: [:test]},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
     ]
   end

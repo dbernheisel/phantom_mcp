@@ -11,71 +11,96 @@ defmodule Phantom.Session do
 
   @enforce_keys [:id]
   defstruct [
+    :allowed_prompts,
+    :allowed_resource_templates,
+    :allowed_tools,
     :id,
     :last_event_id,
     :pid,
-    :prompts,
     :pubsub,
-    :resource_templates,
+    :request,
     :router,
     :stream_fun,
-    :tools,
     :tracker,
+    :transport_pid,
     assigns: %{},
     close_after_complete: true,
-    subscribed: [],
     requests: %{}
   ]
 
+  @type log_level ::
+          :emergency | :alert | :critical | :error | :warning | :notice | :info | :debug
+
   @type t :: %__MODULE__{
+          allowed_prompts: [String.t()],
+          allowed_resource_templates: [String.t()],
+          allowed_tools: [String.t()],
           assigns: map(),
-          last_event_id: String.t() | nil,
           close_after_complete: boolean(),
           id: binary(),
+          last_event_id: String.t() | nil,
           pid: pid() | nil,
-          prompts: [atom()],
           pubsub: module(),
+          request: Phantom.Request.t() | nil,
           requests: map(),
-          resource_templates: [atom()],
           router: module(),
           stream_fun: fun(),
-          subscribed: map(),
-          tools: [atom()]
+          transport_pid: pid()
         }
+
+  @resource_subscription "phantom:resources"
+  @doc "The PubSub topic Phantom will listen to for resource updates"
+  def resource_subscription_topic, do: @resource_subscription
 
   @spec new(String.t() | nil, Keyword.t() | map) :: t()
   def new(session_id, opts \\ []) do
     struct!(__MODULE__, [id: session_id || UUIDv7.generate()] ++ opts)
   end
 
-  def list do
-    Phoenix.Tracker.list(Phantom.Tracker, "sessions")
+  @doc "Fetch the current progress token if provided by the client"
+  def progress_token(%__MODULE__{request: %{params: params}}) do
+    params["_meta"]["progressToken"]
+  end
+
+  @doc "List all session with SSE streams open."
+  if Code.ensure_loaded?(Phoenix.Tracker) do
+    def list do
+      Phoenix.Tracker.list(Phantom.Tracker, "sessions")
+    end
+  else
+    def list, do: []
   end
 
   @doc "Get the PID of the SSE stream for the session id"
-  def get_sse_pid(session_id) do
-    case Phoenix.Tracker.get_by_key(Phantom.Tracker, "sessions", session_id) do
-      [{pid, _} | _] -> pid
-      _ -> nil
+  if Code.ensure_loaded?(Phoenix.Tracker) do
+    def get_sse_pid(%__MODULE__{} = session) do
+      case Phoenix.Tracker.get_by_key(Phantom.Tracker, "sessions", session.id) do
+        [{pid, _} | _] -> pid
+        _ -> session.pid
+      end
     end
+  else
+    def get_sse_pid(%__MODULE__{} = session), do: session.pid
   end
 
   @spec assign(t(), atom(), any()) :: t()
+  @doc "Assign state to the session."
   def assign(session, key, value) do
     %{session | assigns: Map.put(session.assigns, key, value)}
   end
 
+  @doc "Assign state to the session."
   @spec assign(t(), map()) :: t()
   def assign(session, map) do
     %{session | assigns: Map.merge(session.assigns, Map.new(map))}
   end
 
-  @doc false
-  # not ready
+  @doc "Subscribe the session to a resource"
+  @spec subscribe_to_resource(t(), string_uri :: String.t()) :: :ok | :error
   def subscribe_to_resource(%__MODULE__{pubsub: nil}, _uri), do: :error
 
   def subscribe_to_resource(session, uri) do
-    case get_sse_pid(session.id) do
+    case get_sse_pid(session) do
       nil -> :error
       pid -> GenServer.cast(pid, {:resource_subscribe, uri})
     end
@@ -86,10 +111,8 @@ defmodule Phantom.Session do
   Sets both for the current request for async tasks and the SSE stream
   """
   @spec set_log_level(Session.t(), Request.t(), String.t()) :: :ok
-  def set_log_level(%__MODULE__{id: id, pid: pid}, request, level) do
-    GenServer.cast(pid, {:set_log_level, request, level})
-
-    case get_sse_pid(id) do
+  def set_log_level(%__MODULE__{} = session, request, level) do
+    case get_sse_pid(session) do
       nil -> :error
       pid -> GenServer.cast(pid, {:set_log_level, request, level})
     end
@@ -105,9 +128,9 @@ defmodule Phantom.Session do
 
   This should likely be used in conjunction with:
 
-    - `Phantom.Tool.response(payload)`
-    - `Phantom.ResourceTemplate.response(payload, resource_template, uri)`
-    - `Phantom.Prompt.response(payload, prompt)`
+    - `Phantom.Tool.{audio|text|image|...}`
+    - `Phantom.Resource.response(payload)`
+    - `Phantom.Prompt.response(payload)`
 
   For example:
 
@@ -119,16 +142,19 @@ defmodule Phantom.Session do
       Session.respond(
         session_pid,
         request_id,
-        Phantom.Tool.response(%{
-          type: :audio,
-          data: File.read!("test/support/game-over.wav"),
+        Phantom.Tool.audio(
+          File.read!("priv/static/game-over.wav"),
           mime_type: "audio/wav"
-        })
+        )
       )
      end)
      ```
   """
+  def respond(%__MODULE__{pid: pid, request: %{id: request_id}}, payload),
+    do: respond(pid, request_id, payload)
+
   def respond(%__MODULE__{pid: pid}, request_id, payload), do: respond(pid, request_id, payload)
+  def respond(pid, %Request{id: id}, payload), do: respond(pid, id, payload)
 
   def respond(pid, request_id, payload) when is_pid(pid) do
     GenServer.cast(
@@ -140,6 +166,16 @@ defmodule Phantom.Session do
          result: payload
        }}
     )
+  end
+
+  def resource_respond(session, request_id, payload) do
+    respond(session, request_id, Phantom.Resource.response(payload))
+  end
+
+  def notify(%__MODULE__{pid: pid}, payload), do: notify(pid, payload)
+
+  def notify(pid, payload) when is_pid(pid) do
+    GenServer.cast(pid, {:notify, payload})
   end
 
   @log_grades [
@@ -156,27 +192,53 @@ defmodule Phantom.Session do
   @doc false
   defp do_log(%__MODULE__{pubsub: nil}, _level_num, _name, _domain, _payload), do: :ok
 
-  defp do_log(%__MODULE__{id: id}, level_num, level_name, domain, payload) do
-    case Phoenix.Tracker.get_by_key(Phantom.Tracker, "sessions", id) do
-      [{pid, _} | _] ->
-        GenServer.cast(pid, {:log, level_num, level_name, domain, payload})
+  if Code.ensure_loaded?(Phoenix.Tracker) do
+    defp do_log(%__MODULE__{pid: pid, id: id}, level_num, level_name, domain, payload) do
+      payload = if is_binary(payload), do: %{message: payload}, else: payload
 
-      _ ->
-        :ok
+      case Phoenix.Tracker.get_by_key(Phantom.Tracker, "sessions", id) do
+        [{sse_pid, _} | _] ->
+          GenServer.cast(sse_pid, {:log, level_num, level_name, domain, payload})
+
+        _ ->
+          GenServer.cast(pid, {:log, level_num, level_name, domain, payload})
+      end
+    end
+  else
+    defp do_log(%__MODULE__{pid: pid}, level_num, level_name, domain, payload) do
+      payload = if is_binary(payload), do: %{message: payload}, else: payload
+      GenServer.cast(pid, {:log, level_num, level_name, domain, payload})
     end
   end
 
-  @type log_level ::
-          :emergency | :alert | :critical | :error | :warning | :notice | :info | :debug
   @spec log(Session.t(), log_level, String.t(), structured_log :: map()) :: :ok
   for {name, level} <- @log_grades do
-    def log(session, unquote(name), domain, payload) do
+    def log(%__MODULE__{} = session, unquote(name), domain, payload) do
       do_log(session, unquote(level), unquote(name), domain, payload)
     end
 
+    @doc """
+    Notify the client with a log at level \"#{name}\" with domain "server".
+    Note: this requires the `session` variable to be wihtin scope
+    """
+    @spec unquote(:"log_#{name}")(structured_log :: map()) :: :ok
+    defmacro unquote(:"log_#{name}")(payload) do
+      if not Macro.Env.has_var?(__CALLER__, {:session, nil}) do
+        raise """
+        session was not supplied to the `log_#{unquote(name)}`. To send a log, either
+        use log_#{unquote(name)}/4 and supply the session, or have the session available
+        in the scope
+        """
+      end
+
+      quote bind_quoted: [name: unquote(name), payload: payload], generated: true do
+        Phantom.Session.log(var!(session), name, "server", payload)
+      end
+    end
+
     @doc "Notify the client with a log at level \"#{name}\""
-    @spec unquote(:"log_#{name}")(Session.t(), String.t(), structured_log :: map()) :: :ok
-    def unquote(:"log_#{name}")(session, domain, payload) do
+    @spec unquote(:"log_#{name}")(t(), String.t(), structured_log :: map()) :: :ok
+    def unquote(:"log_#{name}")(%__MODULE__{} = session, domain, payload) do
       do_log(session, unquote(level), unquote(name), domain, payload)
     end
 
@@ -186,21 +248,42 @@ defmodule Phantom.Session do
     end
   end
 
+  def ping(%__MODULE__{pid: pid}), do: ping(pid)
+  def ping(pid) when is_pid(pid), do: GenServer.cast(pid, :ping)
+
+  def notify_progress(session, progress, total \\ nil)
+
+  def notify_progress(%__MODULE__{pid: pid} = session, progress, total) do
+    notify_progress(pid, progress_token(session), progress, total)
+  end
+
+  def notify_progress(pid, nil, _progress, _total), do: ping(pid)
+
+  def notify_progress(pid, progress_token, progress, total) do
+    GenServer.cast(pid, {:send, Request.notify_progress(progress_token, progress, total)})
+  end
+
   @doc false
   def start_loop(opts) do
     session = Keyword.fetch!(opts, :session)
     timeout = Keyword.fetch!(opts, :timeout)
+    opts = Keyword.put_new(opts, :log_level, 5)
     {cb, opts} = Keyword.pop(opts, :continue_fun)
     timer = Process.send_after(self(), :inactivity, timeout)
 
-    Process.set_label({Phantom.Session, session.id})
+    Process.set_label({__MODULE__, session.id})
 
     :gen_server.enter_loop(
       __MODULE__,
       [],
       Map.new(
         opts ++
-          [log_level: nil, timeout: timeout, last_activity: System.system_time(), timer: timer]
+          [
+            subscribed: %{},
+            timeout: timeout,
+            last_activity: System.system_time(),
+            timer: timer
+          ]
       ),
       self(),
       {:continue, cb}
@@ -220,18 +303,34 @@ defmodule Phantom.Session do
 
   @doc false
   def handle_cast({:log, level, level_name, domain, payload}, state)
-      when state.log_level and level <= state.log_level do
+      when level <= state.log_level do
+    cancel_inactivity(state)
+
     {:noreply,
-     state.stream_fun.(
-       state,
+     state
+     |> state.stream_fun.(
        nil,
        "message",
        Request.notify(%{level: level_name, logger: domain, data: payload})
-     )}
+     )
+     |> set_activity()
+     |> schedule_inactivity()}
   end
 
-  def handle_cast({:log, _level, _domain, _payload}, state) do
+  def handle_cast({:log, _level, _level_name, _domain, _payload}, state) do
     {:noreply, state}
+  end
+
+  def handle_cast(:ping, state) do
+    cancel_inactivity(state)
+    state = state.stream_fun.(state, nil, "message", Request.ping())
+    {:noreply, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  def handle_cast({:send, payload}, state) do
+    cancel_inactivity(state)
+    state = state.stream_fun.(state, nil, "message", payload)
+    {:noreply, state |> set_activity() |> schedule_inactivity()}
   end
 
   def handle_cast({:respond, request_id, payload}, state) do
@@ -242,11 +341,20 @@ defmodule Phantom.Session do
     maybe_finish(state)
   end
 
-  def handle_cast({:resource, uri}, state) do
-    if uri not in state.subscribed do
-      Phoenix.PubSub.subscribe(state.session.pubsub, "phantom:resources")
-      {:noreply, put_in(state.subscribed, [uri | state.subscribed])}
-    else
+  if Code.ensure_loaded?(Phoenix.PubSub) do
+    def handle_cast({:resource_subscribe, uri}, state) do
+      if state.subscribed[uri] != :ok do
+        cancel_inactivity(state)
+        Phoenix.PubSub.subscribe(state.pubsub, @resource_subscription)
+        subscribed = Map.put(state.subscribed, uri, :ok)
+        state = put_in(state.subscribed, subscribed)
+        {:noreply, state |> set_activity() |> schedule_inactivity()}
+      else
+        {:noreply, state}
+      end
+    end
+  else
+    def handle_cast({:resource_subscribe, uri}, state) do
       {:noreply, state}
     end
   end
@@ -264,28 +372,41 @@ defmodule Phantom.Session do
   def handle_info({:plug_conn, :sent}, state), do: {:noreply, state}
 
   def handle_info(:inactivity, state) do
-    if System.system_time() - state.last_activity > state.timeout do
-      state = state.stream_fun.(state, nil, "closed", "inactivity")
-      {:stop, {:shutdown, :closed}, state}
-    else
-      {:noreply, state}
+    cond do
+      not state.session.close_after_complete ->
+        state = state.stream_fun.(state, nil, "message", Request.ping())
+        {:noreply, state |> set_activity() |> schedule_inactivity()}
+
+      System.system_time() - state.last_activity > state.timeout ->
+        state = state.stream_fun.(state, nil, "closed", "inactivity")
+        {:stop, {:shutdown, :closed}, state}
+
+      true ->
+        {:noreply, state}
     end
   end
 
-  def handle_info({:resource_subscribe, uri}, state) do
-    if uri in state.subscribed do
-      {:noreply, state.stream_fun.(state, nil, "message", Phantom.ResourceTemplate.updated(uri))}
-    else
-      {:noreply, state}
+  def handle_info({:resource_updated, name, path_params}, state) do
+    with {:ok, uri} <- state.session.router.resource_uri(state.session, name, path_params) do
+      handle_info({:resource_updated, uri}, state)
     end
-  end
 
-  def handle_info(what, state) do
-    Logger.warning(inspect(what))
     {:noreply, state}
   end
 
-  # Phoenix.PubSub.broadcast(Test.PubSub, "phantom:resource", "anything")
+  def handle_info({:resource_updated, uri}, state) do
+    if state.subscribed[uri] == :ok do
+      cancel_inactivity(state)
+      state.stream_fun.(state, nil, "message", Request.resource_updated(%{uri: uri}))
+      {:noreply, state |> set_activity() |> schedule_inactivity()}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info(_what, state) do
+    {:noreply, state}
+  end
 
   defp cancel_inactivity(%{timer: ref}) when is_reference(ref), do: Process.cancel_timer(ref)
   defp cancel_inactivity(_), do: :ok

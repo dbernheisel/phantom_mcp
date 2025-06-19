@@ -1,4 +1,4 @@
-defmodule Phantom.Tool.InputSchema do
+defmodule Phantom.Tool.JSONSchema do
   @moduledoc """
   JSON Schema representing the arguments for the tool
 
@@ -42,11 +42,11 @@ defmodule Phantom.Tool.InputSchema do
 
   def to_json(nil), do: %{required: [], type: "object", properties: %{}}
 
-  def to_json(%__MODULE__{} = input_schema) do
+  def to_json(%__MODULE__{} = json_schema) do
     remove_nils(%{
-      required: input_schema.required,
-      type: input_schema.type,
-      properties: input_schema.properties
+      required: json_schema.required,
+      type: json_schema.type,
+      properties: json_schema.properties
     })
   end
 end

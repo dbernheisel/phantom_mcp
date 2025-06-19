@@ -13,7 +13,16 @@ defmodule Phantom.Prompt do
   import Phantom.Utils
   alias Phantom.Prompt.Argument
 
-  defstruct [:name, :description, :handler, :completion_function, :function, arguments: []]
+  @enforce_keys ~w[name handler function]a
+  defstruct [
+    :name,
+    :description,
+    :handler,
+    :completion_function,
+    :function,
+    meta: %{},
+    arguments: []
+  ]
 
   @type t :: %__MODULE__{
           name: String.t(),
@@ -21,6 +30,7 @@ defmodule Phantom.Prompt do
           function: atom(),
           completion_function: atom(),
           description: String.t(),
+          meta: map(),
           arguments: [Argument.t()]
         }
 
@@ -30,6 +40,41 @@ defmodule Phantom.Prompt do
           optional(:arguments) => %{
             String.t() => String.t()
           }
+        }
+
+  @type text_content :: %{
+          type: :text,
+          data: String.t()
+        }
+
+  @type image_content :: %{
+          type: :image,
+          data: base64_encoded :: String.t(),
+          mimeType: String.t()
+        }
+
+  @type audio_content :: %{
+          type: :audio,
+          data: base64_encoded :: String.t(),
+          mimeType: String.t()
+        }
+
+  @type embedded_resource_content :: %{
+          type: :resource,
+          resource: Phantom.ResourceTemplate.resource()
+        }
+  @type message :: %{
+          role: :assistant | :user,
+          content:
+            text_content()
+            | image_content()
+            | audio_content()
+            | embedded_resource_content()
+        }
+
+  @type response :: %{
+          description: String.t(),
+          messages: [message()]
         }
 
   @spec build(map() | Keyword.t()) :: t()
@@ -54,42 +99,63 @@ defmodule Phantom.Prompt do
     })
   end
 
-  @doc "Formats the response from an MCP Router to the MCP specification"
-  def response(results, prompt) do
-    messages =
-      results
-      |> List.wrap()
-      |> Enum.map(fn result ->
-        result
-        |> Enum.reduce(%{content: %{}}, fn
-          {:role, role}, acc ->
-            Map.put(acc, :role, role || "user")
+  @doc """
+  Formats the response from an MCP Router to the MCP specification
 
-          {:text, text}, acc ->
-            put_in(acc[:content][:text], text || "")
+  Provide a keyword list of messages with a keyword list. The key
+  should contain the role, and the value contain the message.
 
-          {:data, data}, acc ->
-            put_in(acc[:content][:data], data || "")
+  For example:
 
-          {:resource, data}, acc ->
-            acc = put_in(acc[:content][:resource], data || %{})
-            put_in(acc[:content][:type], "resource")
+      require Phantom.Prompt, as: Prompt
+      Prompt.response([
+        assistant: Prompt.audio(File.read!("foo.wav"), "audio/wav"),
+        user: Prompt.text("Wow that was interesting"),
+        assistant: Prompt.image(File.read!("bar.png"), "image/png"),
+        user: Prompt.text("amazing"),
+        assistant: Prompt.resource("myapp://foo/123")
+      ], prompt)
+  """
 
-          {:mime_type, mime_type}, acc ->
-            put_in(acc[:content][:mimeType], mime_type || "")
+  defmacro response(messages) when is_list(messages) do
+    if not Macro.Env.has_var?(__CALLER__, {:session, nil}) do
+      raise "session was not supplied to the response. Phantom requires the variable named `session` to exist, or use response/2."
+    end
 
-          {:type, type}, acc ->
-            put_in(acc[:content][:type], type || "text")
+    quote do
+      prompt = var!(session, nil).request.spec
+      Phantom.Prompt.response(unquote(messages), prompt)
+    end
+  end
 
-          {key, value}, acc ->
-            Map.put(acc, key, value)
-        end)
-        |> encode()
-      end)
-
+  def response(messages, prompt) when is_list(messages) do
     %{
       description: prompt.description,
-      messages: messages
+      messages:
+        Enum.map(messages, fn {role, content} ->
+          %{role: role, content: content}
+        end)
     }
+  end
+
+  @spec text(String.t()) :: text_content()
+  def text(data), do: %{type: "text", text: data || ""}
+
+  @spec audio(binary(), String.t()) :: audio_content()
+  def audio(data, mime_type) do
+    %{type: "audio", data: Base.encode64(data || <<>>), mimeType: mime_type}
+  end
+
+  @spec image(binary(), String.t()) :: image_content()
+  def image(data, mime_type) do
+    %{type: "image", data: Base.encode64(data || <<>>), mimeType: mime_type}
+  end
+
+  @spec embedded_resource(string_uri :: String.t(), map()) :: embedded_resource_content()
+  @doc """
+  Embedded resource reponse.
+  """
+  def embedded_resource(uri, resource) do
+    %{type: :resource, resource: Map.put(resource, :uri, uri)}
   end
 end

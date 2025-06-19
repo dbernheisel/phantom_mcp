@@ -1,3 +1,3 @@
-## Unreleased
+## 0.1.2
 
-Work in progress
+Phantom MCP released!

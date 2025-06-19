@@ -11,6 +11,7 @@ defmodule Phantom.ResourceTemplate do
 
   import Phantom.Utils
 
+  @enforce_keys ~w[name handler function path router scheme uri uri_template]a
   defstruct [
     :name,
     :description,
@@ -23,7 +24,8 @@ defmodule Phantom.ResourceTemplate do
     :scheme,
     :size,
     :uri,
-    :uri_template
+    :uri_template,
+    meta: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -37,6 +39,7 @@ defmodule Phantom.ResourceTemplate do
           router: module(),
           scheme: String.t(),
           size: pos_integer(),
+          meta: map(),
           uri: URI.t(),
           uri_template: String.t()
         }
@@ -68,27 +71,7 @@ defmodule Phantom.ResourceTemplate do
   end
 
   defp to_uri_6570(str) do
+    # this is not a total 6570-compliant URI template.
     String.replace(str, ~r/:\w*/, fn ":" <> var -> "{#{var}}" end)
-  end
-
-  @doc false
-  # TODO: not ready
-  def updated(uri), do: %{uri: uri}
-
-  @doc "Formats the response from an MCP Router to the MCP specification"
-  def response(results, resource_template, uri) do
-    %{
-      contents:
-        results
-        |> List.wrap()
-        |> Enum.map(fn result ->
-          encode(%{
-            blob: result[:blob],
-            text: result[:text],
-            mimeType: result[:mime_type] || resource_template.mime_type,
-            uri: uri
-          })
-        end)
-    }
   end
 end

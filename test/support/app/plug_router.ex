@@ -1,8 +1,6 @@
 defmodule Test.PlugRouter do
   use Plug.Router
 
-  Code.ensure_compiled!(Test.MCPRouter)
-
   plug :match
 
   plug Plug.Parsers,
@@ -17,7 +15,7 @@ defmodule Test.PlugRouter do
     init_opts: [
       validate_origin: false,
       pubsub: Test.PubSub,
-      router: Test.MCPRouter
+      router: Test.MCP.Router
     ]
 
   match _ do

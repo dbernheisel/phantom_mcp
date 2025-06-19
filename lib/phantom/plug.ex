@@ -27,7 +27,7 @@ defmodule Phantom.Plug do
           pipe_through :mcp
 
           forward "/", Phantom.Plug,
-            router: Test.MCPRouter,
+            router: Test.MCP.Router,
             validate_origin: false
         end
 
@@ -43,7 +43,10 @@ defmodule Phantom.Plug do
 
         forward "/mcp",
           to: Phantom.Plug,
-          init_opts: [validate_origin: false, router: Test.MCPRouter]
+          init_opts: [
+            validate_origin: false,
+            router: Test.MCP.Router
+          ]
 
   Here are the defaults:
 
@@ -89,9 +92,6 @@ defmodule Phantom.Plug do
   - `:max_request_size` - Maximum request size in bytes (default: 1MB)
   """
   def init(opts) do
-    router = Keyword.fetch!(opts, :router)
-    Code.ensure_loaded!(router)
-
     @default_opts
     |> Keyword.merge(opts)
     |> Map.new()
@@ -126,7 +126,8 @@ defmodule Phantom.Plug do
       Session.new(get_req_header(conn, "mcp-session-id") |> List.first(),
         close_after_complete: conn.method != "GET",
         pubsub: opts.pubsub,
-        pid: conn.owner,
+        transport_pid: conn.owner,
+        pid: self(),
         router: router
       )
 
@@ -216,16 +217,24 @@ defmodule Phantom.Plug do
     """
   end
 
-  defp dispatch(%Plug.Conn{method: "GET"} = conn, opts) do
-    if opts.pubsub do
-      session = conn.private.phantom.session
-      Phoenix.Tracker.track(Phantom.Tracker, self(), "sessions", session.id, %{})
+  if Code.ensure_loaded?(Phoenix.Tracker) do
+    defp dispatch(%Plug.Conn{method: "GET"} = conn, opts) do
+      if opts.pubsub do
+        session = conn.private.phantom.session
+        Phoenix.Tracker.track(Phantom.Tracker, self(), "sessions", session.id, %{})
 
-      conn
-      |> put_resp_header("mcp-session-id", session.id)
-      |> start_sse_stream(opts)
-      |> stream_loop(opts)
-    else
+        conn
+        |> put_resp_header("mcp-session-id", session.id)
+        |> start_sse_stream(opts)
+        |> stream_loop(opts)
+      else
+        conn
+        |> put_status(405)
+        |> json_error(Request.error(Request.not_found("SSE not supported")))
+      end
+    end
+  else
+    defp dispatch(%Plug.Conn{method: "GET"} = conn, opts) do
       conn
       |> put_status(405)
       |> json_error(Request.error(Request.not_found("SSE not supported")))
@@ -318,7 +327,7 @@ defmodule Phantom.Plug do
                       state_acc = stream_fun.(state_acc, error[:id], "message", error)
                       {state_acc, exceptions_acc}
 
-                    _ ->
+                    _response ->
                       error = Request.error(request.id, Request.internal_error())
                       state_acc = stream_fun.(state_acc, error[:id], "message", error)
                       {state_acc, exceptions_acc}
@@ -438,9 +447,19 @@ defmodule Phantom.Plug do
       :exit, :shutdown -> conn
       :exit, {:shutdown, _} -> conn
     after
+      untrack(conn, opts)
+
       # Bandit re-uses the same process for new requests,
       # therefore we need to unregister manually and clear
       # any pending messages from the inbox
+      clear_inbox()
+      send(self(), {:plug_conn, :sent})
+      disconnect(conn)
+    end
+  end
+
+  if Code.ensure_loaded?(Phoenix.Tracker) do
+    defp untrack(conn, opts) do
       if conn.method == "GET" and opts.pubsub do
         Phoenix.Tracker.untrack(
           Phantom.Tracker,
@@ -449,11 +468,9 @@ defmodule Phantom.Plug do
           conn.private.phantom.session.id
         )
       end
-
-      clear_inbox()
-      send(self(), {:plug_conn, :sent})
-      disconnect(conn)
     end
+  else
+    defp untrack(_conn, _opts), do: :ok
   end
 
   defp clear_inbox do
@@ -488,10 +505,8 @@ defmodule Phantom.Plug do
     end
   end
 
-  defp valid_origin?(nil, %{validate_origin: false}), do: true
-  defp valid_origin?(nil, _opts), do: false
-
   defp valid_origin?(_origin, %{validate_origin: false}), do: true
+  defp valid_origin?(nil, _opts), do: false
 
   defp valid_origin?(origin, opts) do
     case opts[:origins] do
@@ -563,9 +578,15 @@ defmodule Phantom.Plug do
       )
     end
 
-    raise Phantom.ErrorWrapper.new(
-            "Exceptions while processing MCP requests",
-            exceptions
-          )
+    case exceptions do
+      [{_, exception, stacktrace}] ->
+        reraise exception, stacktrace
+
+      exceptions ->
+        raise Phantom.ErrorWrapper.new(
+                "Exceptions while processing MCP requests",
+                exceptions
+              )
+    end
   end
 end

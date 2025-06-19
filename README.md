@@ -14,7 +14,7 @@ This library provides a complete implementation of the [MCP server specification
 Add Phantom to your dependencies:
 
 ```elixir
-  {:phantom_mcp, "~> 0.1.1"},
+  {:phantom_mcp, "~> 0.2.0"},
 ```
 
 Configure MIME to accept SSE
@@ -81,7 +81,7 @@ In your MCP Router, define the available tooling (prompts, resources, tools) and
 optional connect and close callbacks.
 
 ```elixir
-defmodule MyApp.MCPRouter do
+defmodule MyApp.MCP.Router do
   use Phantom.Router,
     name: "MyApp",
     vsn: "1.0"
@@ -115,7 +115,6 @@ defmodule MyApp.MCPRouter do
   in the study.
   """
   prompt :suggest_questions, MyApp.MCP,
-    description: @description,
     completion_function: :study_id_complete,
     arguments: [
       %{
@@ -182,67 +181,78 @@ depending on authorization rules by supplying an allow list of names:
     end
   end
 
+  defp limit_for_plan(session, :ultra), do: session
   defp limit_for_plan(session, :basic) do
     # allow-list tools by name
     %{session |
-      resources: ~w[study],
-      tools: ~w[create_question]}
+      allowed_resources_templates: ~w[study],
+      allowed_tools: ~w[create_question]}
   end
-
-  defp limit_for_plan(session, :ultra), do: session
 ```
 
 Implement handlers that resemble a GenServer behaviour. Each handler function
-will receive three arguments:
+will generally receive two arguments:
 
 1. the params of the request
-2. the request
-3. the session
+2. the session
 
 ```elixir
 defmodule MyApp.MCP do
   alias MyApp.Repo
   alias MyApp.Study
 
-  import MyApp.MCPRouter, only: [resource_for: 3], warn: false
+  import MyApp.MCP.Router, only: [read_resource: 3], warn: false
 
-  def suggest_questions(%{"study_id" => study_id} = _params, _request, session) do
-    case Repo.get(Study, study_id) do
-      {:reply, %{
-        role: :assistant,
-        # Can be "text", "audio", "image", or "resource"
-        type: "text",
-        # When referencing a resource, supply a `resource: data`
-        # You can use the imported `resource_for` helper that will
-        # construct a response object pointing to the resource.
-        # `resource: resource_for(session, :study, id: study.id)`
-        #
-        # For binary, supply  `data: binary`
-        #
-        # Below is an example of text content:
-        text: "How was your day?",
-        # mime_type can be supplied here, or the default mime_type
-        # defined along with the prompt will be used.
-        mime_type: "text/plain"
-      }, session}
-      _ ->
-       {:error, "not found"}
+  def list_resources(cursor, session) do
+    # You are still responsible for limiting allowed resources
+    cursor =
+      if cursor do
+        {:ok, cursor} = Phoenix.Token.verify(Test.Endpoint, @salt, cursor)
+        cursor
+      else
+        0
+      end
+
+    {_before_cursor, after_cursor} = Enum.split_while(1..1000, fn i -> i < cursor end)
+    {page, [next | _drop]} = Enum.split(after_cursor, 100)
+    next_cursor = Phoenix.Token.sign(Test.Endpoint, @salt, next)
+
+    resource_links =
+      Enum.map(page, fn i ->
+        {:ok, uri, spec} = resource_for(session, :text_resource, id: i)
+        Resource.resource_link(uri, spec, name: "Resource #{i}")
+      end)
+
+    {:reply, %{nextCursor: next_cursor, resources: resource_links}, session}
+  end
+
+  def suggest_questions(%{"study_id" => study_id} = _params, session) do
+    case read_resource(session, :text_resource, id: 321) do
+      {:ok, uri, resource} ->
+        {:reply,
+         Phantom.Prompt.response(
+           assistant: Phantom.Prompt.embedded_resource(uri, resource),
+           user: Phantom.Prompt.text("Wowzers")
+         ), session}
+
+      error ->
+        {:error, nil, session}
     end
   end
 
-  def study(%{"study_id" => id} = params, _request, session) do
+  def study(%{"study_id" => id} = params, session) do
     study = Repo.get(Study, id)
     text = Study.to_markdown(study)
-    # Must return a map with a `:text` key or
-    # a `:binary` key with binary data which will be base64-encoded by Phantom
-    {:reply, %{text: text}, session}
+    # Use the `Phantom.Resource.text` or `Phantom.Resource.blob` helpers
+    {:reply, Phantom.Resource.text(text), session}
   end
 
-  def study_cover(%{"study_id" => id} = params, _request, session) do
+  def study_cover(%{"study_id" => id} = params, session) do
     study = Repo.get(Study, id)
     binary = File.read!(study.cover.file)
     # The binary will be base64-encoded by Phantom
-    {:reply, %{binary: binary}, session}
+    # The default mimetype will also be returned if not specified
+    {:reply, Phantom.Resource.blob(binary), session}
   end
 
   import Ecto.Query
@@ -263,13 +273,13 @@ defmodule MyApp.MCP do
     {:reply, study_ids, session}
   end
 
-  def create_question(params, request, session) do
+  def create_question(params, session) do
     %{"study_id" => study_id, "label" => label, "description" => description} = params
 
     # For illustrative purposes, we'll make this one async
     # Please be mindful that any task that doesn't return within
     # the configured `session_timeout` will be dropped.
-    request_id = request.id
+    request_id = session.request.id
     pid = session.pid
 
     Task.async(fn ->
@@ -279,20 +289,14 @@ defmodule MyApp.MCP do
           Phantom.Session.respond(
             pid,
             request_id,
-            Phantom.Tool.reponse(%{
-              mime_type: "text/markdown",
-              type: :text,
-              text: Study.Question.to_markdown(question)
-            }))
+            Phantom.Tool.text(Study.Question.to_markdown(question))
+          )
         _ ->
           Phantom.Session.respond(
             pid,
             request_id,
-            Phantom.Tool.response(%{
-              type: :text,
-              text: "Could not create",
-              error: true
-            }))
+            Phantom.Tool.error("Could not create")
+          )
       end
     end)
 
@@ -303,14 +307,15 @@ end
 
 Phantom will implement these MCP requests on your behalf:
 
-- `initialize` accessible in the `connect/2` callback
+- `initialize`
 - `prompts/list` which will list either the allowed prompts in the `connect/2` callback, or all prompts by default
 - `prompts/get` which will dispatch the request to your handler
-- `resources/list` which will list either the provided resources in the `connect/2` callback, or all resources by default
-- `resources/get` which will dispatch the request to your handler
-- `logging/setLevel` only if `pubsub` is provided. Logs can be sent to client
-with `Session.log_{level}(session, map_content)`. [See docs](https://modelcontextprotocol.io/specification/2025-03-26/server/utilities/logging#log-levels). Logs are only sent if the client has initiated an SSE stream.
+- `resources/list` which will dispatch to your MCP router. By default it will be an empty list until you implement it.
 - `resource/templates/list` which will list available as defined in the router.
+- `resources/read` which will dispatch the request to your handler.
+- `resources/subscribe` only if `pubsub` is provided. The session will subscribe to the `Phantom.Session.resource_subscription_topic()` for the shapes `{:resource_updated, uri}` and `{:resource_updated, name, path_params}`. Upon receiving the update, a notification will be sent to the client.
+- `logging/setLevel` only if `pubsub` is provided. Logs can be sent to client
+  with `Session.log_{level}(session, map_content)`. [See docs](https://modelcontextprotocol.io/specification/2025-03-26/server/utilities/logging#log-levels). Logs are only sent if the client has initiated an SSE stream.
 - `tools/list` which will list either the provided tools in the `connect/2` callback, or all tools by default
 - `tools/call` which will dispatch the request to your handler
 - `completion/complete` which will dispatch the request to your completion handler for the given prompt or resource.
@@ -331,14 +336,16 @@ Phoenix.Tracker (`phoenix_pubsub`) to do this.
 
 MCP will typically have multiple connections to facilitate requests:
 
-  1. `POST` for every command, such as `tools/call` or `resources/read`
-  2. `GET` to start an SSE stream for any events such as logs and notifications.
+1. `POST` for every command, such as `tools/call` or `resources/read`
+2. `GET` to start an SSE stream for any events such as logs and notifications.
 
 If the client has not initiated the `GET` SSE stream, then the features will
 not be available for that client.
 
 Each `POST` also opens an SSE stream, but immediately closes the connection
 once work has completed.
+
+To make Phantom distributed, start the `Phantom.Tracker` and pass in your pubsub server to the `Phantom.Plug`:
 
 ```elixir
 # Add to your application supervision tree:
@@ -349,13 +356,13 @@ once work has completed.
 # Adjust the Phoenix router options to include the PubSub server
 
 forward "/", Phantom.Plug,
-  router: MyApp.MCPRouter,
+  router: MyApp.MCP.Router,
   pubsub: MyApp.PubSub
 
 # or the equivalent Plug.Router options:
 
 forward "/mcp", to: Phantom.Plug, init_opts: [
-  router: MyApp.MCPRouter,
+  router: MyApp.MCP.Router,
   pubsub: MyApp.PubSub
 ]
 ```

@@ -1,6 +1,6 @@
 defmodule Phantom.Request do
   @moduledoc false
-  defstruct [:id, :type, :method, :params, :response]
+  defstruct [:id, :type, :method, :params, :response, :spec]
 
   @connection -32000
   @resource_not_found -32002
@@ -11,6 +11,7 @@ defmodule Phantom.Request do
   @parse_error -32700
 
   import Phantom.Utils
+  alias Phantom.Session
 
   def invalid(message \\ nil) do
     %{code: @invalid_request, message: message || "Invalid request"}
@@ -53,8 +54,12 @@ defmodule Phantom.Request do
     {:error, struct!(__MODULE__, id: request["id"], response: error(request["id"], invalid()))}
   end
 
-  def empty(%__MODULE__{} = request, type) do
-    %{request | type: type, response: ""}
+  def ping() do
+    %{jsonrpc: "2.0", method: "ping", id: UUIDv7.generate()}
+  end
+
+  def empty() do
+    %{jsonrpc: "2.0", result: ""}
   end
 
   def result(%__MODULE__{} = request, type, result) do
@@ -63,7 +68,6 @@ defmodule Phantom.Request do
 
   def error(id \\ nil, error) do
     %{jsonrpc: "2.0", error: error, id: id}
-    # if id, do: Map.put(body, :id, id), else: body
   end
 
   @doc false
@@ -79,37 +83,75 @@ defmodule Phantom.Request do
     {:noreply, session}
   end
 
-  @doc false
-  def tool_response({:reply, results, session}, _session) do
-    {:reply, Phantom.Tool.response(results), session}
+  def completion_response(results) when is_list(results) do
+    %{
+      completion: %{
+        values: Enum.take(List.wrap(results), 100),
+        hasMore: length(results) > 100
+      }
+    }
   end
 
-  def tool_response({:error, reason}, session), do: {:error, reason, session}
-  def tool_response(other, _session), do: other
-
-  @doc false
-  def prompt_response({:reply, results, session}, prompt, _session) do
-    {:reply, Phantom.Prompt.response(results, prompt), session}
+  def completion_response(%{} = results) do
+    %{
+      completion:
+        remove_nils(%{
+          values: Enum.take(List.wrap(results[:values]), 100),
+          total: results[:total],
+          hasMore: results[:has_more] || false
+        })
+    }
   end
 
-  def prompt_response({:error, error}, _prompt, session), do: {:error, error, session}
-  def prompt_response(other, _prompt, _session), do: other
-
-  def resource_response(nil, uri, _resource_template, session) do
-    {:error, resource_not_found(%{uri: uri}), session}
-  end
-
-  def resource_response({:error, reason}, _uri, _resource_template, session) do
+  def resource_response({:error, reason}, _uri, session) do
     {:error, reason, session}
   end
 
-  def resource_response({:reply, results, session}, uri, resource_template, _session) do
-    {:reply, Phantom.ResourceTemplate.response(results, resource_template, uri), session}
+  def resource_response({:noreply, _} = result, _uri, _session), do: result
+
+  def resource_response({:error, _reason, %Session{}} = result, _uri, _session) do
+    result
   end
 
-  def resource_response(other, _uri, _session), do: other
+  def resource_response(nil, uri, session) do
+    {:error, resource_not_found(%{uri: uri}), session}
+  end
+
+  def resource_response({:reply, nil, %Session{} = session}, uri, _session) do
+    {:error, resource_not_found(%{uri: uri}), session}
+  end
+
+  def resource_response({:reply, results, %Session{} = session}, _uri, _session) do
+    {:reply, Phantom.Resource.response(results), session}
+  end
+
+  def resource_updated(content) do
+    %{jsonrpc: "2.0", method: "notifications/resources/updated", params: content}
+  end
+
+  @doc false
+  def wrap_error({:error, error}, session), do: {:error, error, session}
+
+  def wrap_error({:noreply, %Session{}} = result, _session), do: result
+
+  def wrap_error({signal, _, %Session{}} = result, _session)
+      when signal in ~w[reply error]a,
+      do: result
 
   def notify(content) do
     %{jsonrpc: "2.0", method: "notifications/message", params: content}
+  end
+
+  def notify_progress(progress_token, progress, total) do
+    %{
+      jsonrpc: "2.0",
+      method: "notifications/progress",
+      params:
+        remove_nils(%{
+          progressToken: progress_token,
+          progress: progress,
+          total: total
+        })
+    }
   end
 end
