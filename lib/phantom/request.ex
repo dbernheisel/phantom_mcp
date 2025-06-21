@@ -129,15 +129,6 @@ defmodule Phantom.Request do
     %{jsonrpc: "2.0", method: "notifications/resources/updated", params: content}
   end
 
-  @doc false
-  def wrap_error({:error, error}, session), do: {:error, error, session}
-
-  def wrap_error({:noreply, %Session{}} = result, _session), do: result
-
-  def wrap_error({signal, _, %Session{}} = result, _session)
-      when signal in ~w[reply error]a,
-      do: result
-
   def notify(content) do
     %{jsonrpc: "2.0", method: "notifications/message", params: content}
   end

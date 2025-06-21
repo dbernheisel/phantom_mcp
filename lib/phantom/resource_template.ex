@@ -53,6 +53,11 @@ defmodule Phantom.ResourceTemplate do
         }
 
   @spec build(map() | Keyword.t()) :: t()
+  @doc """
+  Build a resource_template spec
+
+  The `Phantom.Router.resource/3` macro will build these specs.
+  """
   def build(attrs) do
     attrs = Map.new(attrs)
     uri_template = "#{attrs.scheme}://#{to_uri_6570(attrs.path)}"
@@ -60,6 +65,9 @@ defmodule Phantom.ResourceTemplate do
   end
 
   @spec to_json(t()) :: json()
+  @doc """
+  Represent a ResourceTemplate spec as json when listing the available resources to clients.
+  """
   def to_json(%__MODULE__{} = resource) do
     remove_nils(%{
       uriTemplate: resource.uri_template,

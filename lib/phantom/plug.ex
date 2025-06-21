@@ -8,45 +8,68 @@ defmodule Phantom.Plug do
   ]
 
   @moduledoc """
-   Main Plug implementation for MCP HTTP transport with SSE support.
+  Main Plug implementation for MCP HTTP transport with SSE support.
 
-   This module provides a complete MCP server implementation with:
-   - JSON-RPC 2.0 message handling
-   - Server-Sent Events (SSE) streaming
-   - CORS handling and security features
-   - Session management integration
-   - Origin validation
+  This module provides a complete MCP server implementation with:
+  - JSON-RPC 2.0 message handling
+  - Server-Sent Events (SSE) streaming
+  - CORS handling and security features
+  - Session management integration
+  - Origin validation
 
-   In your Phoenix router where you can accept JSON:
+  <!-- tabs-open -->
 
-        pipeline :mcp do
-          plug :accepts, ["json"]
-        end
+  ### Phoenix
 
-        scope "/mcp" do
-          pipe_through :mcp
+  ```elixir
+  defmodule MyAppWeb.Router do
+    use MyAppWeb, :router
+    # ...
 
-          forward "/", Phantom.Plug,
-            router: Test.MCP.Router,
-            validate_origin: false
-        end
+    pipeline :mcp do
+      plug :accepts, ["json", "sse"]
 
-    For in your Plug Router after you parse the body:
+      plug Plug.Parsers,
+        parsers: [{:json, length: 1_000_000}],
+        pass: ["application/json"],
+        json_decoder: JSON
+    end
 
-        use Plug.Router
-        plug :match
-        plug Plug.Parsers,
-          parsers: [{:json, length: 1_000_000}],
-          pass: ["application/json"],
-          json_decoder: JSON
-        plug :dispatch
+    scope "/mcp" do
+      pipe_through :mcp
 
-        forward "/mcp",
-          to: Phantom.Plug,
-          init_opts: [
-            validate_origin: false,
-            router: Test.MCP.Router
-          ]
+      forward "/", Phantom.Plug,
+        router: MyApp.MCPRouter,
+        pubsub: MyApp.PubSub
+    end
+  end
+  ```
+
+  ### Plug.Router
+
+  ```elixir
+  defmodule MyAppWeb.Router do
+    use Plug.Router
+
+    plug :match
+
+    plug Plug.Parsers,
+        parsers: [{:json, length: 1_000_000}],
+        pass: ["application/json"],
+        json_decoder: JSON
+
+    plug :dispatch
+
+    forward "/mcp",
+        to: Phantom.Plug,
+        init_opts: [
+          router: MyApp.MCP.Router,
+          pubsub: MyApp.PubSub
+        ]
+  end
+  ```
+
+  <!-- tabs-close -->
 
   Here are the defaults:
 
@@ -146,6 +169,28 @@ defmodule Phantom.Plug do
           )
 
           put_in(conn.private.phantom.session, session)
+
+        {unauthorized, www_authenticate}
+        when unauthorized in [401, :unauthorized] and
+               is_map(www_authenticate) ->
+          conn
+          |> put_status(401)
+          |> put_resp_header("WWW-Authenticate", www_authenticate(www_authenticate))
+          |> json_error(Request.error(Request.closed("Unauthorized")))
+
+        {unauthorized, www_authenticate}
+        when unauthorized in [401, :unauthorized] and
+               is_binary(www_authenticate) ->
+          conn
+          |> put_status(401)
+          |> put_resp_header("WWW-Authenticate", www_authenticate)
+          |> json_error(Request.error(Request.closed("Unauthorized")))
+
+        {forbidden, message}
+        when forbidden in [403, :forbidden] and is_binary(message) ->
+          conn
+          |> put_status(403)
+          |> json_error(Request.error(Request.closed(message)))
 
         {:error, error} when is_map(error) ->
           json_error(conn, Request.error(Request.closed(JSON.encode!(error))))
@@ -588,5 +633,39 @@ defmodule Phantom.Plug do
                 exceptions
               )
     end
+  end
+
+  @doc """
+  Construct a WWW-Authenticate header as defined by RFC 9728 from the map.
+
+  This requires the map to contain a `:method` to indicate acceptable authentication
+  methods, typically `"Bearer"`, and then rest of the attributes will be serialized
+  into the header as key=value.
+
+  For example,
+
+      iex> Phantom.Plug.www_authenticate(%{
+      ...>   method: "Bearer",
+      ...>   resource_metadata: "https://myapp.com/.well-known/oauth-protected-resource",
+      ...>   max_age: 42000
+      ...> })
+      ~s|Bearer max_age="42000", resource_metadata="https://myapp.com/.well-known/oauth-protected-resource"|
+
+  https://datatracker.ietf.org/doc/html/rfc9728#name-use-of-www-authenticate-for
+  """
+  @type www_authenticate :: %{
+          required(:method) => String.t(),
+          optional(String.t() | atom()) => atom() | String.t()
+        }
+  def www_authenticate(info) do
+    info = Map.new(info)
+    {method, info} = Map.pop(info, :method)
+
+    info =
+      Enum.map_join(info, ", ", fn {key, value} ->
+        "#{key}=#{inspect(to_string(value))}"
+      end)
+
+    "#{method} #{info}"
   end
 end

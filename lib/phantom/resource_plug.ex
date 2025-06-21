@@ -13,12 +13,17 @@ defmodule Phantom.ResourcePlug do
 
   @impl Plug
   def call(fake_conn, _opts) do
+    session = %{
+      fake_conn.assigns.session
+      | request: %{fake_conn.assigns.session.request | spec: fake_conn.assigns.resource_template}
+    }
+
     result =
       try do
         apply(
           fake_conn.assigns.resource_template.handler,
           fake_conn.assigns.resource_template.function,
-          [fake_conn.path_params, fake_conn.assigns.session]
+          [fake_conn.path_params, session]
         )
       rescue
         _e in FunctionClauseError ->
@@ -54,6 +59,8 @@ defmodule Phantom.ResourcePlug do
   end
 
   defmodule NotFound do
+    @moduledoc false
+
     @behaviour Plug
     import Plug.Conn
 

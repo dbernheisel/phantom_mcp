@@ -42,7 +42,7 @@ defmodule Test.MCP.Router do
         Resource.resource_link(uri, spec, name: "Resource #{i}")
       end)
 
-    {:reply, %{nextCursor: next_cursor, resources: resource_links}, session}
+    {:reply, Resource.list(resource_links, next_cursor), session}
   end
 
   tool :explode_tool, description: "Always throws an exception"

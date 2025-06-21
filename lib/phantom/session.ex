@@ -49,12 +49,33 @@ defmodule Phantom.Session do
         }
 
   @resource_subscription "phantom:resources"
-  @doc "The PubSub topic Phantom will listen to for resource updates"
+  @doc "The PubSub topic Phantom will listen to for resource updates #{inspect(@resource_subscription)}"
   def resource_subscription_topic, do: @resource_subscription
 
   @spec new(String.t() | nil, Keyword.t() | map) :: t()
+  @doc """
+  Builds a new session with the provided session ID.
+
+  This is used for adapters such as `Phantom.Plug`. If a
+  session ID is not provided, it will generate one using `UUIDv7`.
+  """
   def new(session_id, opts \\ []) do
     struct!(__MODULE__, [id: session_id || UUIDv7.generate()] ++ opts)
+  end
+
+  @doc "Set an allow-list of usable Tools for the session"
+  def allow_tools(%__MODULE__{} = session, tools) do
+    %{session | allowed_tools: tools}
+  end
+
+  @doc "Set an allow-list of usable Resource Templates for the session"
+  def allow_resource_templates(%__MODULE__{} = session, resource_templates) do
+    %{session | allowed_resource_templates: resource_templates}
+  end
+
+  @doc "Set an allow-list of usable Prompts for the session"
+  def allow_prompts(%__MODULE__{} = session, prompts) do
+    %{session | allowed_prompts: prompts}
   end
 
   @doc "Fetch the current progress token if provided by the client"
@@ -62,13 +83,13 @@ defmodule Phantom.Session do
     params["_meta"]["progressToken"]
   end
 
-  @doc "List all session with SSE streams open."
+  @doc "List all sessions with SSE streams open."
   if Code.ensure_loaded?(Phoenix.Tracker) do
-    def list do
+    def list_sse do
       Phoenix.Tracker.list(Phantom.Tracker, "sessions")
     end
   else
-    def list, do: []
+    def list_sse, do: []
   end
 
   @doc "Get the PID of the SSE stream for the session id"
@@ -95,7 +116,11 @@ defmodule Phantom.Session do
     %{session | assigns: Map.merge(session.assigns, Map.new(map))}
   end
 
-  @doc "Subscribe the session to a resource"
+  @doc """
+  Subscribe the session to a resource.
+
+  This is used by the MCP Router when the client requests to subscribe to the provided resource.
+  """
   @spec subscribe_to_resource(t(), string_uri :: String.t()) :: :ok | :error
   def subscribe_to_resource(%__MODULE__{pubsub: nil}, _uri), do: :error
 
@@ -118,41 +143,42 @@ defmodule Phantom.Session do
     end
   end
 
-  @doc "Closes the SSE stream for the session"
+  @doc "Closes the connection for the session"
   @spec finish(Session.t()) :: :ok
   def finish(%__MODULE__{pid: pid}), do: finish(pid)
   def finish(pid) when is_pid(pid), do: GenServer.cast(pid, :finish)
 
   @doc """
-  Sends response back to the SSE stream
+  Sends response back to the stream
 
   This should likely be used in conjunction with:
 
-    - `Phantom.Tool.{audio|text|image|...}`
-    - `Phantom.Resource.response(payload)`
-    - `Phantom.Prompt.response(payload)`
+  - `Phantom.Tool.response(payload)`
+  - `Phantom.Resource.response(payload)`
+  - `Phantom.Prompt.response(payload)`
 
   For example:
 
-     ```elixir
-     session_pid = session.pid
-     request_id = request.id
+  ```elixir
+  session_pid = session.pid
+  request_id = request.id
 
-     Task.async(fn ->
-      Session.respond(
-        session_pid,
-        request_id,
-        Phantom.Tool.audio(
-          File.read!("priv/static/game-over.wav"),
-          mime_type: "audio/wav"
-        )
+  Task.async(fn ->
+    Session.respond(
+      session_pid,
+      request_id,
+      Phantom.Tool.audio(
+        File.read!("priv/static/game-over.wav"),
+        mime_type: "audio/wav"
       )
-     end)
-     ```
+    )
+  end)
+  ```
   """
   def respond(%__MODULE__{pid: pid, request: %{id: request_id}}, payload),
     do: respond(pid, request_id, payload)
 
+  @doc "See `respond/2`"
   def respond(%__MODULE__{pid: pid}, request_id, payload), do: respond(pid, request_id, payload)
   def respond(pid, %Request{id: id}, payload), do: respond(pid, id, payload)
 
@@ -168,10 +194,7 @@ defmodule Phantom.Session do
     )
   end
 
-  def resource_respond(session, request_id, payload) do
-    respond(session, request_id, Phantom.Resource.response(payload))
-  end
-
+  @doc "Send a notification to the client"
   def notify(%__MODULE__{pid: pid}, payload), do: notify(pid, payload)
 
   def notify(pid, payload) when is_pid(pid) do
@@ -219,7 +242,7 @@ defmodule Phantom.Session do
 
     @doc """
     Notify the client with a log at level \"#{name}\" with domain "server".
-    Note: this requires the `session` variable to be wihtin scope
+    Note: this requires the `session` variable to be within scope
     """
     @spec unquote(:"log_#{name}")(structured_log :: map()) :: :ok
     defmacro unquote(:"log_#{name}")(payload) do
@@ -248,9 +271,11 @@ defmodule Phantom.Session do
     end
   end
 
+  @doc "Send a ping to the client"
   def ping(%__MODULE__{pid: pid}), do: ping(pid)
   def ping(pid) when is_pid(pid), do: GenServer.cast(pid, :ping)
 
+  @doc "Send a progress notification to the client"
   def notify_progress(session, progress, total \\ nil)
 
   def notify_progress(%__MODULE__{pid: pid} = session, progress, total) do

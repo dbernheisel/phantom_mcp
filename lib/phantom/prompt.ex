@@ -61,7 +61,7 @@ defmodule Phantom.Prompt do
 
   @type embedded_resource_content :: %{
           type: :resource,
-          resource: Phantom.ResourceTemplate.resource()
+          resource: Phantom.Resource.response()
         }
   @type message :: %{
           role: :assistant | :user,
@@ -78,6 +78,11 @@ defmodule Phantom.Prompt do
         }
 
   @spec build(map() | Keyword.t()) :: t()
+  @doc """
+  Build a prompt spec
+
+  The `Phantom.Router.prompt/3` macro will build these specs.
+  """
   def build(attrs) do
     attrs =
       attrs
@@ -91,6 +96,9 @@ defmodule Phantom.Prompt do
   end
 
   @spec to_json(t()) :: json()
+  @doc """
+  Represent a Prompt spec as json when listing the available prompts to clients.
+  """
   def to_json(%__MODULE__{} = prompt) do
     remove_nils(%{
       name: prompt.name,
@@ -108,14 +116,18 @@ defmodule Phantom.Prompt do
   For example:
 
       require Phantom.Prompt, as: Prompt
+      {:ok, uri, resource} = MyApp.MCP.Router.read_resource(session, :my_resource, 123)
+
       Prompt.response([
         assistant: Prompt.audio(File.read!("foo.wav"), "audio/wav"),
         user: Prompt.text("Wow that was interesting"),
         assistant: Prompt.image(File.read!("bar.png"), "image/png"),
         user: Prompt.text("amazing"),
-        assistant: Prompt.resource("myapp://foo/123")
-      ], prompt)
+        assistant: Prompt.embedded_resource(uri, resource)
+      ])
   """
+
+  defmacro response(%{messages: _} = response), do: response
 
   defmacro response(messages) when is_list(messages) do
     if not Macro.Env.has_var?(__CALLER__, {:session, nil}) do
@@ -128,6 +140,15 @@ defmodule Phantom.Prompt do
     end
   end
 
+  def response(%{messages: _} = response, _prompt), do: response
+
+  @doc """
+  Construct a prompt response with the provided messages for the given prompt
+
+  See `response/1` macro version that do the same thing but will fetch the
+  prompt spec from the current session.
+  """
+  @spec response([message()], Phantom.Prompt.t()) :: response()
   def response(messages, prompt) when is_list(messages) do
     %{
       description: prompt.description,
@@ -139,16 +160,29 @@ defmodule Phantom.Prompt do
   end
 
   @spec text(String.t()) :: text_content()
+  @doc """
+  Build a text message for the prompt
+  """
   def text(data), do: %{type: "text", text: data || ""}
 
   @spec audio(binary(), String.t()) :: audio_content()
+  @doc """
+  Build an audio message for the prompt
+
+  The provided binary will be base64-encoded.
+  """
   def audio(data, mime_type) do
     %{type: "audio", data: Base.encode64(data || <<>>), mimeType: mime_type}
   end
 
   @spec image(binary(), String.t()) :: image_content()
-  def image(data, mime_type) do
-    %{type: "image", data: Base.encode64(data || <<>>), mimeType: mime_type}
+  @doc """
+  Build an image message for the prompt
+
+  The provided binary will be base64-encoded.
+  """
+  def image(binary, mime_type) do
+    %{type: "image", data: Base.encode64(binary || <<>>), mimeType: mime_type}
   end
 
   @spec embedded_resource(string_uri :: String.t(), map()) :: embedded_resource_content()

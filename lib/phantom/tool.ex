@@ -128,6 +128,11 @@ defmodule Phantom.Tool do
           | embedded_resource_response()
           | resource_link_response()
 
+  @doc """
+  Build a tool spec
+
+  The `Phantom.Router.tool/3` macro will build these specs.
+  """
   def build(attrs) do
     attrs = Map.new(attrs)
 
@@ -142,6 +147,9 @@ defmodule Phantom.Tool do
     }
   end
 
+  @doc """
+  Represent a Tool spec as json when listing the available tools to clients.
+  """
   def to_json(%__MODULE__{} = tool) do
     remove_nils(%{
       name: tool.name,
@@ -171,7 +179,25 @@ defmodule Phantom.Tool do
   end
 
   @spec audio(binary()) :: audio_response()
-  defmacro audio(data, attrs \\ []) do
+  @doc """
+  Tool response as audio content
+
+  The `:mime_type` will be fetched from the current tool within the scope of
+  the request if not provided, but you will need to provide the rest.
+
+  - `binary` - Binary data.
+  - `:mime_type` (optional) MIME type. Defaults to `"application/octet-stream"`
+
+  For example:
+
+      Phantom.Tool.audio(File.read!("game-over.wav"))
+
+      Phantom.Tool.audio(
+        File.read!("game-over.wav"),
+        mime_type: "audio/wav"
+      )
+  """
+  defmacro audio(binary, attrs \\ []) do
     mime_type =
       get_var(
         attrs,
@@ -186,7 +212,7 @@ defmodule Phantom.Tool do
         content: [
           %{
             type: "audio",
-            data: Base.encode64(unquote(data) || <<>>),
+            data: Base.encode64(unquote(binary) || <<>>),
             mimeType: unquote(mime_type)
           }
         ]
@@ -195,7 +221,25 @@ defmodule Phantom.Tool do
   end
 
   @spec image(binary()) :: image_response()
-  defmacro image(data, attrs \\ []) do
+  @doc """
+  Tool response as image content
+
+  The `:mime_type` will be fetched from the current tool within the scope of
+  the request if not provided, but you will need to provide the rest.
+
+  - `binary` - Binary data.
+  - `:mime_type` (optional) MIME type. Defaults to `"application/octet-stream"`
+
+  For example:
+
+      Phantom.Tool.image(File.read!("tower.png"))
+
+      Phantom.Tool.audio(
+        File.read!("tower.png"),
+        mime_type: "image/png"
+      )
+  """
+  defmacro image(binary, attrs \\ []) do
     mime_type =
       get_var(
         attrs,
@@ -210,7 +254,7 @@ defmodule Phantom.Tool do
         content: [
           %{
             type: "image",
-            data: Base.encode64(unquote(data) || <<>>),
+            data: Base.encode64(unquote(binary) || <<>>),
             mimeType: unquote(mime_type)
           }
         ]
@@ -218,10 +262,13 @@ defmodule Phantom.Tool do
     end
   end
 
-  @spec embedded_resource(string_uri :: String.t(), map()) :: embedded_resource_response()
   @doc """
-  Embedded resource reponse.
+  Embedded resource response.
+
+  Typically used with your router's `read_resource/3` function.
+  See `Phantom.Router.read_resource/3` for more information
   """
+  @spec embedded_resource(string_uri :: String.t(), map()) :: embedded_resource_response()
   def embedded_resource(uri, resource) do
     %{
       content: [%{type: :resource, resource: Map.put(resource, :uri, uri)}]
@@ -230,17 +277,27 @@ defmodule Phantom.Tool do
 
   @doc """
   Resource link reponse.
+
+  Typically used with your router's `resource_uri/3` function.
+  See `Phantom.Router.resource_uri/3` for more information.
   """
   @spec resource_link(string_uri :: String.t(), Phantom.ResourceTemplate.t(), map()) ::
           resource_link_response()
-  def resource_link(uri, resource_template, resource \\ %{}) do
-    resource = Map.new(resource)
-    resource_link = Phantom.Resource.resource_link(uri, resource_template, resource)
+  def resource_link(uri, resource_template, resource_attrs \\ %{}) do
+    resource_attrs = Map.new(resource_attrs)
+    resource_link = Phantom.Resource.resource_link(uri, resource_template, resource_attrs)
 
     %{
       content: [
         remove_nils(Map.put(resource_link, :type, :resource_link))
       ]
     }
+  end
+
+  @doc "Formats the response from an MCP Router to the MCP specification"
+  def response(%{content: _} = results), do: results
+
+  def response(results) do
+    %{content: List.wrap(results)}
   end
 end

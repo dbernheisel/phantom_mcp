@@ -45,24 +45,28 @@ defmodule Phantom.Resource do
   @doc """
   Resource as binary content
 
+  The `:uri` and `:mime_type` will be fetched from the current resource template
+  within the scope of the request if not provided, but you will need to provide
+  the rest.
+
   - `blob` - Binary data. This will be base64-encoded by Phantom.
   - `:uri` (required) Unique identifier for the resource
-  - `:name` (Optional) The name of the resource.
-  - `:title` (Optional) human-readable name of the resource for display purposes.
-  - `:description` (Optional) Description
-  - `:mime_type` (Optional) MIME type
-  - `:size` (Optional) Size in bytes
+  - `:name` (optional) The name of the resource.
+  - `:title` (optional) human-readable name of the resource for display purposes.
+  - `:description` (optional) Description
+  - `:mime_type` (optional) MIME type
+  - `:size` (optional) Size in bytes
 
   For example:
 
-      Phantom.ResourceTemplate.blob(
+      Phantom.Resource.blob(
         File.read!("foo.png"),
         uri: "test://my-foos/123",
         mime_type: "image/png"
       )
   """
   @spec blob(binary(), Keyword.t() | map()) :: blob_content()
-  defmacro blob(data, attrs \\ []) do
+  defmacro blob(binary, attrs \\ []) do
     mime_type =
       get_var(attrs, :mime_type, [:spec, :mime_type], __CALLER__, "application/octet-stream")
 
@@ -71,11 +75,11 @@ defmodule Phantom.Resource do
     quote bind_quoted: [
             uri: uri,
             mime_type: mime_type,
-            data: data,
+            binary: binary,
             attrs: Macro.escape(attrs)
           ] do
       remove_nils(%{
-        blob: Base.encode64(data),
+        blob: Base.encode64(binary),
         uri: uri,
         mimeType: mime_type,
         name: attrs[:name],
@@ -88,20 +92,23 @@ defmodule Phantom.Resource do
   @doc """
   Resource as text content
 
-  - `text` - Text data. If a map, then it will be encoded
-  into JSON and `:mime_type` will be set accordingly
+  The `:uri` and `:mime_type` will be fetched from the current resource template
+  within the scope of the request if not provided, but you will need to provide
+  the rest.
+
+  - `text` - Text data. If a map, then it will be encoded into JSON and `:mime_type` will be set accordingly unless provided.
   - `:uri` (required) Unique identifier for the resource
-  - `:name` (Optional) The name of the resource.
-  - `:title` (Optional) human-readable name of the resource for display purposes.
-  - `:description` (Optional) Description
-  - `:mime_type` (Optional) MIME type. Defaults to `"text/plain"`
-  - `:size` (Optional) Size in bytes
+  - `:name` (optional) The name of the resource.
+  - `:title` (optional) human-readable name of the resource for display purposes.
+  - `:description` (optional) Description
+  - `:mime_type` (optional) MIME type. Defaults to `"text/plain"`
+  - `:size` (optional) Size in bytes
 
   For example:
 
       Phantom.ResourceTemplate.text(
         "## Why hello there",
-        uri: "test://my-foos/123",
+        uri: "test://obi-wan-quotes/hello-there",
         mime_type: "text/markdown"
       )
 
@@ -143,8 +150,16 @@ defmodule Phantom.Resource do
     %{contents: List.wrap(results)}
   end
 
+  @type list_response :: %{nextCursor: String.t() | nil, resources: [resource_link()]}
+  @spec list([resource_link()], cursor :: String.t() | nil) :: list_response()
+  @doc "Formats the response from the MCP Router to the MCP specification for listing resources"
+  def list(resource_links, next_cursor) do
+    %{resources: List.wrap(resource_links), nextCursor: next_cursor}
+  end
+
   @doc """
-  Resource link attributes
+  Formats a resource_template and the provided attributes as a resource link. This is
+  typicaly used when listing resources or when tools embed a resource_link within its result.
   """
   @spec resource_link(string_uri :: String.t(), Phantom.ResourceTemplate.t(), map()) ::
           resource_link()

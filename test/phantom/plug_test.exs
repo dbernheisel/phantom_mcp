@@ -297,7 +297,7 @@ defmodule Phantom.PlugTest do
       |> call()
 
       assert_sse_connected()
-      assert Phantom.Session.list() != []
+      assert Phantom.Session.list_sse() != []
     end
   end
 
