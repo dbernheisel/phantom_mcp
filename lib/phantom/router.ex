@@ -19,6 +19,7 @@ defmodule Phantom.Router do
   import Plug.Router.Utils, only: [build_path_match: 1]
 
   alias Phantom.Request
+  alias Phantom.Resource
   alias Phantom.Session
 
   @callback connect(Session.t(), Plug.Conn.headers()) ::
@@ -38,8 +39,17 @@ defmodule Phantom.Router do
   @callback instructions(Session.t()) :: {:ok, String.t()}
   @callback server_info(Session.t()) ::
               {:ok, %{name: String.t(), version: String.t()}} | {:error, any()}
+  @doc """
+  List resources available to the client.
+
+  This will expect the response to use `Phantom.Resource.list/2` as the result.
+  You may also want to leverage `resource_for/3` and `Phantom.Resource.resource_link/3`
+  to construct the response. See `m:Phantom#module-defining-resources` for an exmaple.
+
+  Remember to check for allowed resources according to `session.allowed_resource_templates`
+  """
   @callback list_resources(String.t() | nil, Session.t()) ::
-              {:reply, Resource.list(), Session.t()}
+              {:reply, Resource.list_response(), Session.t()}
               | {:noreply, Session.t()}
               | {:error, any(), Session.t()}
 
@@ -116,11 +126,21 @@ defmodule Phantom.Router do
             _ -> ""
           end
 
+        session = %{
+          session
+          | client_capabilities: %{
+              roots: params["roots"],
+              sampling: params["sampling"],
+              elicitation: params["elicitation"]
+            }
+        }
+
         with {:ok, protocol_version} <-
                Phantom.Router.validate_protocol(params["protocolVersion"], session) do
           {:reply,
            %{
              protocolVersion: protocol_version,
+             # %{elicitation: %{}}
              capabilities:
                %{}
                |> Phantom.Router.tool_capability(__MODULE__, session)
@@ -245,7 +265,7 @@ defmodule Phantom.Router do
               {:reply, nil, session}
 
             _ ->
-              {:error, Request.resource_not_found(), session}
+              {:error, Request.not_found("SSE stream not open"), session}
           end
         end
       end
@@ -341,6 +361,22 @@ defmodule Phantom.Router do
       def dispatch_method("notification" <> type, _params, _request, session) do
         {:reply, nil, session}
       end
+
+      # if Code.ensure_loaded?(Phoenix.PubSub) do
+      #   def dispatch_method(
+      #         _method,
+      #         _params,
+      #         %{id: request_id, response: %{} = response} = request,
+      #         session
+      #       ) do
+      #     case Phantom.Tracker.pid_for_request(request.id) do
+      #       nil -> :ok
+      #       pid -> GenServer.cast(pid, {:response, request.id, response})
+      #     end
+
+      #     {:reply, nil, session}
+      #   end
+      # end
 
       def dispatch_method(method, _params, request, session) do
         {:error, Request.not_found(), session}

@@ -12,14 +12,14 @@ defmodule Phantom.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       package: package(),
       start_permanent: Mix.env() == :prod,
-      version: "0.2.1",
+      version: "0.2.2",
       source_url: "https://github.com/dbernheisel/phantom_mcp"
     ]
   end
 
   def cli do
     [
-      preferred_envs: [format: :test]
+      preferred_envs: [format: :test, dialyzer: :test]
     ]
   end
 
@@ -40,7 +40,8 @@ defmodule Phantom.MixProject do
       {:uuidv7, "~> 1.0"},
       ## Test
       {:phoenix, "~> 1.7", only: [:test]},
-      {:ex_doc, "~> 0.31", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.31", only: :dev, runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 

@@ -269,7 +269,7 @@ defmodule Phantom.PlugTest do
       assert_receive {:response, 1, "message", %{}}
 
       assert_receive {:response, 2, "message",
-                      %{result: %{content: [%{text: ~S|{"message":"test"}|, type: "text"}]}}}
+                      %{result: %{content: [%{text: "test", type: "text"}]}}}
 
       assert_receive {:response, nil, "closed", "finished"}
     end
@@ -297,7 +297,7 @@ defmodule Phantom.PlugTest do
       |> call()
 
       assert_sse_connected()
-      assert Phantom.Session.list_sse() != []
+      assert Phantom.Session.list_streams() != []
     end
   end
 
@@ -319,7 +319,7 @@ defmodule Phantom.PlugTest do
                    }
                  }
                },
-               %{role: :user, content: %{type: "text", text: "Wowzers"}}
+               %{role: :user, content: %{type: :text, text: "Wowzers"}}
              ]
            } = response[:result]
   end
@@ -343,7 +343,7 @@ defmodule Phantom.PlugTest do
                    }
                  }
                },
-               %{role: :user, content: %{type: "text", text: "Wowzers"}}
+               %{role: :user, content: %{type: :text, text: "Wowzers"}}
              ]
            } = response[:result]
 

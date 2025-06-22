@@ -49,6 +49,7 @@ defmodule Test.MCP.Router do
   tool :binary_tool, mime_type: "image/png", description: "A binary tool"
   tool :audio_tool, description: "An audio tool"
   tool :with_error_tool, description: "A test tool with an error"
+  tool :elicit_tool, description: "A tool that always needs info"
 
   tool :async_embedded_resource_tool, AsyncModule,
     description: "An asyncronous embedded resource tool"
@@ -148,7 +149,54 @@ defmodule Test.MCP.Router do
   def explode_tool(_params, _session), do: raise("boom")
 
   def echo_tool(params, session) do
-    {:reply, Phantom.Tool.text(%{message: params["message"] || ""}), session}
+    {:reply, Phantom.Tool.text(params["message"] || ""), session}
+  end
+
+  @elicit_name Phantom.Elicit.build(%{
+                 message: "What is your info?",
+                 requested_schema: [
+                   %{
+                     type: :string,
+                     name: "name",
+                     required: true,
+                     title: "Your name",
+                     description: "for real"
+                   },
+                   %{
+                     type: :string,
+                     name: "email",
+                     required: true,
+                     title: "Your email",
+                     description: "for realisies",
+                     pattern: Regex.source(~r/^[^@]+@[^@]+\.[^@]+$/),
+                     format: :email
+                   }
+                 ]
+               })
+  def elicit_tool(_params, session) do
+    with {:ok, request_id} <- Session.elicit(session, @elicit_name),
+         {:ok, response} <- await_elicitation(request_id) do
+      case response["name"] do
+        :error -> {:reply, Phantom.Request.invalid_params("Did not receive name"), session}
+        name -> {:reply, Tool.text(%{hello: "my name is #{name}"}), session}
+      end
+    else
+      :not_supported ->
+        {:reply, Tool.text(%{hello: "my name is Joe Schmoe"}), session}
+    end
+  end
+
+  defp await_elicitation(request_id) do
+    receive do
+      {:response, ^request_id, response} ->
+        if response["action"] == "accept" do
+          {:ok, response["content"]}
+        else
+          :error
+        end
+    after
+      10_000 -> :error
+    end
   end
 
   def structured_echo_tool(params, session) do

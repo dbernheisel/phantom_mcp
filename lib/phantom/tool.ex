@@ -66,8 +66,8 @@ defmodule Phantom.Tool do
   @type json :: %{
           required(:name) => String.t(),
           required(:description) => String.t(),
-          required(:inputSchema) => InputSchema.json(),
-          optional(:outputSchema) => OutputSchema.json(),
+          required(:inputSchema) => JSONSchema.json(),
+          optional(:outputSchema) => JSONSchema.json(),
           optional(:annotations) => Annotation.json()
         }
 

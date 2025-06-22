@@ -19,6 +19,6 @@ defmodule Test.PlugRouter do
     ]
 
   match _ do
-    send_resp(conn, "Not found", 404)
+    send_resp(conn, 404, "Not found")
   end
 end

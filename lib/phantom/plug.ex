@@ -90,8 +90,6 @@ defmodule Phantom.Plug do
 
   import Plug.Conn
 
-  require Logger
-
   alias Phantom.Request
   alias Phantom.Session
 
@@ -262,24 +260,32 @@ defmodule Phantom.Plug do
     """
   end
 
-  if Code.ensure_loaded?(Phoenix.Tracker) do
-    defp dispatch(%Plug.Conn{method: "GET"} = conn, opts) do
-      if opts.pubsub do
-        session = conn.private.phantom.session
-        Phoenix.Tracker.track(Phantom.Tracker, self(), "sessions", session.id, %{})
+  defp dispatch(%Plug.Conn{method: "GET"} = conn, opts) do
+    if opts.pubsub do
+      session = conn.private.phantom.session
+
+      if is_nil(Phantom.Tracker.pid_for_session(session.id)) do
+        Phantom.Tracker.track(self(), "phantom:sessions", session.id, %{})
 
         conn
         |> put_resp_header("mcp-session-id", session.id)
-        |> start_sse_stream(opts)
+        |> put_resp_header("cache-control", "no-cache, no-transform")
+        |> put_resp_content_type("text/event-stream")
+        |> put_resp_header("connection", "keep-alive")
+        |> put_resp_header("x-accel-buffering", "no")
+        |> send_chunked(202)
         |> stream_loop(opts)
       else
         conn
-        |> put_status(405)
-        |> json_error(Request.error(Request.not_found("SSE not supported")))
+        |> put_status(409)
+        |> json_error(
+          Request.error(%{
+            code: -32000,
+            message: "Only one SSE stream is allowed per session"
+          })
+        )
       end
-    end
-  else
-    defp dispatch(%Plug.Conn{method: "GET"} = conn, opts) do
+    else
       conn
       |> put_status(405)
       |> json_error(Request.error(Request.not_found("SSE not supported")))
@@ -292,12 +298,19 @@ defmodule Phantom.Plug do
 
     conn
     |> put_resp_header("mcp-session-id", session.id)
-    |> start_sse_stream(opts)
+    |> put_resp_header("cache-control", "no-cache")
+    |> put_resp_content_type("text/event-stream")
+    |> put_resp_header("connection", "keep-alive")
+    |> put_resp_header("x-accel-buffering", "no")
+    |> send_chunked(200)
     |> stream_loop(opts)
   end
 
   defp dispatch(%Plug.Conn{method: "DELETE"} = conn, _opts) do
-    case conn.private.phantom.router.terminate(conn.private.phantom.session) do
+    session = conn.private.phantom.session
+    Phantom.Tracker.untrack_session(session.id)
+
+    case conn.private.phantom.router.terminate(session) do
       {:ok, _} -> send_resp(conn, 200, "")
       _ -> send_resp(conn, 204, "")
     end
@@ -340,6 +353,8 @@ defmodule Phantom.Plug do
           request, {state_acc, exceptions_acc} ->
             case Request.build(request) do
               {:ok, request} ->
+                state_acc = maybe_track_connection(state_acc, request)
+
                 try do
                   case state_acc.session.router.dispatch_method([
                          request.method,
@@ -444,23 +459,13 @@ defmodule Phantom.Plug do
     |> put_resp_header("access-control-max-age", "86400")
   end
 
-  defp start_sse_stream(conn, _opts) do
-    conn
-    |> put_resp_content_type("text/event-stream")
-    |> put_resp_header("cache-control", "no-cache")
-    |> put_resp_header("connection", "keep-alive")
-    |> put_resp_header("x-accel-buffering", "no")
-    |> send_chunked(200)
-  end
-
   defp stream_fun(%{conn: %{halted: false} = conn} = state, id, event, payload) do
     conn = send_sse_event(conn, id, event, payload)
     put_in(state.conn, conn)
   end
 
-  defp stream_fun(%{session: %{pubsub: pubsub}} = state, id, _event, _payload)
+  defp stream_fun(%{session: %{pubsub: pubsub}} = state, _id, _event, _payload)
        when is_atom(pubsub) do
-    Logger.warning("Dropping request #{id} since connection closed")
     state
   end
 
@@ -492,7 +497,7 @@ defmodule Phantom.Plug do
       :exit, :shutdown -> conn
       :exit, {:shutdown, _} -> conn
     after
-      untrack(conn, opts)
+      untrack(opts)
 
       # Bandit re-uses the same process for new requests,
       # therefore we need to unregister manually and clear
@@ -503,19 +508,10 @@ defmodule Phantom.Plug do
     end
   end
 
-  if Code.ensure_loaded?(Phoenix.Tracker) do
-    defp untrack(conn, opts) do
-      if conn.method == "GET" and opts.pubsub do
-        Phoenix.Tracker.untrack(
-          Phantom.Tracker,
-          self(),
-          "phantom",
-          conn.private.phantom.session.id
-        )
-      end
+  defp untrack(opts) do
+    if opts.pubsub do
+      Phantom.Tracker.untrack(self())
     end
-  else
-    defp untrack(_conn, _opts), do: :ok
   end
 
   defp clear_inbox do
@@ -668,4 +664,17 @@ defmodule Phantom.Plug do
 
     "#{method} #{info}"
   end
+
+  defp maybe_track_connection(state, %{method: "initialize"}) do
+    session = state.conn.private.phantom.session
+    Phantom.Tracker.track(self(), "phantom:sessions", session.id, %{})
+    %{state | session: %{session | close_after_complete: false}}
+  end
+
+  defp maybe_track_connection(state, %{id: id}) when is_binary(id) do
+    Phantom.Tracker.track(self(), "phantom:requests", id, %{})
+    state
+  end
+
+  defp maybe_track_connection(state, _), do: state
 end

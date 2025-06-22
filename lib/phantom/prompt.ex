@@ -184,7 +184,7 @@ defmodule Phantom.Prompt do
   @doc """
   Build a text message for the prompt
   """
-  def text(data), do: %{type: "text", text: data || ""}
+  def text(data), do: %{type: :text, text: data || ""}
 
   @spec audio(binary(), String.t()) :: audio_content()
   @doc """
@@ -193,7 +193,7 @@ defmodule Phantom.Prompt do
   The provided binary will be base64-encoded.
   """
   def audio(data, mime_type) do
-    %{type: "audio", data: Base.encode64(data || <<>>), mimeType: mime_type}
+    %{type: :audio, data: Base.encode64(data || <<>>), mimeType: mime_type}
   end
 
   @spec image(binary(), String.t()) :: image_content()
@@ -203,7 +203,7 @@ defmodule Phantom.Prompt do
   The provided binary will be base64-encoded.
   """
   def image(binary, mime_type) do
-    %{type: "image", data: Base.encode64(binary || <<>>), mimeType: mime_type}
+    %{type: :image, data: Base.encode64(binary || <<>>), mimeType: mime_type}
   end
 
   @spec embedded_resource(string_uri :: String.t(), map()) :: embedded_resource_content()

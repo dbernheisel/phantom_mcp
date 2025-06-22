@@ -24,8 +24,7 @@ defmodule Phantom.RouterTest do
       id: 1,
       jsonrpc: "2.0",
       result: %{
-        structuredContent: %{message: "hello world"},
-        content: [%{text: ~S|{"message":"hello world"}|, type: "text"}]
+        content: [%{text: "hello world", type: "text"}]
       }
     }
 

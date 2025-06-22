@@ -2,6 +2,15 @@ defmodule Phantom.Request do
   @moduledoc false
   defstruct [:id, :type, :method, :params, :response, :spec]
 
+  @opaque t :: %__MODULE__{
+            id: String.t(),
+            type: String.t(),
+            method: String.t(),
+            params: map(),
+            response: map(),
+            spec: Phantom.ResourceTemplate.t() | Phantom.Tool.t() | Phantom.Prompt.t()
+          }
+
   @connection -32000
   @resource_not_found -32002
   @invalid_request -32600
@@ -50,8 +59,26 @@ defmodule Phantom.Request do
      )}
   end
 
+  def build(%{"jsonrpc" => "2.0", "result" => result} = response)
+      when is_map(result) do
+    {:ok,
+     struct!(__MODULE__,
+       response: result,
+       id: response["id"]
+     )}
+  end
+
   def build(request) do
     {:error, struct!(__MODULE__, id: request["id"], response: error(request["id"], invalid()))}
+  end
+
+  def to_json(%__MODULE__{} = request) do
+    %{
+      "jsonrpc" => "2.0",
+      "method" => request.method,
+      "id" => request.id,
+      "params" => request.params
+    }
   end
 
   def ping() do
