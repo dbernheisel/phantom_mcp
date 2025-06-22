@@ -1,8 +1,9 @@
 defmodule Phantom.Tool.JSONSchema do
   @moduledoc """
-  JSON Schema representing the arguments for the tool
+  JSON Schema representing the arguments for the tool, either as `input_schema`
+  or `output_schema`.
 
-  Learn more at   https://json-schema.org/learn/getting-started-step-by-step
+  Learn more at https://json-schema.org/learn/getting-started-step-by-step
 
   Example:
 
