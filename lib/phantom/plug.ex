@@ -175,7 +175,7 @@ defmodule Phantom.Plug do
                is_map(www_authenticate) ->
           conn
           |> put_status(401)
-          |> put_resp_header("WWW-Authenticate", www_authenticate(www_authenticate))
+          |> put_resp_header("www-authenticate", www_authenticate(www_authenticate))
           |> json_error(Request.error(Request.closed("Unauthorized")))
 
         {unauthorized, www_authenticate}
@@ -183,7 +183,7 @@ defmodule Phantom.Plug do
                is_binary(www_authenticate) ->
           conn
           |> put_status(401)
-          |> put_resp_header("WWW-Authenticate", www_authenticate)
+          |> put_resp_header("www-authenticate", www_authenticate)
           |> json_error(Request.error(Request.closed("Unauthorized")))
 
         {forbidden, message}

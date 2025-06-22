@@ -12,7 +12,7 @@ defmodule Phantom.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       package: package(),
       start_permanent: Mix.env() == :prod,
-      version: "0.2.0",
+      version: "0.2.1",
       source_url: "https://github.com/dbernheisel/phantom_mcp"
     ]
   end

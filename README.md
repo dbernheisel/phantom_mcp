@@ -399,7 +399,7 @@ Phantom will implement these MCP requests on your behalf:
 - `resources/list` dispatch to your MCP router. By default it will be an empty list until you implement it. Read more in `Phantom.Resource`.
 - `resource/templates/list` list either the allowed resources as provided in the `connect/2` callback or all resource templates by default. To disable, supply `[]` in the `connect/2` callback. Read more in `Phantom.ResourceTemplate`.
 - `resources/read` dispatch the request to your handler. `Phantom.Resource`.
-- `resources/subscribe` available if the MCP router is configured with `pubsub`. The session will subscribe to the `Phantom.Session.resource_subscription_topic()` and listen for the shapes `{:resource_updated, uri}` and `{:resource_updated, name, path_params}`. Upon receiving the update, a notification will be sent to the client.
+- `resources/subscribe` available if the MCP router is configured with `pubsub`. The session will subscribe to the `Phantom.Session.resource_subscription_topic/0` and listen for the shapes `{:resource_updated, uri}` and `{:resource_updated, name, path_params}`. Upon receiving the update, a notification will be sent to the client.
 - `logging/setLevel` available if the MCP router is configured with `pubsub`. Logs can be sent to client with `Session.log_{level}(session, map_content)`. [See docs](https://modelcontextprotocol.io/specification/2025-03-26/server/utilities/logging#log-levels).
 - `tools/list` list either the allowed tools as provided in the `connect/2` callback or all tools by default. To disable, supply `[]` in the `connect/2` callback.
 - `tools/call` dispatch the request to your handler. Read more in `Phantom.Tool`.
@@ -450,7 +450,7 @@ defmodule MyApp.MCP.Router do
         |> limit_for_plan(user.plan)}
     else
       :not_found ->
-        # See `Phantom.Request.www_authenticate/1`
+        # See `Phantom.Plug.www_authenticate/1`
         {:unauthorized, %{
           method: "Bearer",
           resource_metadata:  "https://myapp.com/.well-known/oauth-protected-resource"
@@ -463,9 +463,9 @@ defmodule MyApp.MCP.Router do
   defp limit_for_plan(session, :ultra), do: session
   defp limit_for_plan(session, :basic) do
     # allow-list tools by stringified name. The name is either supplied as the `name` when defining it, or the stringified function name.
-    %{session |
-      allowed_resources_templates: ~w[study],
-      allowed_tools: ~w[create_question]}
+    session
+    |> Phantom.Session.allowed_tools(~w[create_question])
+    |> Phantom.Session.allowed_resource_templates(~w[study])
   end
 ```
 

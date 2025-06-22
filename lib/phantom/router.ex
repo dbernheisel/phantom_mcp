@@ -38,7 +38,7 @@ defmodule Phantom.Router do
   @callback instructions(Session.t()) :: {:ok, String.t()}
   @callback server_info(Session.t()) ::
               {:ok, %{name: String.t(), version: String.t()}} | {:error, any()}
-  @callback list_resources(String.t() | nil, map(), Session.t()) ::
+  @callback list_resources(String.t() | nil, Session.t()) ::
               {:reply, Resource.list(), Session.t()}
               | {:noreply, Session.t()}
               | {:error, any(), Session.t()}
@@ -78,7 +78,7 @@ defmodule Phantom.Router do
       def instructions(_session), do: {:ok, unquote(instructions)}
       def server_info(_session), do: {:ok, %{name: @name, version: @vsn}}
 
-      def list_resources(_cursor, _request, session) do
+      def list_resources(_cursor, session) do
         {:error, Request.not_found(), session}
       end
 
@@ -347,7 +347,7 @@ defmodule Phantom.Router do
       end
 
       @doc false
-      defoverridable list_resources: 3,
+      defoverridable list_resources: 2,
                      server_info: 1,
                      disconnect: 1,
                      connect: 2,

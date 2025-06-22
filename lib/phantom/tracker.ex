@@ -1,7 +1,7 @@
 if Code.ensure_loaded?(Phoenix.Tracker) and Code.ensure_loaded?(Phoenix.PubSub) do
   defmodule Phantom.Tracker do
     @moduledoc """
-    Trackers SSE streams so that notifications and messages can be sent to Streamable HTTP
+    Track SSE streams so that notifications and messages can be sent to Streamable HTTP
     clients
 
     See `m:Phantom#module-persistent-streams` section for more information.

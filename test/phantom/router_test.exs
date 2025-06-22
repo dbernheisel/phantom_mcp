@@ -169,4 +169,102 @@ defmodule Phantom.RouterTest do
              } = response
     end
   end
+
+  describe "authentication" do
+    defmodule Test.UnauthorizedRouter do
+      @instructions """
+      A test MCP router that requires authentication and returns unauthorized responses.
+      """
+
+      use Phantom.Router,
+        name: "UnauthorizedTest",
+        vsn: "1.0",
+        validate_origin: false,
+        instructions: @instructions
+
+      @doc """
+      Connect callback that always returns unauthorized with WWW-Authenticate header
+      """
+      def connect(_session, _headers) do
+        www_authenticate = %{
+          method: "Bearer",
+          realm: "mcp-server",
+          scope: "read write"
+        }
+
+        {:unauthorized, www_authenticate}
+      end
+    end
+
+    test "connect callback responds with unauthorized and www-authenticate header (map format)" do
+      Phantom.Cache.register(Test.UnauthorizedRouter)
+
+      :post
+      |> conn("/mcp", %{jsonrpc: "2.0", method: "ping", id: 1})
+      |> put_req_header("content-type", "application/json")
+      |> call(router: Test.UnauthorizedRouter)
+
+      assert_receive {:conn, conn}
+      assert conn.status == 401
+
+      # Verify WWW-Authenticate header is present and properly formatted
+      [www_auth_header] = get_resp_header(conn, "www-authenticate")
+      assert www_auth_header =~ "Bearer"
+      assert www_auth_header =~ ~s|realm="mcp-server"|
+      assert www_auth_header =~ ~s|scope="read write"|
+
+      # Verify the response body contains the correct error
+      response_body = JSON.decode!(conn.resp_body)
+      assert response_body["error"]["code"] == -32000
+      assert response_body["error"]["message"] == "Unauthorized"
+      assert response_body["jsonrpc"] == "2.0"
+      # ID may be nil in error responses during connection phase
+      refute response_body["id"]
+    end
+
+    test "connect callback responds with unauthorized and www-authenticate header (string format)" do
+      # Create a router that returns a string www-authenticate header
+      defmodule Test.UnauthorizedStringRouter do
+        use Phantom.Router,
+          name: "UnauthorizedStringTest",
+          vsn: "1.0",
+          validate_origin: false,
+          instructions: "Test router with string www-authenticate"
+
+        def connect(_session, _headers) do
+          {:unauthorized, "Bearer realm=\"string-test\", scope=\"read\""}
+        end
+      end
+
+      Phantom.Cache.register(Test.UnauthorizedStringRouter)
+
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        method: "initialize",
+        id: 2,
+        params: %{
+          protocolVersion: "2024-11-05",
+          capabilities: %{},
+          clientInfo: %{name: "TestClient", version: "1.0.0"}
+        }
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(router: Test.UnauthorizedStringRouter)
+
+      assert_receive {:conn, conn}
+      assert conn.status == 401
+
+      # Verify string WWW-Authenticate header
+      [www_auth_header] = get_resp_header(conn, "www-authenticate")
+      assert www_auth_header == "Bearer realm=\"string-test\", scope=\"read\""
+
+      # Verify error response
+      response_body = JSON.decode!(conn.resp_body)
+      assert response_body["error"]["code"] == -32000
+      assert response_body["error"]["message"] == "Unauthorized"
+      # ID may be nil in error responses during connection phase
+      refute response_body["id"]
+    end
+  end
 end
