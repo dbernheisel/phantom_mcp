@@ -3,6 +3,10 @@ defmodule Test.PlugRouter do
 
   plug :match
 
+  if Code.ensure_loaded?(Tidewave) do
+    plug Tidewave
+  end
+
   plug Plug.Parsers,
     parsers: [{:json, length: 1_000_000}],
     pass: ["application/json"],

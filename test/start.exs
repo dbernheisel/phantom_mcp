@@ -27,6 +27,7 @@ Application.put_env(:phantom_mcp, Test.Endpoint,
 Mix.install([
   {:plug_cowboy, "~> 2.7"},
   {:bandit, "~> 1.7"},
+  {:tidewave, "~> 0.1"},
   {:phoenix, "~> 1.7"},
   {:phantom_mcp, path: "."}
 ])
@@ -54,7 +55,7 @@ defmodule SessionChecker do
   @sessions "phantom:sessions"
   @requests "phantom:requests"
   def handle_info(:check, state) do
-    case Phantom.Tracker.list(@sessions) do
+    case Phantom.Tracker.list_sessions() do
       [] ->
         :ok
 
@@ -67,7 +68,7 @@ defmodule SessionChecker do
         |> IO.inspect(label: "SESSIONS")
     end
 
-    case Phantom.Tracker.list("phantom:requests") do
+    case Phantom.Tracker.list_requests() do
       [] ->
         :ok
 

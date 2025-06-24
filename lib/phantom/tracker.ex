@@ -33,6 +33,11 @@ if Code.ensure_loaded?(Phoenix.Tracker) and Code.ensure_loaded?(Phoenix.PubSub) 
     end
 
     @doc false
+    def list_requests do
+      Phoenix.Tracker.list(__MODULE__, @requests)
+    end
+
+    @doc false
     def get_by_key(topic, key) do
       case Phoenix.Tracker.get_by_key(__MODULE__, topic, key) do
         [{pid, _} | _] -> pid
@@ -134,7 +139,9 @@ else
     @doc false
     def get_by_key(_topic, _key), do: nil
     @doc false
-    def list(_topic), do: []
+    def list_sessions(), do: []
+    @doc false
+    def list_requests(), do: []
     @doc false
     def resource_subscribe(_pubsub, _topic), do: :error
     @doc false

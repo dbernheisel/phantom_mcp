@@ -1,6 +1,10 @@
 defmodule Test.Endpoint do
   use Phoenix.Endpoint, otp_app: :phantom_mcp
 
+  if Code.ensure_loaded?(Tidewave) do
+    plug Tidewave
+  end
+
   plug Plug.Parsers,
     parsers: [{:json, length: 1_000_000}],
     pass: ["application/json"],
