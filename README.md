@@ -14,7 +14,7 @@ This library provides a complete implementation of the [MCP server specification
 Add Phantom to your dependencies:
 
 ```elixir
-  {:phantom_mcp, "~> 0.2.2"},
+  {:phantom_mcp, "~> 0.2.3"},
 ```
 
 When using with Plug/Phoenix, configure MIME to accept SSE:
@@ -83,6 +83,8 @@ end
 
 Now the fun begins: it's time to define your MCP router that catalogs all your tools, prompts, and resources. When you're creating your MCP server, make sure
 you test it with the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector).
+
+For local testing, you can use [`mcp-remote`](https://github.com/geelen/mcp-remote) to proxy local-only clients to your Phantom-powered MCP server, either while it's hosted locally or remotely. Don't use `mcp-proxy` since it's designed for older SSE-based MCP servers (Phantom is using the newer Streamable HTTP behavior).
 
 We'll go through each one and show how to respond synchronously or asynchronously.
 

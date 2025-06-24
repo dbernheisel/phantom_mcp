@@ -47,10 +47,11 @@ if Code.ensure_loaded?(Phoenix.Tracker) and Code.ensure_loaded?(Phoenix.PubSub) 
 
     @doc false
     def untrack_session(session_id) do
-      case get_by_key(@sessions, session_id) do
-        nil -> :ok
-        pid -> Phoenix.Tracker.untrack(__MODULE__, pid)
-      end
+      __MODULE__
+      |> Phoenix.Tracker.get_by_key(@sessions, session_id)
+      |> Enum.each(fn {pid, _} -> Phoenix.Tracker.untrack(__MODULE__, pid) end)
+
+      :ok
     end
 
     def untrack_request(request_id) do

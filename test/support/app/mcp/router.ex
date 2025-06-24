@@ -24,6 +24,14 @@ defmodule Test.MCP.Router do
 
   @salt "cursor"
   def list_resources(cursor, session) do
+    {:ok, uri1, _spec} = resource_for(session, :binary_resource, id: "foo")
+    {:ok, uri2, spec} = resource_for(session, :binary_resource, id: "bar")
+
+    binary_resources = [
+      Resource.resource_link(uri1, spec, name: "Binary Foo"),
+      Resource.resource_link(uri2, spec, name: "Binary Bar")
+    ]
+
     cursor =
       if cursor do
         {:ok, cursor} = Phoenix.Token.verify(Test.Endpoint, @salt, cursor)
@@ -32,17 +40,21 @@ defmodule Test.MCP.Router do
         0
       end
 
-    {_before_cursor, after_cursor} = Enum.split_while(1..1000, fn i -> i < cursor end)
-    {page, [next | _drop]} = Enum.split(after_cursor, 100)
-    next_cursor = Phoenix.Token.sign(Test.Endpoint, @salt, next)
-
     resource_links =
-      Enum.map(page, fn i ->
-        {:ok, uri, spec} = resource_for(session, :text_resource, id: i)
-        Resource.resource_link(uri, spec, name: "Resource #{i}")
-      end)
+      binary_resources ++
+        Enum.map(3..1000, fn i ->
+          {:ok, uri, spec} = resource_for(session, :text_resource, id: i)
+          Resource.resource_link(uri, spec, name: "Resource #{i}")
+        end)
 
-    {:reply, Resource.list(resource_links, next_cursor), session}
+    {_before_cursor, after_cursor} =
+      resource_links |> Enum.with_index() |> Enum.split_while(fn {_, i} -> i < cursor end)
+
+    {page, [{next, _} | _drop]} = Enum.split(after_cursor, 100)
+    next_cursor = Phoenix.Token.sign(Test.Endpoint, @salt, next)
+    page = Enum.map(page, &elem(&1, 0))
+
+    {:reply, Resource.list(page, next_cursor), session}
   end
 
   tool :explode_tool, description: "Always throws an exception"
@@ -353,14 +365,14 @@ defmodule AsyncModule do
 
   def embedded_resource_tool(_params, session) do
     with {:ok, uri, resource} <-
-           Test.MCP.Router.read_resource(session, :text_resource, id: "123") do
+           Test.MCP.Router.read_resource(session, :binary_resource, id: "bar") do
       {:reply, Tool.embedded_resource(uri, resource), session}
     end
   end
 
   def embedded_resource_link_tool(_params, session) do
     with {:ok, uri, resource_template} <-
-           Test.MCP.Router.resource_for(session, :text_resource, id: "123") do
+           Test.MCP.Router.resource_for(session, :binary_resource, id: "foo") do
       {:reply, Tool.resource_link(uri, resource_template), session}
     end
   end

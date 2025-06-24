@@ -361,8 +361,8 @@ defmodule Phantom.PlugTest do
              content: [
                %{
                  type: :resource_link,
-                 description: "These are not the resources you are looking for",
-                 uri: "test:///text/123"
+                 description: "An image resource",
+                 uri: "myapp:///binary/foo"
                }
              ]
            } = response[:result]
@@ -445,6 +445,7 @@ defmodule Phantom.PlugTest do
     assert_sse_connected()
 
     request_set_log_level("debug", id: 2, session_id: session_id)
+    assert_connected(%{status: 200})
     assert_response(2, %{})
 
     request_resource_read("myapp:///binary/bar",
@@ -452,6 +453,7 @@ defmodule Phantom.PlugTest do
       session_id: session_id
     )
 
+    assert_connected(%{status: 200})
     assert_response(3, _)
 
     assert_notify(%{

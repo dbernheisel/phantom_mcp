@@ -145,7 +145,6 @@ defmodule Phantom.Plug do
 
     session =
       Session.new(get_req_header(conn, "mcp-session-id") |> List.first(),
-        close_after_complete: conn.method != "GET",
         pubsub: opts.pubsub,
         transport_pid: conn.owner,
         pid: self(),
@@ -169,16 +168,13 @@ defmodule Phantom.Plug do
           put_in(conn.private.phantom.session, session)
 
         {unauthorized, www_authenticate}
-        when unauthorized in [401, :unauthorized] and
-               is_map(www_authenticate) ->
-          conn
-          |> put_status(401)
-          |> put_resp_header("www-authenticate", www_authenticate(www_authenticate))
-          |> json_error(Request.error(Request.closed("Unauthorized")))
+        when (unauthorized in [401, :unauthorized] and
+                is_map(www_authenticate)) or is_binary(www_authenticate) ->
+          www_authenticate =
+            if is_map(www_authenticate),
+              do: www_authenticate(www_authenticate),
+              else: www_authenticate
 
-        {unauthorized, www_authenticate}
-        when unauthorized in [401, :unauthorized] and
-               is_binary(www_authenticate) ->
           conn
           |> put_status(401)
           |> put_resp_header("www-authenticate", www_authenticate)
@@ -262,29 +258,17 @@ defmodule Phantom.Plug do
 
   defp dispatch(%Plug.Conn{method: "GET"} = conn, opts) do
     if opts.pubsub do
+      conn = maybe_track_session_stream(conn)
       session = conn.private.phantom.session
 
-      if is_nil(Phantom.Tracker.pid_for_session(session.id)) do
-        Phantom.Tracker.track(self(), "phantom:sessions", session.id, %{})
-
-        conn
-        |> put_resp_header("mcp-session-id", session.id)
-        |> put_resp_header("cache-control", "no-cache, no-transform")
-        |> put_resp_content_type("text/event-stream")
-        |> put_resp_header("connection", "keep-alive")
-        |> put_resp_header("x-accel-buffering", "no")
-        |> send_chunked(202)
-        |> stream_loop(opts)
-      else
-        conn
-        |> put_status(409)
-        |> json_error(
-          Request.error(%{
-            code: -32000,
-            message: "Only one SSE stream is allowed per session"
-          })
-        )
-      end
+      conn
+      |> put_resp_header("mcp-session-id", session.id)
+      |> put_resp_header("cache-control", "no-cache, no-transform")
+      |> put_resp_content_type("text/event-stream")
+      |> put_resp_header("connection", "keep-alive")
+      |> put_resp_header("x-accel-buffering", "no")
+      |> send_chunked(202)
+      |> stream_loop(opts)
     else
       conn
       |> put_status(405)
@@ -353,7 +337,9 @@ defmodule Phantom.Plug do
           request, {state_acc, exceptions_acc} ->
             case Request.build(request) do
               {:ok, request} ->
-                state_acc = maybe_track_connection(state_acc, request)
+                state_acc = maybe_track_response(state_acc, request)
+                state_acc = put_in(state_acc.conn, maybe_track_session_stream(state_acc.conn))
+                state_acc = put_in(state_acc.session, state_acc.conn.private.phantom.session)
 
                 try do
                   case state_acc.session.router.dispatch_method([
@@ -665,16 +651,42 @@ defmodule Phantom.Plug do
     "#{method} #{info}"
   end
 
-  defp maybe_track_connection(state, %{method: "initialize"}) do
-    session = state.conn.private.phantom.session
-    Phantom.Tracker.track(self(), "phantom:sessions", session.id, %{})
-    %{state | session: %{session | close_after_complete: false}}
-  end
-
-  defp maybe_track_connection(state, %{id: id}) when is_binary(id) do
+  defp maybe_track_response(state, %{response: %{}, id: id}) when is_binary(id) do
     Phantom.Tracker.track(self(), "phantom:requests", id, %{})
     state
   end
 
-  defp maybe_track_connection(state, _), do: state
+  defp maybe_track_response(state, _), do: state
+
+  defp maybe_track_session_stream(conn) do
+    track? = conn.body_params["method"] == "initialize" || conn.method == "GET"
+    existing_stream = Phantom.Tracker.pid_for_session(conn.private.phantom.session.id)
+
+    case {track?, existing_stream} do
+      {true, nil} ->
+        session = %{conn.private.phantom.session | close_after_complete: !track?}
+
+        Phantom.Tracker.track(
+          self(),
+          "phantom:sessions",
+          session.id,
+          conn.body_params["params"]["clientInfo"] || %{}
+        )
+
+        put_in(conn.private.phantom.session, session)
+
+      {true, _} ->
+        conn
+        |> put_status(409)
+        |> json_error(
+          Request.error(%{
+            code: -32000,
+            message: "Only one SSE stream is allowed per session"
+          })
+        )
+
+      _ ->
+        conn
+    end
+  end
 end

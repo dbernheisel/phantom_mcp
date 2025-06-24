@@ -24,6 +24,7 @@ defmodule Phantom.Session do
     :tracker,
     :transport_pid,
     assigns: %{},
+    client_info: %{},
     client_capabilities: %{
       roots: false,
       sampling: false,
@@ -50,6 +51,7 @@ defmodule Phantom.Session do
           requests: map(),
           router: module(),
           stream_fun: fun(),
+          client_info: map(),
           client_capabilities: %{
             elicitation: false | map(),
             sampling: false | map(),

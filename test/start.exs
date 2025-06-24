@@ -6,15 +6,11 @@ Application.put_env(:phoenix, :serve_endpoints, true, persistent: true)
 Application.put_env(:phantom_mcp, :timeout, 1000)
 Application.put_env(:phantom_mcp, :debug, true)
 
-Application.put_env(:mime, :types, %{
-  "text/event-stream" => ["sse"]
-})
-
 Application.put_env(:phantom_mcp, Test.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
   render_errors: [
-    formats: [json: Test.ErrorJSON],
+    formats: [sse: Test.ErrorJSON, json: Test.ErrorJSON],
     layout: false
   ],
   pubsub_server: Test.PubSub,
@@ -24,13 +20,22 @@ Application.put_env(:phantom_mcp, Test.Endpoint,
   secret_key_base: String.duplicate("a", 64)
 )
 
-Mix.install([
-  {:plug_cowboy, "~> 2.7"},
-  {:bandit, "~> 1.7"},
-  {:tidewave, "~> 0.1"},
-  {:phoenix, "~> 1.7"},
-  {:phantom_mcp, path: "."}
-])
+Mix.install(
+  [
+    {:plug_cowboy, "~> 2.7"},
+    {:bandit, "~> 1.7"},
+    {:tidewave, "~> 0.1.9"},
+    {:phoenix, "~> 1.7"},
+    {:phantom_mcp, path: "."}
+  ],
+  config: [
+    mime: [
+      types: %{
+        "text/event-stream" => ["sse"]
+      }
+    ]
+  ]
+)
 
 Enum.each(
   ~w[
@@ -61,9 +66,9 @@ defmodule SessionChecker do
 
       sessions ->
         sessions
-        |> Enum.map(fn {session_id, _} ->
+        |> Enum.map(fn {session_id, meta} ->
           pid = Phantom.Tracker.get_by_key(@sessions, session_id)
-          {session_id, pid, Process.alive?(pid)}
+          {session_id, pid, Process.alive?(pid), meta}
         end)
         |> IO.inspect(label: "SESSIONS")
     end
@@ -98,4 +103,4 @@ end
     strategy: :one_for_one
   )
 
-IEx.Server.run(binding: __ENV__, binding: binding(), on_eof: :halt)
+IEx.Server.run(env: __ENV__, binding: binding(), register: false)

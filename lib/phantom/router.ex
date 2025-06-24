@@ -53,7 +53,7 @@ defmodule Phantom.Router do
               | {:noreply, Session.t()}
               | {:error, any(), Session.t()}
 
-  @protocol_version "2025-03-26"
+  @supported_protocol_versions ~w[2024-11-05 2025-03-26 2025-06-18]
 
   defmacro __using__(opts) do
     name = Keyword.get(opts, :name, "Phantom MCP Server")
@@ -128,7 +128,8 @@ defmodule Phantom.Router do
 
         session = %{
           session
-          | client_capabilities: %{
+          | client_info: params["clientInfo"],
+            client_capabilities: %{
               roots: params["roots"],
               sampling: params["sampling"],
               elicitation: params["elicitation"]
@@ -643,13 +644,16 @@ defmodule Phantom.Router do
   end
 
   @doc false
-  def validate_protocol(@protocol_version, _), do: {:ok, @protocol_version}
+  def validate_protocol(protocol_version, _)
+      when protocol_version in @supported_protocol_versions do
+    {:ok, protocol_version}
+  end
 
   def validate_protocol(unsupported_protocol, session) do
     {:error,
      Request.invalid_params(
        data: %{
-         supported: [@protocol_version],
+         supported: @supported_protocol_versions,
          requested: unsupported_protocol
        }
      ), session}
