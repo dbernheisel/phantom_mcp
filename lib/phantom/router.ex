@@ -63,10 +63,11 @@ defmodule Phantom.Router do
     quote location: :keep, generated: true do
       @behaviour Phantom.Router
 
+      require Phantom.ClientLogger
       require Phantom.Prompt
       require Phantom.Resource
-      require Phantom.Tool
       require Phantom.Session
+      require Phantom.Tool
 
       import Phantom.Router,
         only: [tool: 2, tool: 3, resource: 2, resource: 3, resource: 4, prompt: 2, prompt: 3]

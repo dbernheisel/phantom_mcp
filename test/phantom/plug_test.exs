@@ -478,11 +478,7 @@ defmodule Phantom.PlugTest do
     assert_connected(_conn)
     assert_response(2, %{result: nil})
 
-    Phoenix.PubSub.local_broadcast(
-      Test.PubSub,
-      Phantom.Session.resource_subscription_topic(),
-      {:resource_updated, uri}
-    )
+    Phantom.Tracker.notify_resource_updated(uri)
 
     assert_notify(%{
       method: "notifications/resources/updated",

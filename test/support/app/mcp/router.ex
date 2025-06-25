@@ -285,6 +285,7 @@ defmodule AsyncModule do
   require Phantom.Prompt, as: Prompt
   require Phantom.Resource, as: Resource
   require Phantom.Session, as: Session
+  require Phantom.ClientLogger, as: ClientLogger
 
   @foo_png File.read!(@base <> "/foo.png")
   def binary_resource(%{"id" => "foo"}, session) do
@@ -293,7 +294,7 @@ defmodule AsyncModule do
 
   @bar_png File.read!(@base <> "/bar.png")
   def binary_resource(%{"id" => "bar"}, session) do
-    Session.log_info("An info log")
+    ClientLogger.info("An info log")
     pid = session.pid
     request_id = session.request.id
 
@@ -353,7 +354,7 @@ defmodule AsyncModule do
   end
 
   def timeout_async_tool(params, session) do
-    Session.log_warning(session, "server", %{message: "This will timeout"})
+    ClientLogger.log(session, :warning, %{message: "This will timeout"}, "database")
 
     Task.async(fn ->
       Process.sleep(@timeout * 15)

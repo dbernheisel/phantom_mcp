@@ -652,7 +652,7 @@ defmodule Phantom.Plug do
   end
 
   defp maybe_track_response(state, %{response: %{}, id: id}) when is_binary(id) do
-    Phantom.Tracker.track(self(), "phantom:requests", id, %{})
+    Phantom.Tracker.track_request(self(), id)
     state
   end
 
@@ -660,15 +660,14 @@ defmodule Phantom.Plug do
 
   defp maybe_track_session_stream(conn) do
     track? = conn.body_params["method"] == "initialize" || conn.method == "GET"
-    existing_stream = Phantom.Tracker.pid_for_session(conn.private.phantom.session.id)
+    existing_stream = Phantom.Tracker.get_session(conn.private.phantom.session.id)
 
     case {track?, existing_stream} do
       {true, nil} ->
         session = %{conn.private.phantom.session | close_after_complete: !track?}
 
-        Phantom.Tracker.track(
+        Phantom.Tracker.track_session(
           self(),
-          "phantom:sessions",
           session.id,
           conn.body_params["params"]["clientInfo"] || %{}
         )

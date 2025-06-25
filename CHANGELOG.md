@@ -1,3 +1,9 @@
+## Unreleased
+
+- Move logging functions into `Phantom.ClientLogger`
+- Rename `Phantom.Tracker` functions to be clearer and more straightforward
+- Consolidate any distributed logic into `Phantom.Tracker` such as PubSub topics.
+
 ## 0.2.3
 
 - Fix the `initialize` request status code and headers. In 0.2.2 it worked

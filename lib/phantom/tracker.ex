@@ -1,51 +1,142 @@
-if Code.ensure_loaded?(Phoenix.Tracker) and Code.ensure_loaded?(Phoenix.PubSub) do
-  defmodule Phantom.Tracker do
-    @moduledoc """
-    Track SSE streams so that notifications and messages can be sent to Streamable HTTP
-    clients
+defmodule Phantom.Tracker do
+  @moduledoc """
+  Track open streams so that notifications and requests can be sent to clients.
 
-    See `m:Phantom#module-persistent-streams` section for more information.
-    """
+  For example, a request may need to elicit more input from the client, so the
+  first request stream will remain open, and the notification stream will send
+  and new request to the client, and the client will POST its response. The
+  new response connection will notify the first request connection with the result
+  and the tool can continue with the elicited information.
 
-    use Phoenix.Tracker
-    @sessions "phantom:sessions"
-    @requests "phantom:requests"
+  See `m:Phantom#module-persistent-streams` section for more information.
+  """
 
+  use Phoenix.Tracker
+
+  @sessions "phantom:sessions"
+  @requests "phantom:requests"
+  @resources "phantom:resources"
+
+  @available Code.ensure_loaded?(Phoenix.Tracker) and Code.ensure_loaded?(Phoenix.PubSub)
+
+  def resource_subscription_topic, do: @resources
+  def requests_topic, do: @requests
+  def sessions_topic, do: @sessions
+
+  @doc false
+  if @available do
     def start_link(opts) do
       opts = Keyword.merge([name: __MODULE__], opts)
       Phoenix.Tracker.start_link(__MODULE__, opts, opts)
     end
+  else
+    def start_link(_opts), do: :error
+  end
 
-    @doc false
+  @doc false
+  if @available do
     def init(opts) do
       server = Keyword.fetch!(opts, :pubsub_server)
       {:ok, %{pubsub_server: server, node_name: Phoenix.PubSub.node_name(server)}}
     end
+  else
+    def init(_opts), do: :ignore
+  end
 
-    @doc false
-    def track(pid, topic, key, meta) do
-      Phoenix.Tracker.track(__MODULE__, pid, topic, key, meta)
+  @doc "Track a request PID"
+  if @available do
+    def track_request(pid, request_id, meta \\ %{}) do
+      Phoenix.Tracker.track(__MODULE__, pid, @requests, request_id, meta)
     end
+  else
+    def track_request(_pid, _request_id, _meta \\ %{}), do: {:error, :not_available}
+  end
 
-    @doc false
-    def list_sessions do
-      Phoenix.Tracker.list(__MODULE__, @sessions)
+  @doc "Track a session PID"
+  if @available do
+    def track_session(pid, session_id, meta \\ %{}) do
+      Phoenix.Tracker.track(__MODULE__, pid, @sessions, session_id, meta)
     end
+  else
+    def track_session(pid, session_id, meta \\ %{}), do: {:error, :not_available}
+  end
 
-    @doc false
-    def list_requests do
-      Phoenix.Tracker.list(__MODULE__, @requests)
-    end
+  @doc "Return a list of all open sessions"
+  if @available do
+    def list_sessions, do: Phoenix.Tracker.list(__MODULE__, @sessions)
+  else
+    def list_sessions, do: []
+  end
 
-    @doc false
-    def get_by_key(topic, key) do
-      case Phoenix.Tracker.get_by_key(__MODULE__, topic, key) do
-        [{pid, _} | _] -> pid
-        _ -> nil
+  @doc "Return a list of all open requests"
+  if @available do
+    def list_requests, do: Phoenix.Tracker.list(__MODULE__, @requests)
+  else
+    def list_requests, do: []
+  end
+
+  @doc "Return a list of all listening for resources"
+  if @available do
+    def list_resource_listeners, do: Phoenix.Tracker.list(__MODULE__, @resources)
+  else
+    def list_resource_listeners, do: []
+  end
+
+  @doc "Fetch the PID of the open request by ID"
+  def get_request(%Phantom.Request{id: request_id}), do: get_request(request_id)
+
+  if @available do
+    def get_request(request_id) do
+      case Phoenix.Tracker.get_by_key(__MODULE__, @requests, request_id) do
+        [{pid, _} | _] ->
+          if Process.alive?(pid) do
+            pid
+          else
+            Phoenix.Tracker.untrack(__MODULE__, pid)
+            nil
+          end
+
+        _ ->
+          nil
       end
     end
+  else
+    def get_request(_request_id), do: nil
+  end
 
-    @doc false
+  @doc "Fetch the PID of the open session by ID"
+  def get_session(%Phantom.Session{id: session_id}), do: get_session(session_id)
+
+  if @available do
+    def get_session(session_id) do
+      case Phoenix.Tracker.get_by_key(__MODULE__, @sessions, session_id) do
+        [{pid, _} | _] ->
+          if Process.alive?(pid) do
+            pid
+          else
+            Phoenix.Tracker.untrack(__MODULE__, pid)
+            nil
+          end
+
+        _ ->
+          nil
+      end
+    end
+  else
+    def get_session(_session_id), do: nil
+  end
+
+  @doc "Untrack the processe for everything"
+  if @available do
+    def untrack(pid), do: Phoenix.Tracker.untrack(__MODULE__, pid)
+  else
+    def untrack(_pid), do: :ok
+  end
+
+  @doc "Untrack any processes for the session"
+  def untrack_session(%Phantom.Session{id: session_id}), do: untrack_session(session_id)
+
+  if @available do
     def untrack_session(session_id) do
       __MODULE__
       |> Phoenix.Tracker.get_by_key(@sessions, session_id)
@@ -53,66 +144,47 @@ if Code.ensure_loaded?(Phoenix.Tracker) and Code.ensure_loaded?(Phoenix.PubSub) 
 
       :ok
     end
+  else
+    def untrack_session(_session_id), do: :ok
+  end
 
+  @doc "Untrack any processes for the request"
+  def untrack_request(%Phantom.Request{id: request_id}), do: untrack_request(request_id)
+
+  if @available do
     def untrack_request(request_id) do
-      case get_by_key(@requests, request_id) do
-        nil -> :ok
-        pid -> Phoenix.Tracker.untrack(__MODULE__, pid)
-      end
+      __MODULE__
+      |> Phoenix.Tracker.get_by_key(@requests, request_id)
+      |> Enum.each(fn {pid, _meta} -> Phoenix.Tracker.untrack(__MODULE__, pid) end)
+
+      :ok
     end
+  else
+    def untrack_request(_request_id), do: :ok
+  end
 
-    @doc false
-    def untrack(pid) when is_pid(pid) do
-      Phoenix.Tracker.untrack(__MODULE__, pid)
+  @doc "Subscribe the process to resource notifications from the PubSub on topic #{inspect(@resources)}"
+  if @available do
+    def subscribe_resource(uri) do
+      Phoenix.Tracker.track(__MODULE__, self(), @resources, uri, %{})
     end
+  else
+    def subscribe_resource(pubsub, uri), do: {:error, :not_available}
+  end
 
-    @doc false
-    def untrack(pid, topic, key) when is_pid(pid) do
-      Phoenix.Tracker.untrack(__MODULE__, pid, topic, key)
+  if @available do
+    def notify_resource_updated(uri) do
+      {:ok,
+       __MODULE__
+       |> Phoenix.Tracker.get_by_key(@resources, uri)
+       |> Enum.count(fn {pid, _meta} -> GenServer.cast(pid, {:resource_updated, uri}) end)}
     end
+  else
+    def notify_resource_updated(_), do: {:ok, 0}
+  end
 
-    @doc false
-    def pid_for_session(%{id: id}), do: pid_for_session(id)
-
-    def pid_for_session(session_id) do
-      case Phoenix.Tracker.get_by_key(__MODULE__, @sessions, session_id) do
-        [{pid, _} | _] ->
-          if Process.alive?(pid) do
-            pid
-          else
-            untrack(pid)
-            nil
-          end
-
-        [] ->
-          nil
-      end
-    end
-
-    @doc false
-    def pid_for_request(%{id: id}), do: pid_for_request(id)
-
-    def pid_for_request(request_id) do
-      case Phoenix.Tracker.get_by_key(__MODULE__, @requests, request_id) do
-        [{pid, _} | _] ->
-          if Process.alive?(pid) do
-            pid
-          else
-            untrack(pid)
-            nil
-          end
-
-        [] ->
-          nil
-      end
-    end
-
-    @doc false
-    def resource_subscribe(pubsub, topic) do
-      Phoenix.PubSub.subscribe(pubsub, topic)
-    end
-
-    @doc false
+  @doc false
+  if @available do
     def handle_diff(diff, state) do
       for {topic, {joins, leaves}} <- diff do
         for {key, meta} <- joins do
@@ -128,32 +200,7 @@ if Code.ensure_loaded?(Phoenix.Tracker) and Code.ensure_loaded?(Phoenix.PubSub) 
 
       {:ok, state}
     end
-  end
-else
-  defmodule Phantom.Tracker do
-    @doc false
-    def track(_pid, _topic, _key, _meta), do: :error
-    @doc false
-    def untrack(_pid), do: :ok
-    @doc false
-    def untrack(_pid, _topic, _key), do: :ok
-    @doc false
-    def get_by_key(_topic, _key), do: nil
-    @doc false
-    def list_sessions(), do: []
-    @doc false
-    def list_requests(), do: []
-    @doc false
-    def resource_subscribe(_pubsub, _topic), do: :error
-    @doc false
-    def get_by_key(_topic, _key), do: nil
-    @doc false
-    def untrack_session(_session_id), do: :ok
-    @doc false
-    def untrack_request(_request_id), do: :ok
-    @doc false
-    def pid_for_session(_), do: nil
-    @doc false
-    def pid_for_request(_), do: nil
+  else
+    def handle_diff(_diff, state), do: {:ok, state}
   end
 end
