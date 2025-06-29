@@ -156,6 +156,18 @@ defmodule Phantom.Request do
     %{jsonrpc: "2.0", method: "notifications/resources/updated", params: content}
   end
 
+  def tools_updated do
+    %{jsonrpc: "2.0", method: "notifications/tools/list_changed"}
+  end
+
+  def prompts_updated do
+    %{jsonrpc: "2.0", method: "notifications/prompts/list_changed"}
+  end
+
+  def resources_updated do
+    %{jsonrpc: "2.0", method: "notifications/resources/list_changed"}
+  end
+
   def notify(content) do
     %{jsonrpc: "2.0", method: "notifications/message", params: content}
   end

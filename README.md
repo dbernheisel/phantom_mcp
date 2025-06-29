@@ -14,7 +14,7 @@ This library provides a complete implementation of the [MCP server specification
 Add Phantom to your dependencies:
 
 ```elixir
-  {:phantom_mcp, "~> 0.2.3"},
+  {:phantom_mcp, "~> 0.3.0"},
 ```
 
 When using with Plug/Phoenix, configure MIME to accept SSE:
@@ -87,6 +87,81 @@ you test it with the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/
 For local testing, you can use [`mcp-remote`](https://github.com/geelen/mcp-remote) to proxy local-only clients to your Phantom-powered MCP server, either while it's hosted locally or remotely. Don't use `mcp-proxy` since it's designed for older SSE-based MCP servers (Phantom is using the newer Streamable HTTP behavior).
 
 We'll go through each one and show how to respond synchronously or asynchronously.
+
+## Defining Tools
+
+You can define tools that have an optional input_schema and an optional output_schema. If no schema is provided, then the client will not know to send arguments to your handlers.
+
+```elixir
+# Defining available tools
+# Be mindful, the input_schema is not validated upon requests.
+@description """
+Create a question for the provided Study.
+"""
+tool :create_question, MyApp.MCP,
+  input_schema: %{
+    required: ~w[description label study_id],
+    properties: %{
+      study_id: %{
+        type: "integer",
+        description: "The unique identifier for the Study"
+      },
+      label: %{
+        type: "string",
+        description: "The title of the Question. The first thing the participant will see when presented with the question"
+      },
+      description: %{
+        type: "string",
+        description: "The contents of the question. About one paragraph of detail that defines one question or task for the participant to perform or answer"
+      }
+    }
+  }
+```
+
+Then implement it:
+
+<!-- tabs-open -->
+
+### Synchronously
+
+```elixir
+require Phantom.Tool, as: Tool
+
+def create_question(%{"study_id" => study_id} = params, session) do
+  changeset = MyApp.Question.changeset(%Question{}, params)
+  with {:ok, question} <- MyApp.Repo.insert(changeset),
+       {:ok, uri, resource_template} <-
+            MyApp.MCP.Router.resource_for(session, :question, id: question.id) do
+    {:reply, Tool.resource_link(uri, resource_template), session}
+  else
+    _ -> {:reply, Tool.error("Invalid paramaters"), session}
+  end
+end
+```
+
+### Asynchronously
+
+```elixir
+require Phantom.Tool, as: Tool
+
+def create_question(%{"study_id" => study_id} = params, session) do
+  Task.async(fn ->
+    Process.sleep(1000)
+    changeset = MyApp.Question.changeset(%Question{}, params)
+    with {:ok, question} <- MyApp.Repo.insert(changeset),
+        {:ok, uri, resource_template} <-
+              MyApp.MCP.Router.resource_for(session, :question, id: question.id) do
+
+      Session.respond(session, Tool.resource_link(uri, resource_template))
+    else
+      _ ->  Session.respond(session, Tool.error("Invalid paramaters")))
+    end
+  end)
+  {:noreply, session}
+end
+```
+
+<!-- tabs-close -->
 
 ## Defining Prompts
 
@@ -293,7 +368,7 @@ def list_resources(cursor, session) do
   # Below is a toy implementation for illustrative purposes.
   cursor =
     if cursor do
-      {:ok, cursor} = Phoenix.Token.verify(Test.Endpoint, @salt, cursor)
+      {:ok, cursor} = Phoenix.Token.verify(MyApp.Endpoint, @salt, cursor)
       cursor
     else
       0
@@ -301,7 +376,7 @@ def list_resources(cursor, session) do
 
   {_before_cursor, after_cursor} = Enum.split_while(1..1000, fn i -> i < cursor end)
   {page, [next | _drop]} = Enum.split(after_cursor, 100)
-  next_cursor = Phoenix.Token.sign(Test.Endpoint, @salt, next)
+  next_cursor = Phoenix.Token.sign(MyApp.Endpoint, @salt, next)
 
   resource_links =
     Enum.map(page, fn i ->
@@ -315,105 +390,40 @@ def list_resources(cursor, session) do
 end
 ```
 
-## Defining Tools
-
-You can define tools that have an optional input_schema and an optional output_schema. If no schema is provided, then the client will not know to send arguments to your handlers.
-
-```elixir
-# Defining available tools
-# Be mindful, the input_schema is not validated upon requests.
-@description """
-Create a question for the provided Study.
-"""
-tool :create_question, MyApp.MCP,
-  input_schema: %{
-    required: ~w[description label study_id],
-    properties: %{
-      study_id: %{
-        type: "integer",
-        description: "The unique identifier for the Study"
-      },
-      label: %{
-        type: "string",
-        description: "The title of the Question. The first thing the participant will see when presented with the question"
-      },
-      description: %{
-        type: "string",
-        description: "The contents of the question. About one paragraph of detail that defines one question or task for the participant to perform or answer"
-      }
-    }
-  }
-}]
-```
-
-Then implement it:
-
-<!-- tabs-open -->
-
-### Synchronously
+You can notify the client of resource updates in case they have subscribed
+to any updates for the resource.
 
 ```elixir
-require Phantom.Tool, as: Tool
-
-def create_question(%{"study_id" => study_id} = params, session) do
-  changeset = MyApp.Question.changeset(%Question{}, params)
-  with {:ok, question} <- MyApp.Repo.insert(changeset),
-       {:ok, uri, resource_template} <-
-            Test.MCP.Router.resource_for(session, :question, id: question.id) do
-    {:reply, Tool.resource_link(uri, resource_template), session}
-  else
-    _ -> {:reply, Tool.error("Invalid paramaters"), session}
-  end
-end
+# Do some work and update some underlying resource,
+# then notify any listeners:
+{:ok, uri} = MyApp.MCP.Router.resource_uri(:my_resource, id: "foo")
+Phantom.Tracker.notify_resource_updated(uri)
 ```
-
-### Asynchronously
-
-```elixir
-require Phantom.Tool, as: Tool
-
-def create_question(%{"study_id" => study_id} = params, session) do
-  Task.async(fn ->
-    Process.sleep(1000)
-    changeset = MyApp.Question.changeset(%Question{}, params)
-    with {:ok, question} <- MyApp.Repo.insert(changeset),
-        {:ok, uri, resource_template} <-
-              Test.MCP.Router.resource_for(session, :question, id: question.id) do
-
-      Session.respond(session, Tool.resource_link(uri, resource_template))
-    else
-      _ ->  Session.respond(session, Tool.error("Invalid paramaters")))
-    end
-  end)
-  {:noreply, session}
-end
-```
-
-<!-- tabs-close -->
 
 ## What PhantomMCP supports
 
 Phantom will implement these MCP requests on your behalf:
 
 - `initialize`. Phantom will detect what capabilities are available to the client based on the provided tooling defined in the Phantom router.
-- `prompts/list` list either the allowed prompts provided in the `connect/2` callback, or all prompts by default. To disable, supply `[]` in the `connect/2` callback.
+- `prompts/list` list either the allowed prompts provided in the `connect/2` callback, or all prompts by default. To disable, return `allow_prompts(session, [])` in the `connect/2` callback.
 - `prompts/get` dispatch the request to your handler if allowed. Read more in `Phantom.Prompt`.
 - `resources/list` dispatch to your MCP router. By default it will be an empty list until you implement it. Read more in `Phantom.Resource`.
-- `resource/templates/list` list either the allowed resources as provided in the `connect/2` callback or all resource templates by default. To disable, supply `[]` in the `connect/2` callback. Read more in `Phantom.ResourceTemplate`.
+- `resource/templates/list` list either the allowed resources as provided in the `connect/2` callback or all resource templates by default. To disable, return `allow_resource_templates(session, [])` in the `connect/2` callback. Read more in `Phantom.ResourceTemplate`.
 - `resources/read` dispatch the request to your handler. `Phantom.Resource`.
-- `resources/subscribe` available if the MCP router is configured with `pubsub`. The session will subscribe to the `Phantom.Session.resource_subscription_topic/0` and listen for the shapes `{:resource_updated, uri}` and `{:resource_updated, name, path_params}`. Upon receiving the update, a notification will be sent to the client.
+- `resources/subscribe` available if the MCP router is configured with `pubsub`. To notify of updates for the resource, use `Phantom.Tracker.notify_resource_updated(uri)`.
+- `resources/unsubscribe` see above.
 - `logging/setLevel` available if the MCP router is configured with `pubsub`. Logs can be sent to client with `Session.log_{level}(session, map_content)`. [See docs](https://modelcontextprotocol.io/specification/2025-03-26/server/utilities/logging#log-levels).
-- `tools/list` list either the allowed tools as provided in the `connect/2` callback or all tools by default. To disable, supply `[]` in the `connect/2` callback.
+- `tools/list` list either the allowed tools as provided in the `connect/2` callback or all tools by default. To disable, return `allow_tools(session, [])` in the `connect/2` callback.
 - `tools/call` dispatch the request to your handler. Read more in `Phantom.Tool`.
 - `completion/complete` dispatch the request to your completion handler for the given prompt or resource.
 - `notification/*` no-op.
 - `ping` pong
+- `notifications/resources/list_changed` - The server informs the client the list of resources has updated. This is not done automatically; you will need to trigger this with `Phantom.Tracker.notify_resource_list/0`, but also be mindful of what resources the session may have access to.
+- `notifications/prompts/list_changed` - The server informs the client the list of prompts has updated. This is triggered when `Phantom.Cache.add_prompt/2` is called.
+- `notifications/tools/list_changed` - The server informs the client the list of tools has updated. This is triggered when `Phantom.Cache.add_tool/2` is called.
 
 Phantom **does not yet support these methods**:
 
-- `notifications/prompts/list_changed` - The server informs the client the list of prompts has updated.
-- `notifications/resources/list_changed` - The server informs the client the list of resources has updated.
-- `notifications/tools/list_changed` - The server informs the client the list of tools has updated.
 - `roots/list` - The server requests the client to provide a list of files available for interaction. This is like `resources/list` but for the client.
 - `sampling/createMessage` - The server requests the client to query their LLM and provide its response. This is for human-in-the-loop agentic actions and could be leveraged when the client requests a prompt from the server.
 - `elicitation/create` - The server requests input from
@@ -441,9 +451,9 @@ defmodule MyApp.MCP.Router do
 
   require Logger
 
-  def connect(session, auth_info) do
+  def connect(session, %{headers: auth_info}) do
     # The `auth_info` will depend on the adapter, in this case it's from
-    # Plug, so it will be the request headers.
+    # Plug, so it will contain query parameters and request headers.
     with {:ok, user} <- MyApp.authenticate(conn, auth_info),
          {:ok, my_session_state} <- MyApp.load_session(session.id) do
       {:ok,

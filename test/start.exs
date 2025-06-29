@@ -57,8 +57,6 @@ defmodule SessionChecker do
     {:ok, state}
   end
 
-  @sessions "phantom:sessions"
-  @requests "phantom:requests"
   def handle_info(:check, state) do
     case Phantom.Tracker.list_sessions() do
       [] ->
@@ -66,11 +64,14 @@ defmodule SessionChecker do
 
       sessions ->
         sessions
-        |> Enum.map(fn {session_id, meta} ->
-          pid = Phantom.Tracker.get_by_key(@sessions, session_id)
-          {session_id, pid, Process.alive?(pid), meta}
+        |> Enum.flat_map(fn {session_id, meta} ->
+          if pid = Phantom.Tracker.get_session(session_id) do
+            [{session_id, pid, Process.alive?(pid), meta}]
+          else
+            []
+          end
         end)
-        |> IO.inspect(label: "SESSIONS")
+        |> tap(&if &1 != [], do: IO.inspect(&1, label: "SESSIONS"))
     end
 
     case Phantom.Tracker.list_requests() do
@@ -79,11 +80,24 @@ defmodule SessionChecker do
 
       requests ->
         requests
-        |> Enum.map(fn {request_id, _} ->
-          pid = Phantom.Tracker.get_by_key(@requests, request_id)
-          {request_id, pid, Process.alive?(pid)}
+        |> Enum.flat_map(fn {request_id, meta} ->
+          if pid = Phantom.Tracker.get_request(request_id) do
+            [{request_id, pid, Process.alive?(pid), meta}]
+          else
+            []
+          end
         end)
-        |> IO.inspect(label: "REQUESTS")
+        |> tap(&if &1 != [], do: IO.inspect(&1, label: "REQUESTS"))
+    end
+
+    case Phantom.Tracker.list_resource_listeners() do
+      [] ->
+        :ok
+
+      uris ->
+        uris
+        |> Enum.map(fn {uri, _meta} -> uri end)
+        |> IO.inspect(label: "RESOURCE SUBSCRIPTIONS")
     end
 
     Process.send_after(self(), :check, 10_000)

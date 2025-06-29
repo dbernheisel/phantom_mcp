@@ -45,9 +45,9 @@ defmodule Phantom.Tool.Annotation do
     attrs =
       Enum.reduce(attrs, %{}, fn
         {:idempotent, v}, acc -> Map.put(acc, :idempotent_hint, v)
-        {:destructive, v}, acc -> Map.put(acc, :idempotent_hint, v)
-        {:read_only, v}, acc -> Map.put(acc, :idempotent_hint, v)
-        {:open_world, v}, acc -> Map.put(acc, :idempotent_hint, v)
+        {:destructive, v}, acc -> Map.put(acc, :destructive_hint, v)
+        {:read_only, v}, acc -> Map.put(acc, :read_only_hint, v)
+        {:open_world, v}, acc -> Map.put(acc, :open_world_hint, v)
         {k, v}, acc -> Map.put(acc, k, v)
       end)
 

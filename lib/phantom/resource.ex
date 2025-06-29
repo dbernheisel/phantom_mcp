@@ -72,7 +72,7 @@ defmodule Phantom.Resource do
   within the scope of the request if not provided, but you will need to provide
   the rest.
 
-  - `blob` - Binary data. This will be base64-encoded by Phantom.
+  - `binary` - Binary data. This will be base64-encoded by Phantom.
   - `:uri` (required) Unique identifier for the resource
   - `:name` (optional) The name of the resource.
   - `:title` (optional) human-readable name of the resource for display purposes.

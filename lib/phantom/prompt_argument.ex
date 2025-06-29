@@ -1,4 +1,7 @@
 defmodule Phantom.Prompt.Argument do
+  @moduledoc """
+
+  """
   import Phantom.Utils
 
   defstruct [:name, :description, required: false]

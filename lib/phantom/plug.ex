@@ -81,7 +81,7 @@ defmodule Phantom.Plug do
 
   Telemetry is provided with these events:
 
-  - `[:phantom, :plug, :request, :connect]` with meta: `~w[session_id last_event_id router opts conn]a`
+  - `[:phantom, :plug, :request, :connect]` with meta: `~w[session router conn opts]a`
   - `[:phantom, :plug, :request, :disconnect]` with meta: `~w[session router conn]a`
   - `[:phantom, :plug, :request, :exception]` with meta: `~w[session router conn stacktrace request exception]a`
   """
@@ -90,6 +90,7 @@ defmodule Phantom.Plug do
 
   import Plug.Conn
 
+  alias Phantom.Cache
   alias Phantom.Request
   alias Phantom.Session
 
@@ -132,16 +133,8 @@ defmodule Phantom.Plug do
   end
 
   defp connect(conn, opts) do
-    # TODO
-    # last_event_id =
-    #   if conn.method == "GET",
-    #     do: get_req_header(conn, "last-event-id") |> List.first(),
-    #     else: nil
     router = opts[:router]
-
-    if not Phantom.Cache.initialized?(router) do
-      Phantom.Cache.register(router)
-    end
+    if not Cache.initialized?(router), do: Cache.register(router)
 
     session =
       Session.new(get_req_header(conn, "mcp-session-id") |> List.first(),
@@ -152,7 +145,10 @@ defmodule Phantom.Plug do
       )
 
     try do
-      case router.connect(session, conn.req_headers) do
+      case router.connect(session, %{
+             params: conn.query_params,
+             headers: conn.req_headers
+           }) do
         {:ok, session} ->
           :telemetry.execute(
             [:phantom, :plug, :request, :connect],
@@ -659,8 +655,8 @@ defmodule Phantom.Plug do
   defp maybe_track_response(state, _), do: state
 
   defp maybe_track_session_stream(conn) do
-    track? = conn.body_params["method"] == "initialize" || conn.method == "GET"
     existing_stream = Phantom.Tracker.get_session(conn.private.phantom.session.id)
+    track? = conn.body_params["method"] == "initialize" || conn.method == "GET"
 
     case {track?, existing_stream} do
       {true, nil} ->

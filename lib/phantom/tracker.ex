@@ -172,6 +172,16 @@ defmodule Phantom.Tracker do
     def subscribe_resource(pubsub, uri), do: {:error, :not_available}
   end
 
+  @doc "Unsubscribe the process to resource notifications from the PubSub on topic #{inspect(@resources)}"
+  if @available do
+    def unsubscribe_resource(uri) do
+      Phoenix.Tracker.untrack(__MODULE__, self(), @resources, uri)
+    end
+  else
+    def unsubscribe_resource(pubsub, uri), do: {:error, :not_available}
+  end
+
+  @doc "Notify any listening MCP sessions that the resource has updated"
   if @available do
     def notify_resource_updated(uri) do
       {:ok,
@@ -181,6 +191,42 @@ defmodule Phantom.Tracker do
     end
   else
     def notify_resource_updated(_), do: {:ok, 0}
+  end
+
+  @doc "Notify any listening MCP sessions that the list of tools has updated"
+  if @available do
+    def notify_tool_list do
+      {:ok,
+       Enum.count(list_sessions(), fn {session_id, _} ->
+         if pid = get_session(session_id), do: GenServer.cast(pid, :tools_updated)
+       end)}
+    end
+  else
+    def notify_tool_list(_), do: {:ok, 0}
+  end
+
+  @doc "Notify any listening MCP sessions that the list of prompts has updated"
+  if @available do
+    def notify_prompt_list do
+      {:ok,
+       Enum.count(list_sessions(), fn {session_id, _} ->
+         if pid = get_session(session_id), do: GenServer.cast(pid, :prompts_updated)
+       end)}
+    end
+  else
+    def notify_prompt_list(_), do: {:ok, 0}
+  end
+
+  @doc "Notify any listening MCP sessions that the list of prompts has updated"
+  if @available do
+    def notify_resource_list do
+      {:ok,
+       Enum.count(list_sessions(), fn {session_id, _} ->
+         if pid = get_session(session_id), do: GenServer.cast(pid, :resources_updated)
+       end)}
+    end
+  else
+    def notify_resource_list(_), do: {:ok, 0}
   end
 
   @doc false

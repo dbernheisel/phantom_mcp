@@ -18,7 +18,7 @@ defmodule Test.MCP.Router do
 
   require Logger
 
-  def connect(session, _last_event_id) do
+  def connect(session, %{headers: _headers, params: _params}) do
     {:ok, session}
   end
 
@@ -62,6 +62,26 @@ defmodule Test.MCP.Router do
   tool :audio_tool, description: "An audio tool"
   tool :with_error_tool, description: "A test tool with an error"
   tool :elicit_tool, description: "A tool that always needs info"
+
+  for i <- 0..200 do
+    tool :"zzz_tool_#{String.pad_leading(to_string(i), 3, "0")}",
+      description: "do not use",
+      function: :zzz_tool
+  end
+
+  def zzz_tool(_params, session) do
+    {:reply, Tool.text("foo"), session}
+  end
+
+  for i <- 0..200 do
+    prompt :"zzz_prompt_#{String.pad_leading(to_string(i), 3, "0")}",
+      description: "do not use",
+      function: :zzz_prompt
+  end
+
+  def zzz_prompt(_params, session) do
+    {:reply, Prompt.response(user: Prompt.text("foo")), session}
+  end
 
   tool :async_embedded_resource_tool, AsyncModule,
     description: "An asyncronous embedded resource tool"

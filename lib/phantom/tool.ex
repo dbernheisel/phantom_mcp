@@ -153,15 +153,37 @@ defmodule Phantom.Tool do
           | resource_link_response()
 
   @doc """
-  Build a tool spec
+  Build a tool spec. Be intentional with the name and description when defining
+  the tool since it will inform the LLM when to use the tool.
 
   The `Phantom.Router.tool/3` macro will build these specs.
+
+  Fields:
+
+  - `:name` - The name of the tool.
+  - `:title` A human-readable title for the tool, useful for UI display.
+  - `:description` - The description of the tool and when to use it.
+  - `:mime_type` - the MIME type of the results.
+  - `:handler` - The module to call.
+  - `:function` - The function to call on the handler module.
+  - `:output_schema` - the JSON schema of the results.
+  - `:input_schema` - The JSON schema of the input arguments.
+  - `:read_only` If `true`, indicates the tool does not modify its environment.
+  - `:destructive` If `true`, the tool may perform destructive updates (only meaningful when `:read_only` is `false`).
+  - `:idempotent` If `true`, calling the tool repeatedly with the same arguments has no additional effect (only meaningful when `:read_only` is `false`).
+  - `:open_world` If `true`, the tool may interact with an "open world" of external entities.
+
   """
   def build(attrs) do
     attrs = Map.new(attrs)
 
     {annotation_attrs, attrs} =
       Map.split(attrs, ~w[title idempotent destructive read_only open_world]a)
+
+    attrs =
+      Map.merge(attrs, %{
+        name: attrs[:name] || to_string(attrs[:function])
+      })
 
     %{
       struct!(__MODULE__, attrs)

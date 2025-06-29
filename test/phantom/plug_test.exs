@@ -476,7 +476,7 @@ defmodule Phantom.PlugTest do
 
     request_resource_subscribe(uri, id: 2, session_id: session_id)
     assert_connected(_conn)
-    assert_response(2, %{result: nil})
+    assert_response(2, %{result: %{result: "", jsonrpc: "2.0"}})
 
     Phantom.Tracker.notify_resource_updated(uri)
 

@@ -103,6 +103,19 @@ defmodule Phantom.Prompt do
   Build a prompt spec
 
   The `Phantom.Router.prompt/3` macro will build these specs.
+
+  Fields:
+    - `:name` - The name of the prompt.
+    - `:description` - The description of the resource and when to use it.
+    - `:handler` - The module to call.
+    - `:function` - The function to call on the handler module.
+    - `:completion_function` - The function to call on the handler module that will provide possible completion results.
+    - `:arguments` - A list of arguments that the prompt takes.
+
+  Argument fields:
+    - `:name` - the name of the argument, eg: "username"
+    - `:description` - description of the argument, eg, "Your Github username"
+    - `:required` - whether the argument is required in order to be called, ie: `true` or `false`
   """
   def build(attrs) do
     attrs =

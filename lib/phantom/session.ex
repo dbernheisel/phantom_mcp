@@ -133,6 +133,21 @@ defmodule Phantom.Session do
     end
   end
 
+  @doc """
+  Unsubscribe the session to a resource.
+
+  This is used by the MCP Router when the client requests to subscribe to the provided resource.
+  """
+  @spec unsubscribe_to_resource(t(), string_uri :: String.t()) :: :ok | :error
+  def unsubscribe_to_resource(%__MODULE__{pubsub: nil}, _uri), do: :error
+
+  def unsubscribe_to_resource(session, uri) do
+    case Phantom.Tracker.get_session(session) do
+      nil -> :error
+      pid -> GenServer.cast(pid, {:unsubscribe_resource, uri})
+    end
+  end
+
   def list_resource_subscriptions(session) do
     case Phantom.Tracker.get_session(session) do
       nil -> []
@@ -233,8 +248,6 @@ defmodule Phantom.Session do
     timeout = Keyword.fetch!(opts, :timeout)
     opts = Keyword.put_new(opts, :log_level, 5)
     {cb, opts} = Keyword.pop(opts, :continue_fun)
-    timer = Process.send_after(self(), :inactivity, timeout)
-
     Process.set_label({__MODULE__, session.id})
 
     :gen_server.enter_loop(
@@ -243,10 +256,8 @@ defmodule Phantom.Session do
       Map.new(
         opts ++
           [
-            subscribed: %{},
             timeout: timeout,
-            last_activity: System.system_time(),
-            timer: timer
+            last_activity: System.system_time()
           ]
       ),
       self(),
@@ -255,8 +266,15 @@ defmodule Phantom.Session do
   end
 
   @doc false
-  def handle_continue(cb, state) when is_function(cb, 1) do
-    maybe_finish(cb.(state))
+  def handle_continue(cb, state) do
+    timer = Process.send_after(self(), :inactivity, state.timeout)
+    state = Map.put(state, :timer, timer)
+
+    if is_function(cb, 1) do
+      maybe_finish(cb.(state))
+    else
+      {:noreply, state}
+    end
   end
 
   @doc false
@@ -326,11 +344,53 @@ defmodule Phantom.Session do
   end
 
   def handle_cast({:subscribe_resource, uri}, state) do
-    if state.subscribed[uri] != :ok do
+    cancel_inactivity(state)
+    Phantom.Tracker.subscribe_resource(uri)
+    {:noreply, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  def handle_cast({:unsubscribe_resource, uri}, state) do
+    cancel_inactivity(state)
+    Phantom.Tracker.unsubscribe_resource(uri)
+    {:noreply, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  def handle_cast({:resource_updated, uri}, state) do
+    cancel_inactivity(state)
+    state.stream_fun.(state, nil, "message", Request.resource_updated(%{uri: uri}))
+    {:noreply, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  def handle_cast(:tools_updated, state) do
+    notify? = state.session.allowed_tools == nil
+
+    if notify? do
       cancel_inactivity(state)
-      Phantom.Tracker.subscribe_resource(uri)
-      subscribed = Map.put(state.subscribed, uri, :ok)
-      state = put_in(state.subscribed, subscribed)
+      state.stream_fun.(state, nil, "message", Request.tools_updated())
+      {:noreply, state |> set_activity() |> schedule_inactivity()}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_cast(:prompts_updated, state) do
+    notify? = state.session.allowed_prompts == nil
+
+    if notify? do
+      cancel_inactivity(state)
+      state.stream_fun.(state, nil, "message", Request.prompts_updated())
+      {:noreply, state |> set_activity() |> schedule_inactivity()}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_cast(:resources_updated, state) do
+    notify? = state.session.allowed_resource_templates == nil
+
+    if notify? do
+      cancel_inactivity(state)
+      state.stream_fun.(state, nil, "message", Request.resources_updated())
       {:noreply, state |> set_activity() |> schedule_inactivity()}
     else
       {:noreply, state}
@@ -340,12 +400,6 @@ defmodule Phantom.Session do
   def handle_cast({:set_log_level, request, log_level}, state) do
     state = state.stream_fun.(state, request.id, "message", %{})
     {:noreply, %{state | log_level: log_level}}
-  end
-
-  def handle_cast({:resource_updated, uri}, state) do
-    cancel_inactivity(state)
-    state.stream_fun.(state, nil, "message", Request.resource_updated(%{uri: uri}))
-    {:noreply, state |> set_activity() |> schedule_inactivity()}
   end
 
   defp maybe_finish(state) do

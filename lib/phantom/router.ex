@@ -18,9 +18,13 @@ defmodule Phantom.Router do
 
   import Plug.Router.Utils, only: [build_path_match: 1]
 
+  alias Phantom.Cache
+  alias Phantom.Prompt
   alias Phantom.Request
   alias Phantom.Resource
+  alias Phantom.ResourceTemplate
   alias Phantom.Session
+  alias Phantom.Tool
 
   @callback connect(Session.t(), Plug.Conn.headers()) ::
               {:ok, Session.t()}
@@ -93,9 +97,27 @@ defmodule Phantom.Router do
         {:error, Request.not_found(), session}
       end
 
-      def resource_uri(%Session{} = session, name, path_params \\ %{}) do
+      def resource_uri(name, path_params \\ %{})
+
+      def resource_uri(%Session{} = session, name) do
         Phantom.Router.resource_uri(
-          Phantom.Cache.get(session, __MODULE__, :resource_templates),
+          Cache.list(session, __MODULE__, :resource_templates),
+          name,
+          %{}
+        )
+      end
+
+      def resource_uri(name, path_params) when is_atom(name) do
+        Phantom.Router.resource_uri(
+          Cache.list(nil, __MODULE__, :resource_templates),
+          name,
+          %{}
+        )
+      end
+
+      def resource_uri(%Session{} = session, name, path_params) do
+        Phantom.Router.resource_uri(
+          Cache.list(session, __MODULE__, :resource_templates),
           name,
           path_params
         )
@@ -160,9 +182,8 @@ defmodule Phantom.Router do
         {:reply, %{}, session}
       end
 
-      def dispatch_method("tools/list", _params, _request, session) do
-        tools = Enum.map(Phantom.Cache.get(session, __MODULE__, :tools), &Phantom.Tool.to_json/1)
-        {:reply, %{tools: tools}, session}
+      def dispatch_method("tools/list", params, _request, session) do
+        Phantom.Router.list_tools(__MODULE__, session, params["cursor"])
       end
 
       def dispatch_method(
@@ -216,6 +237,18 @@ defmodule Phantom.Router do
           %{handler: _handler, completion_function: nil} ->
             Request.completion_response({:noreply, [], session}, session)
 
+          %{completion_function: {m, f}} ->
+            Request.completion_response(
+              apply(m, f, [arg, value, %{session | request: request}]),
+              session
+            )
+
+          %{completion_function: {m, f, a}} ->
+            Request.completion_response(
+              apply(m, f, a ++ [arg, value, %{session | request: request}]),
+              session
+            )
+
           %{handler: handler, completion_function: function} ->
             Request.completion_response(
               apply(handler, function, [arg, value, %{session | request: request}]),
@@ -240,6 +273,18 @@ defmodule Phantom.Router do
           %{completion_function: nil} ->
             Request.completion_response({:reply, [], session}, session)
 
+          %{completion_function: {m, f}} ->
+            Request.completion_response(
+              apply(m, f, [arg, value, %{session | request: request}]),
+              session
+            )
+
+          %{completion_function: {m, f, a}} ->
+            Request.completion_response(
+              apply(m, f, a ++ [arg, value, %{session | request: request}]),
+              session
+            )
+
           %{handler: handler, completion_function: function} ->
             Request.completion_response(
               apply(handler, function, [arg, value, %{session | request: request}]),
@@ -248,14 +293,8 @@ defmodule Phantom.Router do
         end
       end
 
-      def dispatch_method("resources/templates/list", _params, _request, session) do
-        resource_templates =
-          Enum.map(
-            Phantom.Cache.get(session, __MODULE__, :resource_templates),
-            &Phantom.ResourceTemplate.to_json/1
-          )
-
-        {:reply, %{resourceTemplates: resource_templates}, session}
+      def dispatch_method("resources/templates/list", params, _request, session) do
+        Phantom.Router.list_resource_templates(__MODULE__, session, params["cursor"])
       end
 
       def dispatch_method("resources/subscribe", %{"uri" => uri} = _params, request, session) do
@@ -264,7 +303,21 @@ defmodule Phantom.Router do
         else
           case Session.subscribe_to_resource(session, uri) do
             :ok ->
-              {:reply, nil, session}
+              {:reply, Request.empty(), session}
+
+            _ ->
+              {:error, Request.not_found("SSE stream not open"), session}
+          end
+        end
+      end
+
+      def dispatch_method("resources/unsubscribe", %{"uri" => uri} = _params, request, session) do
+        if is_nil(session.pubsub) do
+          {:error, Request.method_not_found(), session}
+        else
+          case Session.unsubscribe_to_resource(session, uri) do
+            :ok ->
+              {:reply, Request.empty(), session}
 
             _ ->
               {:error, Request.not_found("SSE stream not open"), session}
@@ -305,7 +358,7 @@ defmodule Phantom.Router do
         with {:ok, uri} <- resource_uri(session, name, path_params),
              {:ok, uri_struct} <- URI.new(uri) do
           case Enum.find(
-                 Phantom.Cache.get(session, __MODULE__, :resource_templates),
+                 Cache.list(session, __MODULE__, :resource_templates),
                  &(&1.scheme == uri_struct.scheme)
                ) do
             nil ->
@@ -330,13 +383,12 @@ defmodule Phantom.Router do
         end
       end
 
-      def dispatch_method("prompts/list", _params, _request, session) do
-        prompts = Phantom.Cache.get(session, __MODULE__, :prompts)
-        {:reply, %{prompts: Enum.map(prompts, &Phantom.Prompt.to_json/1)}, session}
+      def dispatch_method("prompts/list", params, _request, session) do
+        Phantom.Router.list_prompts(__MODULE__, session, params["cursor"])
       end
 
       def dispatch_method("prompts/get", %{"name" => name} = params, request, session) do
-        prompts = Phantom.Cache.get(session, __MODULE__, :prompts)
+        prompts = Cache.list(session, __MODULE__, :prompts)
 
         case Enum.find(prompts, &(&1.name == name)) do
           nil ->
@@ -414,18 +466,20 @@ defmodule Phantom.Router do
 
       ### handled by your function syncronously:
 
+      require Phantom.Tool, as: Tool
       def local_echo(params, session) do
         # Maps will be JSON-encoded and also provided
         # as structured content.
-        {:reply, Phantom.Tool.text(params), session}
+        {:reply, Tool.text(params), session}
       end
 
       # Or asyncronously:
 
+      require Phantom.Tool, as: Tool
       def local_echo(params, session) do
         Task.async(fn ->
           Process.sleep(1000)
-          Session.respond(session, Phantom.Tool.text(params))
+          Session.respond(session, Tool.text(params))
         end)
 
         {:noreply, session}
@@ -439,12 +493,15 @@ defmodule Phantom.Router do
       opts = Keyword.put_new(unquote(opts), :description, description)
 
       @phantom_tools Phantom.Tool.build(
-                       [
-                         name: unquote(to_string(name)),
-                         handler: unquote(handler),
-                         function: unquote(name),
-                         meta: unquote(Macro.escape(meta))
-                       ] ++ opts
+                       Keyword.merge(
+                         [
+                           name: to_string(unquote(name)),
+                           handler: unquote(handler),
+                           function: unquote(name),
+                           meta: unquote(Macro.escape(meta))
+                         ],
+                         opts
+                       )
                      )
     end
   end
@@ -473,12 +530,15 @@ defmodule Phantom.Router do
       opts = Keyword.put_new(unquote(opts), :description, description)
 
       @phantom_tools Phantom.Tool.build(
-                       [
-                         name: unquote(to_string(name)),
-                         handler: unquote(handler),
-                         function: unquote(function),
-                         meta: unquote(Macro.escape(meta))
-                       ] ++ opts
+                       Keyword.merge(
+                         [
+                           name: to_string(unquote(name)),
+                           handler: unquote(handler),
+                           function: unquote(function),
+                           meta: unquote(Macro.escape(meta))
+                         ],
+                         opts
+                       )
                      )
     end
   end
@@ -503,16 +563,6 @@ defmodule Phantom.Router do
   """
 
   defmacro resource(pattern, handler, function_or_opts, opts \\ []) do
-    uri =
-      case URI.new(pattern) do
-        {:ok, %{path: path, scheme: scheme} = uri}
-        when is_binary(path) and is_binary(scheme) ->
-          uri
-
-        _ ->
-          raise "Provided an invalid URI. Resource URIs must contain a path and a scheme. Provided: #{pattern}"
-      end
-
     # TODO: better error handling
     {handler, function, opts} =
       if is_atom(function_or_opts) do
@@ -521,10 +571,18 @@ defmodule Phantom.Router do
         {__CALLER__.module, handler, function_or_opts}
       end
 
-    resource_router =
-      Module.concat([__CALLER__.module, ResourceRouter, Macro.camelize(uri.scheme)])
+    scheme =
+      case URI.new(pattern) do
+        {:ok, %{scheme: scheme, path: path}} when is_binary(scheme) and is_binary(path) ->
+          scheme
 
-    name = opts[:name] || function
+        _ ->
+          raise "Provided an invalid URI. Resource URIs must contain a path and a scheme. Provided: #{pattern}"
+      end
+
+    resource_router =
+      Module.concat([__CALLER__.module, ResourceRouter, Macro.camelize(scheme)])
+
     meta = %{line: __CALLER__.line, file: __CALLER__.file}
 
     quote line: meta.line, file: meta.file, generated: true do
@@ -532,16 +590,16 @@ defmodule Phantom.Router do
       opts = Keyword.put_new(unquote(opts), :description, description)
 
       @phantom_resource_templates Phantom.ResourceTemplate.build(
-                                    [
-                                      name: unquote(name),
-                                      router: unquote(resource_router),
-                                      uri: unquote(pattern),
-                                      scheme: unquote(uri.scheme),
-                                      path: unquote(uri.path),
-                                      handler: unquote(handler),
-                                      function: unquote(function),
-                                      meta: unquote(Macro.escape(meta))
-                                    ] ++ opts
+                                    Keyword.merge(
+                                      [
+                                        uri: unquote(pattern),
+                                        router: unquote(resource_router),
+                                        handler: unquote(handler),
+                                        function: unquote(function),
+                                        meta: unquote(Macro.escape(meta))
+                                      ],
+                                      opts
+                                    )
                                   )
     end
   end
@@ -600,12 +658,15 @@ defmodule Phantom.Router do
       opts = Keyword.put_new(unquote(opts), :description, description)
 
       @phantom_prompts Phantom.Prompt.build(
-                         [
-                           name: unquote(to_string(name)),
-                           handler: unquote(handler),
-                           function: unquote(name),
-                           meta: unquote(Macro.escape(meta))
-                         ] ++ opts
+                         Keyword.merge(
+                           [
+                             name: to_string(unquote(name)),
+                             handler: unquote(handler),
+                             function: unquote(name),
+                             meta: unquote(Macro.escape(meta))
+                           ],
+                           opts
+                         )
                        )
     end
   end
@@ -634,12 +695,15 @@ defmodule Phantom.Router do
       opts = Keyword.put_new(unquote(opts), :description, description)
 
       @phantom_prompts Phantom.Prompt.build(
-                         [
-                           name: unquote(to_string(name)),
-                           handler: unquote(handler),
-                           function: unquote(function),
-                           meta: unquote(Macro.escape(meta))
-                         ] ++ opts
+                         Keyword.merge(
+                           [
+                             name: to_string(unquote(name)),
+                             handler: unquote(handler),
+                             function: unquote(function),
+                             meta: unquote(Macro.escape(meta))
+                           ],
+                           opts
+                         )
                        )
     end
   end
@@ -663,12 +727,12 @@ defmodule Phantom.Router do
   @doc false
   def __after_verify__(mod) do
     info = mod.__phantom__(:info)
-    Phantom.Cache.raise_if_duplicates(info.prompts)
-    Phantom.Cache.raise_if_duplicates(info.tools)
-    Phantom.Cache.raise_if_duplicates(info.resource_templates)
-    Phantom.Cache.validate!(info.prompts)
-    Phantom.Cache.validate!(info.tools)
-    Phantom.Cache.validate!(info.resource_templates)
+    Cache.raise_if_duplicates(info.prompts)
+    Cache.raise_if_duplicates(info.tools)
+    Cache.raise_if_duplicates(info.resource_templates)
+    Cache.validate!(info.prompts)
+    Cache.validate!(info.tools)
+    Cache.validate!(info.resource_templates)
   end
 
   defmacro __before_compile__(env) do
@@ -716,7 +780,7 @@ defmodule Phantom.Router do
             match(_, to: Phantom.ResourcePlug.NotFound)
           end
 
-        :code.soft_purge(resource_router)
+        true = :code.soft_purge(resource_router)
         Module.create(resource_router, body, Macro.Env.location(env))
       end
     )
@@ -747,6 +811,8 @@ defmodule Phantom.Router do
   end
 
   def resource_uri(resource_templates, name, path_params) do
+    name = to_string(name)
+
     if resource_template = Enum.find(resource_templates, &(&1.name == name)) do
       path_params = Map.new(path_params)
       {params, segments} = build_path_match(resource_template.path)
@@ -769,7 +835,7 @@ defmodule Phantom.Router do
 
   @doc false
   def tool_capability(capabilities, router, session) do
-    if Enum.any?(Phantom.Cache.get(session, router, :tools)) do
+    if Enum.any?(Cache.list(session, router, :tools)) do
       Map.put(capabilities, :tools, %{listChanged: false})
     else
       capabilities
@@ -778,7 +844,7 @@ defmodule Phantom.Router do
 
   @doc false
   def prompt_capability(capabilities, router, session) do
-    if Enum.any?(Phantom.Cache.get(session, router, :prompts)) do
+    if Enum.any?(Cache.list(session, router, :prompts)) do
       Map.put(capabilities, :prompts, %{listChanged: false})
     else
       capabilities
@@ -787,7 +853,7 @@ defmodule Phantom.Router do
 
   @doc false
   def resource_capability(capabilities, router, session) do
-    if Enum.any?(Phantom.Cache.get(session, router, :resource_templates)) do
+    if Enum.any?(Cache.list(session, router, :resource_templates)) do
       Map.put(capabilities, :resources, %{
         subscribe: not is_nil(session.pubsub),
         listChanged: false
@@ -806,8 +872,8 @@ defmodule Phantom.Router do
 
   @doc false
   def completion_capability(capabilities, router, session) do
-    resource_templates = Phantom.Cache.get(session, router, :resource_templates)
-    prompts = Phantom.Cache.get(session, router, :prompts)
+    resource_templates = Cache.list(session, router, :resource_templates)
+    prompts = Cache.list(session, router, :prompts)
 
     Enum.reduce_while(prompts ++ resource_templates, capabilities, fn entity, _ ->
       if entity.completion_function do
@@ -884,6 +950,8 @@ defmodule Phantom.Router do
       {:noreply, _session} ->
         case Task.yield(task) do
           {:ok, result} -> {:ok, uri, result}
+          {:error, error} -> {:error, error, session}
+          {:error, error, session} -> {:error, error, session}
         end
 
       {:reply, result, _session} ->
@@ -903,27 +971,86 @@ defmodule Phantom.Router do
   def wrap(_type, {:noreply, %Session{}} = result, _session), do: result
 
   def wrap(:prompt, {:reply, result, %Session{} = session}, _session) do
-    {:reply, Phantom.Prompt.response(result, session.request.spec), session}
+    {:reply, Prompt.response(result, session.request.spec), session}
   end
 
   def wrap(:tool, {:reply, result, %Session{} = session}, _session) do
-    {:reply, Phantom.Tool.response(result), session}
+    {:reply, Tool.response(result), session}
+  end
+
+  defp paginate(entities, cursor, fun) do
+    entities
+    |> Enum.chunk_while(
+      {0, []},
+      fn
+        _entity, %{} = cursor ->
+          {:halt, cursor}
+
+        %{name: name}, acc when name < cursor ->
+          {:cont, acc}
+
+        %{name: name}, {100, page} ->
+          {:cont, Enum.reverse(page), %{nextCursor: name}}
+
+        %{name: name} = entity, {count, page} when name >= cursor ->
+          {:cont, {count + 1, [fun.(entity) | page]}}
+      end,
+      fn
+        %{} = cursor -> {:cont, cursor, []}
+        {_count, page} -> {:cont, Enum.reverse(page), []}
+      end
+    )
+    |> case do
+      [page, cursor] -> {page, cursor}
+      [page] -> {page, nil}
+      [] -> {[], nil}
+    end
+  end
+
+  @doc false
+  def list_tools(router, session, cursor) do
+    {page, next_cursor} =
+      session
+      |> Cache.list(router, :tools)
+      |> paginate(cursor, &Tool.to_json/1)
+
+    {:reply, Map.merge(%{tools: page}, next_cursor || %{}), session}
+  end
+
+  @doc false
+  def list_resource_templates(router, session, cursor) do
+    {page, next_cursor} =
+      session
+      |> Cache.list(router, :resource_templates)
+      |> paginate(cursor, &ResourceTemplate.to_json/1)
+
+    {:reply, Map.merge(%{resourceTemplates: page}, next_cursor || %{}), session}
+  end
+
+  @doc false
+  def list_prompts(router, session, cursor) do
+    {page, next_cursor} =
+      session
+      |> Cache.list(router, :prompts)
+      |> paginate(cursor, &Prompt.to_json/1)
+
+    {:reply, Map.merge(%{prompts: page}, next_cursor || %{}), session}
   end
 
   @doc false
   def get_tool(router, session, name) do
-    Enum.find(Phantom.Cache.get(session, router, :tools), &(&1.name == name))
+    Enum.find(Cache.list(session, router, :tools), &(&1.name == name))
   end
 
   @doc false
   def get_prompt(router, session, name) do
-    Enum.find(Phantom.Cache.get(session, router, :prompts), &(&1.name == name))
+    Enum.find(Cache.list(session, router, :prompts), &(&1.name == name))
   end
 
   @doc false
   def get_resource_router(router, session, scheme) do
     Enum.find_value(
-      Phantom.Cache.get(session, router, :resource_templates),
+      Cache.list(session, router, :resource_templates),
       &(&1.scheme == scheme && &1.router)
     )
   end
@@ -931,7 +1058,7 @@ defmodule Phantom.Router do
   @doc false
   def get_resource_template(router, session, uri_template) do
     Enum.find(
-      Phantom.Cache.get(session, router, :resource_templates),
+      Cache.list(session, router, :resource_templates),
       &(&1.uri_template == uri_template)
     )
   end
