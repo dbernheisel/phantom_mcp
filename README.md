@@ -82,40 +82,77 @@ end
 <!-- tabs-close -->
 
 Now the fun begins: it's time to define your MCP router that catalogs all your tools, prompts, and resources. When you're creating your MCP server, make sure
-you test it with the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector).
+you test it with the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) or your client of choice.
 
 For local testing, you can use [`mcp-remote`](https://github.com/geelen/mcp-remote) to proxy local-only clients to your Phantom-powered MCP server, either while it's hosted locally or remotely. Don't use `mcp-proxy` since it's designed for older SSE-based MCP servers (Phantom is using the newer Streamable HTTP behavior).
 
-We'll go through each one and show how to respond synchronously or asynchronously.
+First we're define the MCP router:
+
+```elixir
+defmodule MyApp.MCP.Router do
+  @moduledoc """
+  Provides tools, prompts, and resources to aide in researching
+  topics and creating research studies using the platform {MyApp}.
+  """
+
+  use Phantom.Router,
+    name: "MyApp",
+    vsn: "1.0",
+    instructions: @moduledoc
+end
+```
+
+I used the `@moduledoc` as the same documentation for the client; feel free to separate
+the instructions from internal documentation.
+
+> #### Instructions and descriptions are important! {: .neutral}
+>
+> These instructions and descriptions for tools, prompts, and resources
+> will be used by the LLM to determine when and how to use your tooling.
+> Don't be too verbose, but also don't have vague instructions.
+
+You likely need to consider authentication, so look at `m:Phantom#module-authentication-and-authorization`
+for how to implement it; tldr, implement the `c:Phantom.Router.connect/2` callback and return `{:ok, session}`
+upon success.
+
+Now we'll go through each one and show how to respond synchronously or asynchronously.
 
 ## Defining Tools
 
-You can define tools that have an optional input_schema and an optional output_schema. If no schema is provided, then the client will not know to send arguments to your handlers.
+You can define tools that have an optional `input_schema` and an optional `output_schema`.
+If no `input_schema` is provided, then the client will not know to send arguments to your handlers.
 
 ```elixir
-# Defining available tools
-# Be mindful, the input_schema is not validated upon requests.
-@description """
-Create a question for the provided Study.
-"""
-tool :create_question, MyApp.MCP,
-  input_schema: %{
-    required: ~w[description label study_id],
-    properties: %{
-      study_id: %{
-        type: "integer",
-        description: "The unique identifier for the Study"
-      },
-      label: %{
-        type: "string",
-        description: "The title of the Question. The first thing the participant will see when presented with the question"
-      },
-      description: %{
-        type: "string",
-        description: "The contents of the question. About one paragraph of detail that defines one question or task for the participant to perform or answer"
+defmodule MyApp.MCP.Router do
+  # ...
+
+  # Defining available tools
+  # the `@description` attribute will automatically be read, or you can provide `:description` directly.
+  @description """
+  Create a question for the provided Study.
+  """
+  tool :create_question,
+    # Provide a handler. If not provided, the current module will be assumed.
+    MyApp.MCP,
+    # Provide an `input_schema`.
+    input_schema: %{
+      required: ~w[description label study_id],
+      properties: %{
+        study_id: %{
+          type: "integer",
+          description: "The unique identifier for the Study"
+        },
+        label: %{
+          type: "string",
+          description: "The title of the Question. The first thing the participant will see when presented with the question"
+        },
+        description: %{
+          type: "string",
+          description: "The contents of the question. About one paragraph of detail that defines one question or task for the participant to perform or answer"
+        }
       }
     }
-  }
+end
 ```
 
 Then implement it:
@@ -125,6 +162,8 @@ Then implement it:
 ### Synchronously
 
 ```elixir
+# If outside of the Router, you'll want to `require Phantom.Tool`.
+# If implementing in the router, this will already be required.
 require Phantom.Tool, as: Tool
 
 def create_question(%{"study_id" => study_id} = params, session) do
@@ -142,6 +181,8 @@ end
 ### Asynchronously
 
 ```elixir
+# If outside of the Router, you'll want to `require Phantom.Tool`.
+# If implementing in the router, this will already be required.
 require Phantom.Tool, as: Tool
 
 def create_question(%{"study_id" => study_id} = params, session) do
@@ -167,16 +208,15 @@ end
 
 ```elixir
 defmodule MyApp.MCP.Router do
-  use Phantom.Router,
-    name: "MyApp",
-    vsn: "1.0"
+  # ...
 
   # Prompts may contain arguments. If there are arguments
   # you may want to also provide a completion function to
   # help the client fill in the argument.
 
   @description """
-  Review the provided Study and provide meaningful feedback about the study and let me know if there are gaps or missing questions. We want
+  Review the provided Study and provide meaningful feedback about the
+  study and let me know if there are gaps or missing questions. We want
   a meaningful study that can provide insight to the research goals stated
   in the study.
   """
@@ -189,6 +229,7 @@ defmodule MyApp.MCP.Router do
         required: true
       }
     ]
+end
 ```
 
 Then implement it
@@ -485,8 +526,8 @@ defmodule MyApp.MCP.Router do
 
 There are several optional callbacks to help you hook into the lifecycle of the connections.
 
-- `disconnect/1` means the request has closed, not that the session is finished.
-- `terminate/1` means the session has finished and the client doesn't intend to resume it.
+- `c:Phantom.Router.disconnect/1` means the request has closed, not that the session is finished.
+- `c:Phantom.Router.terminate/1` means the session has finished and the client doesn't intend to resume it.
 
 For Telemetry, please see `m:Phantom.Plug#module-telemetry` and `m:Phantom.Router#module-telemetry` for emitted telemetry hooks.
 

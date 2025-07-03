@@ -1,5 +1,5 @@
 defmodule Phantom.Request do
-  @moduledoc false
+  @moduledoc "Standard requests and responses for the MCP protocol"
   defstruct [:id, :type, :method, :params, :response, :spec]
 
   @opaque t :: %__MODULE__{
@@ -22,31 +22,39 @@ defmodule Phantom.Request do
   import Phantom.Utils
   alias Phantom.Session
 
+  @doc "Invalid request"
   def invalid(message \\ nil) do
     %{code: @invalid_request, message: message || "Invalid request"}
   end
 
+  @doc "Invalid request due to bad parameters"
+  def invalid_params(data), do: %{code: @invalid_params, message: "Invalid Params", data: data}
+  def invalid_params, do: %{code: @invalid_params, message: "Invalid Params"}
+
+  @doc "Invalid request due to parsing error"
   def parse_error(message \\ nil) do
     %{code: @parse_error, message: message || "Parsing error"}
   end
 
+  @doc "Invalid request due to no streaming connection being available"
   def closed(message \\ nil) do
     %{code: @connection, message: message || "Connection closed"}
   end
 
+  @doc "Server encountered an issue"
   def internal_error(message \\ nil) do
     %{code: @internal_error, message: message || "Internal server error"}
   end
 
+  @doc "The method is not implemented or found"
   def not_found(message \\ nil),
     do: %{code: @method_not_found, message: message || "Method not found"}
 
+  @doc "The resource is not found"
   def resource_not_found(data),
     do: %{code: @resource_not_found, data: data, message: "Resource not found"}
 
-  def invalid_params(data), do: %{code: @invalid_params, message: "Invalid Params", data: data}
-  def invalid_params, do: %{code: @invalid_params, message: "Invalid Params"}
-
+  @doc false
   def build(nil), do: nil
 
   def build(%{"jsonrpc" => "2.0", "method" => method} = request)
@@ -72,6 +80,7 @@ defmodule Phantom.Request do
     {:error, struct!(__MODULE__, id: request["id"], response: error(request["id"], invalid()))}
   end
 
+  @doc false
   def to_json(%__MODULE__{} = request) do
     %{
       "jsonrpc" => "2.0",
@@ -81,18 +90,22 @@ defmodule Phantom.Request do
     }
   end
 
+  @doc "Ping request"
   def ping() do
     %{jsonrpc: "2.0", method: "ping", id: UUIDv7.generate()}
   end
 
+  @doc "An empty response"
   def empty() do
     %{jsonrpc: "2.0", result: ""}
   end
 
+  @doc false
   def result(%__MODULE__{} = request, type, result) do
     %{request | type: type, response: %{id: request.id, jsonrpc: "2.0", result: result}}
   end
 
+  @doc "Response error"
   def error(id \\ nil, error) do
     %{jsonrpc: "2.0", error: error, id: id}
   end
@@ -130,6 +143,7 @@ defmodule Phantom.Request do
     }
   end
 
+  @doc false
   def resource_response({:error, reason}, _uri, session) do
     {:error, reason, session}
   end
@@ -152,26 +166,32 @@ defmodule Phantom.Request do
     {:reply, Phantom.Resource.response(results), session}
   end
 
+  @doc "Resource updated notification"
   def resource_updated(content) do
     %{jsonrpc: "2.0", method: "notifications/resources/updated", params: content}
   end
 
+  @doc "Tools List updated notification"
   def tools_updated do
     %{jsonrpc: "2.0", method: "notifications/tools/list_changed"}
   end
 
+  @doc "Prompts List updated notification"
   def prompts_updated do
     %{jsonrpc: "2.0", method: "notifications/prompts/list_changed"}
   end
 
+  @doc "Resources List updated notification"
   def resources_updated do
     %{jsonrpc: "2.0", method: "notifications/resources/list_changed"}
   end
 
+  @doc "A generic notifiation"
   def notify(content) do
     %{jsonrpc: "2.0", method: "notifications/message", params: content}
   end
 
+  @doc "Progress notifiation"
   def notify_progress(progress_token, progress, total) do
     %{
       jsonrpc: "2.0",

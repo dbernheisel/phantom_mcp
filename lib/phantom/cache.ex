@@ -7,7 +7,11 @@ defmodule Phantom.Cache do
   to use the functions herein.
   """
 
-  @doc "Initialize the cache with compiled tooling for the given router."
+  @doc """
+  Initialize the cache with compiled tooling for the given router.
+
+  You likely don't need to call this yourself, as `Phantom.Plug` will call it if needed.
+  """
   def register(router) do
     if not :persistent_term.get({Phantom, router, :initialized}, false) do
       info = router.__phantom__(:info)
@@ -72,11 +76,10 @@ defmodule Phantom.Cache do
   end
 
   @doc """
-  List
-
-  This will also purge and generate a ResourceRouter module for each scheme
-  provided.
+  List all the entities for the given type.
   """
+  @spec list(Session.t() | nil, module(), :tools | :prompts | :resource_templates) ::
+          list(Phantom.Tool.t() | Phantom.Prompt.t() | Phantom.ResourceTemplate.t())
   def list(nil, module, type) do
     :persistent_term.get({Phantom, module, type}, [])
   end
@@ -90,6 +93,7 @@ defmodule Phantom.Cache do
     end
   end
 
+  @doc false
   def initialized?(router) do
     :persistent_term.get({__MODULE__, router, :initialized}, false) == true
   end

@@ -1,4 +1,9 @@
-## Unreleased
+## 0.3.1
+
+- Add `[:phantom, :plug, :request, :terminate]` telemetry event.
+- Improve docs
+
+## 0.3.0
 
 - Move logging functions from `Phantom.Session` into `Phantom.ClientLogger`.
 - Rename `Phantom.Tracker` functions to be clearer and more straightforward.

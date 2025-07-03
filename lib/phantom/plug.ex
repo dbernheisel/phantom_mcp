@@ -83,6 +83,7 @@ defmodule Phantom.Plug do
 
   - `[:phantom, :plug, :request, :connect]` with meta: `~w[session router conn opts]a`
   - `[:phantom, :plug, :request, :disconnect]` with meta: `~w[session router conn]a`
+  - `[:phantom, :plug, :request, :terminate]` with meta: `~w[session router conn]a`
   - `[:phantom, :plug, :request, :exception]` with meta: `~w[session router conn stacktrace request exception]a`
   """
 
@@ -290,10 +291,21 @@ defmodule Phantom.Plug do
     session = conn.private.phantom.session
     Phantom.Tracker.untrack_session(session.id)
 
-    case conn.private.phantom.router.terminate(session) do
-      {:ok, _} -> send_resp(conn, 200, "")
-      _ -> send_resp(conn, 204, "")
-    end
+    conn =
+      case conn.private.phantom.router.terminate(session) do
+        {:ok, _} -> send_resp(conn, 200, "")
+        _ -> send_resp(conn, 204, "")
+      end
+
+    :telemetry.execute(
+      [:phantom, :plug, :request, :terminate],
+      %{},
+      %{
+        router: conn.private.phantom.router,
+        session: conn.private.phantom.session,
+        conn: conn
+      }
+    )
   end
 
   defp dispatch(%Plug.Conn{method: "POST"} = conn, _opts) do
@@ -635,6 +647,7 @@ defmodule Phantom.Plug do
           required(:method) => String.t(),
           optional(String.t() | atom()) => atom() | String.t()
         }
+  @spec www_authenticate(map()) :: String.t()
   def www_authenticate(info) do
     info = Map.new(info)
     {method, info} = Map.pop(info, :method)

@@ -26,21 +26,73 @@ defmodule Phantom.Router do
   alias Phantom.Session
   alias Phantom.Tool
 
-  @callback connect(Session.t(), Plug.Conn.headers()) ::
+  @doc """
+  When the connection is opening, this callback will be invoked.
+
+  This is critical for authentication and authorization.
+
+  - `{:ok, session}` - The session is authenticated and authorized.
+  - `{:unauthorized | 401, www_authenticate_header}` - The session is not authenticated. The `www_authenticate_header` should
+  reveal to the client how to authenticate. This can either be a string to represent a built header, or a map
+  that is passed into `Phantom.Plug.www_authenticate/1` to build the header.
+  - `{:forbidden | 403, message}` - The session is not authorized. For example, the user is authenticated,
+  but lacks the account permissions to access the MCP server.
+  - `{:error, message}` - The connection should be rejected for any other reason.
+  """
+  @callback connect(Session.t(), %{
+              optional(:headers) => Plug.Conn.headers(),
+              optional(:params) => Plug.Conn.query_params()
+            }) ::
               {:ok, Session.t()}
-              | {:unauthorized | 403, www_authenticate_header :: Phantom.Plug.www_authenticate()}
-              | {:forbidden | 401, message :: String.t()}
+              | {:unauthorized | 401, www_authenticate_header :: Phantom.Plug.www_authenticate()}
+              | {:forbidden | 403, message :: String.t()}
               | {:error, any()}
-  @callback disconnect(Session.t()) :: any()
+  @doc """
+  When the connection is closing, this callback will be invoked.
+
+  The return value is largely ignored. This is a lifecycle event that will likely happen very often.
+  This could be helpful if you wanted to emit a side-effect when the connection closes or
+  modify the session. Consider hooking into the `[:phantom, :plug, :request, :disconnect]`
+  telemetry event instead. The telemetry event will receive the modified session if implemented.
+  """
+  @callback disconnect(Session.t()) :: {:ok, Session.t()} | any()
+
+  @doc """
+  When the session is terminating, this callback will be invoked. Termination is when the client
+  indicates they are finished with the MCP session.
+
+  The callback will be invoked and should return `{:ok, _}` or `{:error, _}` to indicate
+  success or not in terminating the session. Consider hooking into the
+  `[:phantom, :plug, :request, :terminate]` telemetry event for side-effects.
+  """
   @callback terminate(Session.t()) :: {:ok, any()} | {:error, any()}
 
+  @doc false
   @callback dispatch_method(String.t(), module(), map(), Session.t()) ::
               {:reply, any(), Session.t()}
               | {:noreply, Session.t()}
               | {:error, %{required(:code) => neg_integer(), required(:message) => binary()},
                  Session.t()}
 
+  @doc """
+  Return the instructions for the MCP server for a given session. This is retrieved when the client
+  is initializing with the server.
+
+  By default, it will return the compiled `:instructions` provided to `use Phantom.Router`, however
+  if you need the instructions to be dynamic based on the session, you may implement this
+  callback and return `{:ok, "my instructions"}`. Any other shape will result in no instructions.
+  """
   @callback instructions(Session.t()) :: {:ok, String.t()}
+
+  @doc """
+  Return the server information for the MCP server for a given session. This is retrieved when the client
+  is initializing with the server.
+
+  By default, it will return the static `:name` and `:vsn` provided to `use Phantom.Router`, however
+  if you need the instructions to be dynamic based on the session, you may implement this
+  callback and return `{:ok, %{name: "my name", version: "my version"}`. Any other shape will result
+  in no server information.
+  """
   @callback server_info(Session.t()) ::
               {:ok, %{name: String.t(), version: String.t()}} | {:error, any()}
   @doc """
@@ -81,6 +133,7 @@ defmodule Phantom.Router do
 
       @name unquote(name)
       @vsn unquote(vsn)
+      @instructions unquote(instructions)
 
       Module.register_attribute(__MODULE__, :phantom_tools, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_prompts, accumulate: true)
@@ -90,37 +143,128 @@ defmodule Phantom.Router do
       def disconnect(session), do: {:ok, session}
       def terminate(session), do: {:error, nil}
 
-      def instructions(_session), do: {:ok, unquote(instructions)}
+      def instructions(_session), do: {:ok, @instructions}
       def server_info(_session), do: {:ok, %{name: @name, version: @vsn}}
 
       def list_resources(_cursor, session) do
         {:error, Request.not_found(), session}
       end
 
-      def resource_uri(name, path_params \\ %{})
+      @doc """
+      Return the Resource URI for the resource by name and params.
 
-      def resource_uri(%Session{} = session, name) do
-        Phantom.Router.resource_uri(
-          Cache.list(session, __MODULE__, :resource_templates),
-          name,
-          %{}
-        )
-      end
+      For example:
 
-      def resource_uri(name, path_params) when is_atom(name) do
-        Phantom.Router.resource_uri(
-          Cache.list(nil, __MODULE__, :resource_templates),
-          name,
-          %{}
-        )
-      end
+         iex> MyApp.MCPRouter.resource_uri(session, :my_resource, id: 4)
+         {:ok, "myapp:///foo/bar/4"}
 
-      def resource_uri(%Session{} = session, name, path_params) do
+         # Without the session, it cannot account for authorized resources
+         iex> MyApp.MCPRouter.resource_uri(:my_resource, id: 4)
+         {:ok, "myapp:///foo/bar/4"}
+      """
+      def resource_uri(name) when is_atom(name), do: resource_uri(nil, name, [])
+
+      def resource_uri(%Session{} = session, name) when is_atom(name),
+        do: resource_uri(session, name, [])
+
+      def resource_uri(nil, name) when is_atom(name), do: resource_uri(nil, name, [])
+
+      def resource_uri(name, path_params) when is_atom(name),
+        do: resource_uri(nil, name, path_params)
+
+      def resource_uri(session, name, path_params) do
         Phantom.Router.resource_uri(
           Cache.list(session, __MODULE__, :resource_templates),
           name,
           path_params
         )
+      end
+
+      @doc """
+      Return the Resource URI and ResourceTemplate spec for the resource by name and params.
+
+      For example:
+
+         iex> MyApp.MCPRouter.resource_for(session, :my_resource, id: 4)
+         {:ok, "myapp:///foo/bar/4", %Phantom.ResourceTemplate{}}
+
+         # Without the session, it cannot account for authorized resources
+         iex> MyApp.MCPRouter.resource_for(:my_resource, id: 4)
+         {:ok, "myapp:///foo/bar/4", %Phantom.ResourceTemplate{}}
+      """
+      def resource_for(name) when is_atom(name), do: resource_for(nil, name, [])
+
+      def resource_for(%Session{} = session, name) when is_atom(name),
+        do: resource_for(session, name, [])
+
+      def resource_for(nil, name) when is_atom(name), do: resource_for(nil, name, [])
+
+      def resource_for(name, path_params) when is_atom(name),
+        do: resource_for(nil, name, path_params)
+
+      def resource_for(session, name, path_params) when is_atom(name) do
+        with {:ok, uri} <- resource_uri(session, name, path_params),
+             {:ok, uri_struct} <- URI.new(uri) do
+          name = to_string(name)
+
+          case Enum.find(
+                 Cache.list(session, __MODULE__, :resource_templates),
+                 &(&1.scheme == uri_struct.scheme && &1.name == name)
+               ) do
+            nil ->
+              {:error, Request.invalid_params(), session}
+
+            resource_template ->
+              {:ok, uri, resource_template}
+          end
+        end
+      end
+
+      @doc """
+      Dispatch an internal read request
+
+      For example:
+
+         iex> MyApp.MCPRouter.read_resource(session, :my_resource, id: 4)
+         {:ok, "myapp:///resources/4", %{
+           blob: "abc123"
+           uri: "myapp:///resources/4",
+           mimeType: "audio/wav",
+           name: "Some audio",
+           title: "Super audio"
+         }}
+
+         # Without the session, it cannot account for authorized resources
+         iex> MyApp.MCPRouter.read_resource(:my_resource, id: 4)
+         {:ok, "myapp:///resources/4", %{
+           blob: "abc123"
+           uri: "myapp:///resources/4",
+           mimeType: "audio/wav",
+           name: "Some audio",
+           title: "Super audio"
+         }}
+      """
+      def read_resource(name) when is_atom(name), do: read_resource(nil, name, [])
+
+      def read_resource(%Session{} = session, name) when is_atom(name),
+        do: read_resource(session, name, [])
+
+      def read_resource(nil, name) when is_atom(name), do: read_resource(nil, name, [])
+
+      def read_resource(name, path_params) when is_atom(name),
+        do: read_resource(nil, name, path_params)
+
+      def read_resource(%Session{} = session, name, path_params) do
+        with {:ok, uri} <- resource_uri(session, name, path_params),
+             {:ok, uri_struct} <- URI.new(uri) do
+          case Phantom.Router.get_resource_router(__MODULE__, session, uri_struct.scheme) do
+            nil ->
+              {:error, Request.invalid_params(), session}
+
+            router ->
+              Phantom.Router.read_resource(session, router, uri_struct)
+          end
+        end
       end
 
       @doc false
@@ -146,7 +290,7 @@ defmodule Phantom.Router do
         server_info =
           case server_info(session) do
             {:ok, result} -> result
-            _ -> ""
+            _ -> %{}
           end
 
         session = %{
@@ -193,32 +337,13 @@ defmodule Phantom.Router do
             session
           ) do
         case Session.set_log_level(session, request, log_level) do
-          :ok ->
-            {:reply, %{}, session}
-
-          :error ->
-            {:error, Request.closed(), session}
+          :ok -> {:reply, %{}, session}
+          :error -> {:error, Request.closed(), session}
         end
       end
 
       def dispatch_method("tools/call", %{"name" => name} = params, request, session) do
-        case Phantom.Router.get_tool(__MODULE__, session, name) do
-          nil ->
-            {:error, Request.invalid_params(), session}
-
-          tool ->
-            params = Map.get(params, "arguments", %{})
-
-            Phantom.Router.wrap(
-              :tool,
-              apply(
-                tool.handler,
-                tool.function,
-                [params, %{session | request: %{request | spec: tool}}]
-              ),
-              session
-            )
-        end
+        Phantom.Router.get_tool(__MODULE__, session, params, request)
       end
 
       def dispatch_method(
@@ -230,31 +355,7 @@ defmodule Phantom.Router do
             request,
             session
           ) do
-        case Phantom.Router.get_prompt(__MODULE__, session, name) do
-          nil ->
-            {:error, Request.invalid_params(), session}
-
-          %{handler: _handler, completion_function: nil} ->
-            Request.completion_response({:noreply, [], session}, session)
-
-          %{completion_function: {m, f}} ->
-            Request.completion_response(
-              apply(m, f, [arg, value, %{session | request: request}]),
-              session
-            )
-
-          %{completion_function: {m, f, a}} ->
-            Request.completion_response(
-              apply(m, f, a ++ [arg, value, %{session | request: request}]),
-              session
-            )
-
-          %{handler: handler, completion_function: function} ->
-            Request.completion_response(
-              apply(handler, function, [arg, value, %{session | request: request}]),
-              session
-            )
-        end
+        Phantom.Router.prompt_completion(__MODULE__, session, name, arg, value, request)
       end
 
       def dispatch_method(
@@ -266,31 +367,7 @@ defmodule Phantom.Router do
             request,
             session
           ) do
-        case Phantom.Router.get_resource_template(__MODULE__, session, uri_template) do
-          nil ->
-            {:error, Request.invalid_params(), session}
-
-          %{completion_function: nil} ->
-            Request.completion_response({:reply, [], session}, session)
-
-          %{completion_function: {m, f}} ->
-            Request.completion_response(
-              apply(m, f, [arg, value, %{session | request: request}]),
-              session
-            )
-
-          %{completion_function: {m, f, a}} ->
-            Request.completion_response(
-              apply(m, f, a ++ [arg, value, %{session | request: request}]),
-              session
-            )
-
-          %{handler: handler, completion_function: function} ->
-            Request.completion_response(
-              apply(handler, function, [arg, value, %{session | request: request}]),
-              session
-            )
-        end
+        Phantom.Router.resource_completion(__MODULE__, session, uri_template, arg, value, request)
       end
 
       def dispatch_method("resources/templates/list", params, _request, session) do
@@ -354,58 +431,12 @@ defmodule Phantom.Router do
         end
       end
 
-      def resource_for(%Session{} = session, name, path_params \\ []) do
-        with {:ok, uri} <- resource_uri(session, name, path_params),
-             {:ok, uri_struct} <- URI.new(uri) do
-          case Enum.find(
-                 Cache.list(session, __MODULE__, :resource_templates),
-                 &(&1.scheme == uri_struct.scheme)
-               ) do
-            nil ->
-              {:error, Request.invalid_params(), session}
-
-            resource_template ->
-              {:ok, uri, resource_template}
-          end
-        end
-      end
-
-      def read_resource(%Session{} = session, name, path_params \\ []) do
-        with {:ok, uri} <- resource_uri(session, name, path_params),
-             {:ok, uri_struct} <- URI.new(uri) do
-          case Phantom.Router.get_resource_router(__MODULE__, session, uri_struct.scheme) do
-            nil ->
-              {:error, Request.invalid_params(), session}
-
-            router ->
-              Phantom.Router.read_resource(session, router, uri_struct)
-          end
-        end
-      end
-
       def dispatch_method("prompts/list", params, _request, session) do
         Phantom.Router.list_prompts(__MODULE__, session, params["cursor"])
       end
 
-      def dispatch_method("prompts/get", %{"name" => name} = params, request, session) do
-        prompts = Cache.list(session, __MODULE__, :prompts)
-
-        case Enum.find(prompts, &(&1.name == name)) do
-          nil ->
-            {:error, Request.invalid_params(), session}
-
-          prompt ->
-            args = Map.get(params, "arguments", %{})
-
-            Phantom.Router.wrap(
-              :prompt,
-              apply(prompt.handler, prompt.function, [
-                args,
-                %{session | request: %{request | spec: prompt}}
-              ]),
-              session
-            )
-        end
+      def dispatch_method("prompts/get", params, request, session) do
+        Phantom.Router.get_prompt(__MODULE__, session, params, request)
       end
 
       def dispatch_method("resources/list", params, request, session) do
@@ -506,7 +537,7 @@ defmodule Phantom.Router do
     end
   end
 
-  @doc "See `tool/3`"
+  @doc "See `Phantom.Router.tool/3`"
   defmacro tool(name, opts_or_handler \\ []) do
     {handler, function, opts} =
       cond do
@@ -557,7 +588,7 @@ defmodule Phantom.Router do
       require Phantom.Resource, as: Resource
       def read_study(%{"id" => id}, _request, session) do
         {:reply, Response.response(
-          Response.text("IO.puts \"Hi\"")
+          Response.text("IO.puts \\"Hi\\"")
         ), session}
       end
   """
@@ -604,7 +635,7 @@ defmodule Phantom.Router do
     end
   end
 
-  @doc "See `resource/4`"
+  @doc "See `Phantom.Router.resource/4`"
   defmacro resource(pattern, handler) when is_atom(handler) do
     quote do
       resource(unquote(pattern), unquote(handler), [], [])
@@ -671,7 +702,7 @@ defmodule Phantom.Router do
     end
   end
 
-  @doc "See prompt/3"
+  @doc "See `Phantom.Router.prompt/3`"
   defmacro prompt(name, opts_or_handler \\ []) do
     {handler, function, opts} =
       cond do
@@ -797,10 +828,10 @@ defmodule Phantom.Router do
   {:ok, "myapp:///my-resource/123"}
 
   iex> MyApp.MCP.Router.resource_uri(session, :my_resource, foo: "error")
-  {:error, "Parameters don't match resource."}
+  {:error, :invalid_params}
 
   iex> MyApp.MCP.Router.resource_uri(session, :unknown, id: 123)
-  {:error, "Router not found for resource"}
+  {:error, :router_not_found}
   ```
   """
 
@@ -826,10 +857,10 @@ defmodule Phantom.Router do
 
         {:ok, route}
       else
-        {:error, "Parameters don't match resource."}
+        {:error, :invalid_params}
       end
     else
-      {:error, "Router not found for resource"}
+      {:error, :router_not_found}
     end
   end
 
@@ -887,20 +918,19 @@ defmodule Phantom.Router do
   @doc """
   Reads the resource given its URI, primarily for embedded resources.
 
-  This is available on your router as: `MyApp.MCP.Router.read_resource(session, name, params)`
+  This is available on your router as: `MyApp.MCP.Router.read_resource/3` that
+  accepts the session, resource_name, and path params.
 
   For example:
 
-  ```elixir
-  iex> MyApp.MCP.Router.read_resource(session, :my_resource, id: 321)
-  #=> {:ok, "myapp:///resources/123", %{
-  #   blob: "abc123"
-  #   uri: "myapp:///resources/123",
-  #   mimeType: "audio/wav",
-  #   name: "Some audio",
-  #   title: "Super audio"
-  # }
-  ```
+      iex> MyApp.MCP.Router.read_resource(session, :my_resource, id: 321)
+      {:ok, "myapp:///resources/123", %{
+        blob: "abc123"
+        uri: "myapp:///resources/123",
+        mimeType: "audio/wav",
+        name: "Some audio",
+        title: "Super audio"
+      }}
   """
   @spec read_resource(Session.t(), module(), URI.t()) ::
           {:ok, uri_string :: String.t(),
@@ -1043,8 +1073,85 @@ defmodule Phantom.Router do
   end
 
   @doc false
+  def get_tool(router, session, %{"name" => name} = params, request) do
+    case get_tool(router, session, name) do
+      nil ->
+        {:error, Request.invalid_params(), session}
+
+      tool ->
+        params = Map.get(params, "arguments", %{})
+
+        wrap(
+          :tool,
+          apply(
+            tool.handler,
+            tool.function,
+            [params, %{session | request: %{request | spec: tool}}]
+          ),
+          session
+        )
+    end
+  end
+
+  @doc false
   def get_prompt(router, session, name) do
     Enum.find(Cache.list(session, router, :prompts), &(&1.name == name))
+  end
+
+  @doc false
+  def get_prompt(router, session, %{"name" => name} = params, request) do
+    case get_prompt(router, session, name) do
+      nil ->
+        {:error, Request.invalid_params(), session}
+
+      prompt ->
+        args = Map.get(params, "arguments", %{})
+
+        wrap(
+          :prompt,
+          apply(prompt.handler, prompt.function, [
+            args,
+            %{session | request: %{request | spec: prompt}}
+          ]),
+          session
+        )
+    end
+  end
+
+  @doc false
+  def prompt_completion(router, session, name, arg, value, request) do
+    session = %{session | request: request}
+
+    router
+    |> get_prompt(session, name)
+    |> do_complete(arg, value, session)
+  end
+
+  @doc false
+  def resource_completion(router, session, uri_template, arg, value, request) do
+    session = %{session | request: request}
+
+    router
+    |> get_resource_template(session, uri_template)
+    |> do_complete(arg, value, session)
+  end
+
+  defp do_complete(nil, _, _, session), do: {:error, Request.invalid_params(), session}
+
+  defp do_complete(%{handler: _handler, completion_function: nil}, _, _, session) do
+    Request.completion_response({:reply, [], session}, session)
+  end
+
+  defp do_complete(%{completion_function: {m, f}}, arg, value, session) do
+    Request.completion_response(apply(m, f, [arg, value, session]), session)
+  end
+
+  defp do_complete(%{completion_function: {m, f, a}}, arg, value, session) do
+    Request.completion_response(apply(m, f, a ++ [arg, value, session]), session)
+  end
+
+  defp do_complete(%{handler: m, completion_function: f}, arg, value, session) do
+    Request.completion_response(apply(m, f, [arg, value, session]), session)
   end
 
   @doc false

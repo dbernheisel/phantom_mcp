@@ -88,9 +88,6 @@ defmodule Phantom.Session do
     params["_meta"]["progressToken"]
   end
 
-  @doc "List all sessions with streams open."
-  def list_streams, do: Phantom.Tracker.list_sessions()
-
   @doc "Elicit input from the client"
   @spec elicit(t, Phantom.Elicit.t()) ::
           {:ok, request_id :: String.t()}
@@ -168,7 +165,7 @@ defmodule Phantom.Session do
   end
 
   @doc "Closes the connection for the session"
-  @spec finish(Session.t()) :: :ok
+  @spec finish(Session.t() | pid) :: :ok
   def finish(%__MODULE__{pid: pid}), do: finish(pid)
   def finish(pid) when is_pid(pid), do: GenServer.cast(pid, :finish)
 
@@ -219,6 +216,7 @@ defmodule Phantom.Session do
   end
 
   @doc "Send a notification to the client"
+  @spec notify(t | pid(), payload :: any()) :: :ok
   def notify(%__MODULE__{pid: pid}, payload), do: notify(pid, payload)
 
   def notify(pid, payload) when is_pid(pid) do
@@ -226,10 +224,19 @@ defmodule Phantom.Session do
   end
 
   @doc "Send a ping to the client"
+  @spec ping(t | pid()) :: :ok
   def ping(%__MODULE__{pid: pid}), do: ping(pid)
   def ping(pid) when is_pid(pid), do: GenServer.cast(pid, :ping)
 
-  @doc "Send a progress notification to the client"
+  @doc """
+  Send a progress notification to the client
+
+  the `progress` and `total` can be a integer or float, but must be ever-increasing.
+  the `total` is optional.
+
+  https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/progress
+  """
+  @spec notify_progress(t, number(), nil | number()) :: :ok
   def notify_progress(session, progress, total \\ nil)
 
   def notify_progress(%__MODULE__{pid: pid} = session, progress, total) do
