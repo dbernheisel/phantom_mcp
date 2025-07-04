@@ -51,6 +51,11 @@ defmodule MyAppWeb.Router do
     pipe_through :mcp
 
     forward "/", Phantom.Plug,
+      # Uncomment for remote access from anywhere:
+      # origins: :all,
+      # Uncomment for remote access from a specified list:
+      # origins: ["https://myapp.example"],
+      validate_origin: Mix.env() == :prod,
       router: MyApp.MCPRouter
   end
 end
