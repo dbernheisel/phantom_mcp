@@ -2,6 +2,11 @@ defmodule Phantom.Tracker do
   @moduledoc """
   Track open streams so that notifications and requests can be sent to clients.
 
+  Add to your supervision tree:
+
+      {Phoenix.PubSub, name: MyApp.PubSub},
+      {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: MyApp.PubSub]},
+
   For example, a request may need to elicit more input from the client, so the
   first request stream will remain open, and the notification stream will send
   and new request to the client, and the client will POST its response. The
@@ -47,6 +52,8 @@ defmodule Phantom.Tracker do
   if @available do
     def track_request(pid, request_id, meta \\ %{}) do
       Phoenix.Tracker.track(__MODULE__, pid, @requests, request_id, meta)
+    rescue
+      _ -> {:error, :tracker_not_in_supervision_tree}
     end
   else
     def track_request(_pid, _request_id, _meta \\ %{}), do: {:error, :not_available}
@@ -54,30 +61,58 @@ defmodule Phantom.Tracker do
 
   @doc "Track a session PID"
   if @available do
+    require Logger
+
     def track_session(pid, session_id, meta \\ %{}) do
       Phoenix.Tracker.track(__MODULE__, pid, @sessions, session_id, meta)
+    rescue
+      _ ->
+        if not warned?() do
+          Logger.warning(
+            "Phoenix.PubSub is available, but Phantom.Tracker is not in the supervision tree. Please add this to your supervision tree: `{Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: MyApp.PubSub]}`"
+          )
+        end
+
+        {:error, :tracker_not_in_supervision_tree}
     end
   else
     def track_session(pid, session_id, meta \\ %{}), do: {:error, :not_available}
   end
 
+  defp warned? do
+    :persistent_term.get({Phantom.Tracker, :warned}, false) == true ||
+      :persistent_term.put({Phantom.Tracker, :warned}, true) != :ok
+  end
+
   @doc "Return a list of all open sessions"
   if @available do
-    def list_sessions, do: Phoenix.Tracker.list(__MODULE__, @sessions)
+    def list_sessions do
+      Phoenix.Tracker.list(__MODULE__, @sessions)
+    rescue
+      _ -> []
+    end
   else
     def list_sessions, do: []
   end
 
   @doc "Return a list of all open requests"
   if @available do
-    def list_requests, do: Phoenix.Tracker.list(__MODULE__, @requests)
+    def list_requests do
+      Phoenix.Tracker.list(__MODULE__, @requests)
+    rescue
+      _ -> []
+    end
   else
     def list_requests, do: []
   end
 
   @doc "Return a list of all listening for resources"
   if @available do
-    def list_resource_listeners, do: Phoenix.Tracker.list(__MODULE__, @resources)
+    def list_resource_listeners do
+      Phoenix.Tracker.list(__MODULE__, @resources)
+    rescue
+      _ -> []
+    end
   else
     def list_resource_listeners, do: []
   end
@@ -99,6 +134,8 @@ defmodule Phantom.Tracker do
         _ ->
           nil
       end
+    rescue
+      _ -> nil
     end
   else
     def get_request(_request_id), do: nil
@@ -121,6 +158,8 @@ defmodule Phantom.Tracker do
         _ ->
           nil
       end
+    rescue
+      _ -> nil
     end
   else
     def get_session(_session_id), do: nil
@@ -138,11 +177,18 @@ defmodule Phantom.Tracker do
 
   if @available do
     def untrack_session(session_id) do
-      __MODULE__
-      |> Phoenix.Tracker.get_by_key(@sessions, session_id)
-      |> Enum.each(fn {pid, _} -> Phoenix.Tracker.untrack(__MODULE__, pid) end)
+      tracked =
+        try do
+          Phoenix.Tracker.get_by_key(__MODULE__, @sessions, session_id)
+        rescue
+          _ -> []
+        end
+
+      Enum.each(tracked, fn {pid, _} -> Phoenix.Tracker.untrack(__MODULE__, pid) end)
 
       :ok
+    rescue
+      _ -> :ok
     end
   else
     def untrack_session(_session_id), do: :ok
@@ -153,11 +199,18 @@ defmodule Phantom.Tracker do
 
   if @available do
     def untrack_request(request_id) do
-      __MODULE__
-      |> Phoenix.Tracker.get_by_key(@requests, request_id)
-      |> Enum.each(fn {pid, _meta} -> Phoenix.Tracker.untrack(__MODULE__, pid) end)
+      tracked =
+        try do
+          Phoenix.Tracker.get_by_key(__MODULE__, @requests, request_id)
+        rescue
+          _ -> []
+        end
+
+      Enum.each(tracked, fn {pid, _meta} -> Phoenix.Tracker.untrack(__MODULE__, pid) end)
 
       :ok
+    rescue
+      _ -> :ok
     end
   else
     def untrack_request(_request_id), do: :ok
@@ -167,6 +220,8 @@ defmodule Phantom.Tracker do
   if @available do
     def subscribe_resource(uri) do
       Phoenix.Tracker.track(__MODULE__, self(), @resources, uri, %{})
+    rescue
+      _ -> {:error, :tracker_not_in_supervision_tree}
     end
   else
     def subscribe_resource(pubsub, uri), do: {:error, :not_available}
@@ -176,6 +231,8 @@ defmodule Phantom.Tracker do
   if @available do
     def unsubscribe_resource(uri) do
       Phoenix.Tracker.untrack(__MODULE__, self(), @resources, uri)
+    rescue
+      _ -> :ok
     end
   else
     def unsubscribe_resource(pubsub, uri), do: {:error, :not_available}
@@ -184,10 +241,17 @@ defmodule Phantom.Tracker do
   @doc "Notify any listening MCP sessions that the resource has updated"
   if @available do
     def notify_resource_updated(uri) do
+      tracked =
+        try do
+          Phoenix.Tracker.get_by_key(__MODULE__, @resources, uri)
+        rescue
+          _ -> []
+        end
+
       {:ok,
-       __MODULE__
-       |> Phoenix.Tracker.get_by_key(@resources, uri)
-       |> Enum.count(fn {pid, _meta} -> GenServer.cast(pid, {:resource_updated, uri}) end)}
+       Enum.count(tracked, fn {pid, _meta} -> GenServer.cast(pid, {:resource_updated, uri}) end)}
+    rescue
+      _ -> {:error, :tracker_not_in_supervision_tree}
     end
   else
     def notify_resource_updated(_), do: {:ok, 0}

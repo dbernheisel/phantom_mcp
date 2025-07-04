@@ -2,6 +2,8 @@
 
 - Fix error message referring to wrong arity.
 - Allow nil origin when Plug options is set to `origins: :all`.
+- Better error handling when `Phantom.Tracker` is not in the supervision tree. Phantom.MCP will now emit a Logger warning when Phantom.Tracker can be used, but is not in the supervision tree.
+- Fix terminate bug introduced in 0.3.1
 
 ## 0.3.1
 

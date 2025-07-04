@@ -306,6 +306,8 @@ defmodule Phantom.Plug do
         conn: conn
       }
     )
+
+    conn
   end
 
   defp dispatch(%Plug.Conn{method: "POST"} = conn, _opts) do
