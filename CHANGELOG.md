@@ -1,6 +1,7 @@
 ## 0.3.2
 
 - Fix error message referring to wrong arity.
+- Allow nil origin when Plug options is set to `origins: :all`.
 
 ## 0.3.1
 

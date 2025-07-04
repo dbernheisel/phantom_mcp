@@ -541,6 +541,7 @@ defmodule Phantom.Plug do
   end
 
   defp valid_origin?(_origin, %{validate_origin: false}), do: true
+  defp valid_origin?(_origin, %{origins: :all}), do: true
   defp valid_origin?(nil, _opts), do: false
 
   defp valid_origin?(origin, opts) do
