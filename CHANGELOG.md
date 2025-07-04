@@ -1,3 +1,7 @@
+## 0.3.2
+
+- Fix error message referring to wrong arity.
+
 ## 0.3.1
 
 - Add `[:phantom, :plug, :request, :terminate]` telemetry event.

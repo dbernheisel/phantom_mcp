@@ -107,7 +107,7 @@ defmodule Phantom.Cache do
         func = mod |> to_string() |> String.split(".") |> List.last() |> Macro.underscore()
         file = Path.relative_to_cwd(entity.meta.file)
 
-        raise "#{func} was defined in #{file}:#{entity.meta.line} to call #{inspect(handler)}.#{function}/3 but that module and function does not exist."
+        raise "#{func} was defined in #{file}:#{entity.meta.line} to call #{inspect(handler)}.#{function}/2 but that module and function does not exist."
       end
     end)
   end

@@ -14,7 +14,7 @@ This library provides a complete implementation of the [MCP server specification
 Add Phantom to your dependencies:
 
 ```elixir
-  {:phantom_mcp, "~> 0.3.0"},
+  {:phantom_mcp, "~> 0.3.2"},
 ```
 
 When using with Plug/Phoenix, configure MIME to accept SSE:
@@ -77,6 +77,16 @@ defmodule MyAppWeb.Router do
       router: MyApp.MCP.Router
     ]
 end
+```
+
+Finally, import the formatter settings in your `.formatter.exs`. Below is using Phoenix's
+generated example as a starting point.
+
+```elixir
+[
+  import_deps: [:ecto, :ecto_sql, :phoenix, :phantom_mcp],
+  # ...
+]
 ```
 
 <!-- tabs-close -->
