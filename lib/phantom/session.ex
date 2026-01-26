@@ -5,8 +5,6 @@ defmodule Phantom.Session do
   even if stateless.
   """
 
-  require Logger
-
   alias Phantom.Request
 
   @enforce_keys [:id]

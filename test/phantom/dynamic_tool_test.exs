@@ -9,7 +9,7 @@ defmodule Phantom.DynamicToolTest do
     @moduledoc """
     Test handler module for dynamic tools
     """
-    require Phantom.Tool, as: Tool
+    alias Phantom.Tool
 
     def dynamic_echo_tool(params, session) do
       message = Map.get(params, "message", "default message")

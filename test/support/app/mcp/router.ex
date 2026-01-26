@@ -11,12 +11,10 @@ defmodule Test.MCP.Router do
     vsn: "1.0",
     instructions: @instructions
 
-  require Phantom.Session, as: Session
+  alias Phantom.Session
   require Phantom.Tool, as: Tool
   require Phantom.Prompt, as: Prompt
   require Phantom.Resource, as: Resource
-
-  require Logger
 
   def connect(session, %{headers: _headers, params: _params}) do
     {:ok, session}
@@ -304,7 +302,7 @@ defmodule AsyncModule do
   require Phantom.Tool, as: Tool
   require Phantom.Prompt, as: Prompt
   require Phantom.Resource, as: Resource
-  require Phantom.Session, as: Session
+  require Phantom.Session, as: Session, warn: false
   require Phantom.ClientLogger, as: ClientLogger
 
   @foo_png File.read!(@base <> "/foo.png")

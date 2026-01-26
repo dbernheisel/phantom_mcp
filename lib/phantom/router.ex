@@ -14,8 +14,6 @@ defmodule Phantom.Router do
   - `[:phantom, :dispatch, :exception]` with meta: `~w[method kind reason stacktrace params request session]a`
   """
 
-  require Logger
-
   import Plug.Router.Utils, only: [build_path_match: 1]
 
   alias Phantom.Cache

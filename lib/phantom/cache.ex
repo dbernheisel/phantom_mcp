@@ -71,7 +71,6 @@ defmodule Phantom.Cache do
     validate!(resource_templates)
     raise_if_duplicates(resource_templates)
     :persistent_term.put({Phantom, router, :resource_templates}, resource_templates)
-    require Phantom.Router
     Phantom.Router.__create_resource_routers__(resource_templates, __CALLER__)
   end
 
