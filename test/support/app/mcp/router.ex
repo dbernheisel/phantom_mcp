@@ -87,6 +87,14 @@ defmodule Test.MCP.Router do
   tool :embedded_resource_tool, AsyncModule, description: "A embedded resource tool"
   tool :embedded_resource_link_tool, AsyncModule, description: "A embedded resource link tool"
 
+  tool :client_log_tool,
+    description: "A tool that sends a log to the MCP client",
+    input_schema: %{
+      properties: %{
+        message: %{type: "string", description: "message to log"}
+      }
+    }
+
   tool :echo_tool,
     description: "A test that echos your message",
     input_schema: %{
@@ -177,6 +185,12 @@ defmodule Test.MCP.Router do
   end
 
   def explode_tool(_params, _session), do: raise("boom")
+
+  def client_log_tool(params, session) do
+    message = params["message"] || "client-log-test"
+    Phantom.ClientLogger.log(session, :info, %{message: message}, "test")
+    {:reply, Tool.text("logged"), session}
+  end
 
   def echo_tool(params, session) do
     {:reply, Phantom.Tool.text(params["message"] || ""), session}

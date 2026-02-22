@@ -892,7 +892,7 @@ defmodule Phantom.Router do
   end
 
   @doc false
-  def logging_capability(capabilities, _router, %{pubsub: nil}), do: capabilities
+  def logging_capability(capabilities, _router, %{pubsub: nil, pid: nil}), do: capabilities
 
   def logging_capability(capabilities, _router, _session) do
     Map.put(capabilities, :logging, %{})
