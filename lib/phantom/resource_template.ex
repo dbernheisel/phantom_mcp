@@ -25,6 +25,7 @@ defmodule Phantom.ResourceTemplate do
     :size,
     :uri,
     :uri_template,
+    :icons,
     meta: %{}
   ]
 
@@ -41,7 +42,8 @@ defmodule Phantom.ResourceTemplate do
           size: pos_integer(),
           meta: map(),
           uri: URI.t(),
-          uri_template: String.t()
+          uri_template: String.t(),
+          icons: [Phantom.Icon.t()] | nil
         }
 
   @type json :: %{
@@ -95,6 +97,12 @@ defmodule Phantom.ResourceTemplate do
           raise "Provided an invalid URI.\nProvided: #{inspect(attrs[:uri])}\nError at: #{inspect(invalid)}"
       end
 
+    icons =
+      case attrs[:icons] do
+        nil -> nil
+        icons when is_list(icons) -> Enum.map(icons, &Phantom.Icon.build/1)
+      end
+
     struct!(
       __MODULE__,
       attrs
@@ -103,7 +111,8 @@ defmodule Phantom.ResourceTemplate do
         name: attrs[:name] || to_string(attrs[:function]),
         scheme: attrs[:scheme] || uri.scheme,
         path: attrs[:path] || uri.path,
-        uri_template: "#{uri.scheme}://#{to_uri_6570(uri.path)}"
+        uri_template: "#{uri.scheme}://#{to_uri_6570(uri.path)}",
+        icons: icons
       })
     )
   end
@@ -118,7 +127,8 @@ defmodule Phantom.ResourceTemplate do
       name: resource.name,
       size: resource.size,
       description: resource.description,
-      mimeType: resource.mime_type
+      mimeType: resource.mime_type,
+      icons: Phantom.Icon.to_json_list(resource.icons)
     })
   end
 

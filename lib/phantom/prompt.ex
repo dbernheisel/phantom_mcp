@@ -41,6 +41,7 @@ defmodule Phantom.Prompt do
     :handler,
     :completion_function,
     :function,
+    :icons,
     meta: %{},
     arguments: []
   ]
@@ -52,7 +53,8 @@ defmodule Phantom.Prompt do
           completion_function: atom(),
           description: String.t(),
           meta: map(),
-          arguments: [Argument.t()]
+          arguments: [Argument.t()],
+          icons: [Phantom.Icon.t()] | nil
         }
 
   @type json :: %{
@@ -123,9 +125,17 @@ defmodule Phantom.Prompt do
       |> Map.new()
       |> Map.update(:name, to_string(attrs[:function]), &to_string/1)
 
+    icons =
+      case attrs[:icons] do
+        nil -> nil
+        icons when is_list(icons) -> Enum.map(icons, &Phantom.Icon.build/1)
+      end
+
     struct!(
       __MODULE__,
-      Map.put(attrs, :arguments, Enum.map(attrs[:arguments] || [], &Argument.build/1))
+      attrs
+      |> Map.put(:arguments, Enum.map(attrs[:arguments] || [], &Argument.build/1))
+      |> Map.put(:icons, icons)
     )
   end
 
@@ -137,7 +147,8 @@ defmodule Phantom.Prompt do
     remove_nils(%{
       name: prompt.name,
       description: prompt.description,
-      arguments: Enum.map(prompt.arguments, &Argument.to_json/1)
+      arguments: Enum.map(prompt.arguments, &Argument.to_json/1),
+      icons: Phantom.Icon.to_json_list(prompt.icons)
     })
   end
 
