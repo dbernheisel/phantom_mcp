@@ -1,3 +1,9 @@
+## 0.3.3
+
+- Fixup Cache key mismatch
+- Fixup updating state in async returns
+- Fixup running without `phoenix_pubsub`
+
 ## 0.3.2
 
 - Fix error message referring to wrong arity.

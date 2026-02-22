@@ -12,14 +12,14 @@ defmodule Phantom.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       package: package(),
       start_permanent: Mix.env() == :prod,
-      version: "0.3.2",
+      version: "0.3.3",
       source_url: "https://github.com/dbernheisel/phantom_mcp"
     ]
   end
 
   def cli do
     [
-      preferred_envs: [format: :test, dialyzer: :test]
+      preferred_envs: [tidewave: :test, format: :test, dialyzer: :test]
     ]
   end
 
@@ -40,8 +40,11 @@ defmodule Phantom.MixProject do
       {:uuidv7, "~> 1.0"},
       ## Test
       {:phoenix, "~> 1.7", only: [:test]},
-      {:ex_doc, "~> 0.31", only: :dev, runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:ex_doc, "~> 0.31", only: :dev, warn_if_outdated: true, runtime: false},
+      {:tidewave, "~> 0.5", only: [:test], warn_if_outdated: true},
+      {:exsync, "~> 0.4", only: [:test]},
+      {:bandit, "~> 1.0", only: [:test]}
     ]
   end
 
@@ -97,6 +100,9 @@ defmodule Phantom.MixProject do
   end
 
   defp aliases do
-    []
+    [
+      tidewave:
+        "run --no-halt -e 'Agent.start(fn -> Bandit.start_link(plug: Tidewave, port: 4000) end)'"
+    ]
   end
 end

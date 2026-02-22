@@ -224,7 +224,7 @@ defmodule Phantom.Tracker do
       _ -> {:error, :tracker_not_in_supervision_tree}
     end
   else
-    def subscribe_resource(pubsub, uri), do: {:error, :not_available}
+    def subscribe_resource(_uri), do: {:error, :not_available}
   end
 
   @doc "Unsubscribe the process to resource notifications from the PubSub on topic #{inspect(@resources)}"
@@ -235,7 +235,7 @@ defmodule Phantom.Tracker do
       _ -> :ok
     end
   else
-    def unsubscribe_resource(pubsub, uri), do: {:error, :not_available}
+    def unsubscribe_resource(_uri), do: {:error, :not_available}
   end
 
   @doc "Notify any listening MCP sessions that the resource has updated"
@@ -266,7 +266,7 @@ defmodule Phantom.Tracker do
        end)}
     end
   else
-    def notify_tool_list(_), do: {:ok, 0}
+    def notify_tool_list, do: {:ok, 0}
   end
 
   @doc "Notify any listening MCP sessions that the list of prompts has updated"
@@ -278,7 +278,7 @@ defmodule Phantom.Tracker do
        end)}
     end
   else
-    def notify_prompt_list(_), do: {:ok, 0}
+    def notify_prompt_list, do: {:ok, 0}
   end
 
   @doc "Notify any listening MCP sessions that the list of prompts has updated"
@@ -290,7 +290,7 @@ defmodule Phantom.Tracker do
        end)}
     end
   else
-    def notify_resource_list(_), do: {:ok, 0}
+    def notify_resource_list, do: {:ok, 0}
   end
 
   @doc false

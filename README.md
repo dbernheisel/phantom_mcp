@@ -14,7 +14,7 @@ This library provides a complete implementation of the [MCP server specification
 Add Phantom to your dependencies:
 
 ```elixir
-  {:phantom_mcp, "~> 0.3.2"},
+  {:phantom_mcp, "~> 0.3.3"},
 ```
 
 When using with Plug/Phoenix, configure MIME to accept SSE:

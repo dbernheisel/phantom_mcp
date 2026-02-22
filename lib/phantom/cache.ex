@@ -94,7 +94,7 @@ defmodule Phantom.Cache do
 
   @doc false
   def initialized?(router) do
-    :persistent_term.get({__MODULE__, router, :initialized}, false) == true
+    :persistent_term.get({Phantom, router, :initialized}, false) == true
   end
 
   @doc false

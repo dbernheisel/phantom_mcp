@@ -113,7 +113,7 @@ defmodule Phantom.TestDispatcher do
     |> call(Map.merge(@opts, Map.new(init_opts)))
   end
 
-  def request_resource_complete(name, attrs \\ []) do
+  def request_resource_complete(uri, attrs \\ []) do
     {id, attrs} = Keyword.pop(attrs, :id, 1)
     {arg, attrs} = Keyword.pop(attrs, :arg)
     {value, attrs} = Keyword.pop(attrs, :value)
@@ -126,7 +126,7 @@ defmodule Phantom.TestDispatcher do
       id: id,
       method: "completion/complete",
       params: %{
-        ref: %{type: "ref/resource", name: name},
+        ref: %{type: "ref/resource", uri: uri},
         argument: %{name: arg, value: value},
         context: context
       }

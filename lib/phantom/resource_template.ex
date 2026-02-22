@@ -84,7 +84,7 @@ defmodule Phantom.ResourceTemplate do
 
     uri =
       case uri do
-        {:ok, %{path: path, scheme: scheme} = uri}
+        {:ok, %URI{path: path, scheme: scheme} = uri}
         when is_binary(path) and is_binary(scheme) ->
           uri
 

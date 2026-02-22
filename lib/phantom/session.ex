@@ -362,7 +362,7 @@ defmodule Phantom.Session do
 
   def handle_cast({:resource_updated, uri}, state) do
     cancel_inactivity(state)
-    state.stream_fun.(state, nil, "message", Request.resource_updated(%{uri: uri}))
+    state = state.stream_fun.(state, nil, "message", Request.resource_updated(%{uri: uri}))
     {:noreply, state |> set_activity() |> schedule_inactivity()}
   end
 
@@ -371,7 +371,7 @@ defmodule Phantom.Session do
 
     if notify? do
       cancel_inactivity(state)
-      state.stream_fun.(state, nil, "message", Request.tools_updated())
+      state = state.stream_fun.(state, nil, "message", Request.tools_updated())
       {:noreply, state |> set_activity() |> schedule_inactivity()}
     else
       {:noreply, state}
@@ -383,7 +383,7 @@ defmodule Phantom.Session do
 
     if notify? do
       cancel_inactivity(state)
-      state.stream_fun.(state, nil, "message", Request.prompts_updated())
+      state = state.stream_fun.(state, nil, "message", Request.prompts_updated())
       {:noreply, state |> set_activity() |> schedule_inactivity()}
     else
       {:noreply, state}
@@ -395,7 +395,7 @@ defmodule Phantom.Session do
 
     if notify? do
       cancel_inactivity(state)
-      state.stream_fun.(state, nil, "message", Request.resources_updated())
+      state = state.stream_fun.(state, nil, "message", Request.resources_updated())
       {:noreply, state |> set_activity() |> schedule_inactivity()}
     else
       {:noreply, state}

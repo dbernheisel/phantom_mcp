@@ -169,6 +169,92 @@ defmodule Phantom.RouterTest do
     end
   end
 
+  describe "resource completion" do
+    test "finds resource template by URI for completion" do
+      request_resource_complete("myapp:///binary/{id}", arg: "id", value: "bar")
+
+      assert_receive {:conn, conn}
+      assert conn.status == 200
+      assert_receive {:response, 1, "message", response}
+
+      assert %{
+               jsonrpc: "2.0",
+               id: 1,
+               result: %{completion: %{values: values}}
+             } = response
+
+      assert "foo" in values
+      assert "bar" in values
+    end
+
+    test "matches resource template with different path segment" do
+      request_resource_complete("myapp:///binary/{id}", arg: "id", value: "test")
+
+      assert_receive {:conn, conn}
+      assert conn.status == 200
+      assert_receive {:response, 1, "message", response}
+
+      assert %{
+               jsonrpc: "2.0",
+               id: 1,
+               result: %{completion: %{values: values}}
+             } = response
+
+      assert "foo" in values
+      assert "bar" in values
+    end
+
+    test "returns error for non-matching URI scheme" do
+      request_resource_complete("otherapp:///binary/{id}", arg: "id", value: "baz")
+
+      assert_receive {:conn, conn}
+      assert conn.status == 200
+      assert_receive {:response, 1, "message", response}
+
+      assert %{
+               jsonrpc: "2.0",
+               id: 1,
+               error: error
+             } = response
+
+      assert error[:code] == -32602
+      assert error[:message] == "Invalid Params"
+    end
+
+    test "returns error for non-matching URI path" do
+      request_resource_complete("myapp:///text/{id}", arg: "id", value: "baz")
+
+      assert_receive {:conn, conn}
+      assert conn.status == 200
+      assert_receive {:response, 1, "message", response}
+
+      assert %{
+               jsonrpc: "2.0",
+               id: 1,
+               error: error
+             } = response
+
+      assert error[:code] == -32602
+      assert error[:message] == "Invalid Params"
+    end
+
+    test "matches nested path resource template" do
+      request_resource_complete("test:///text/{id}", arg: "id", value: "456")
+
+      assert_receive {:conn, conn}
+      assert conn.status == 200
+      assert_receive {:response, 1, "message", response}
+
+      assert %{
+               jsonrpc: "2.0",
+               id: 1,
+               result: %{completion: %{values: values}}
+             } = response
+
+      assert is_list(values)
+    end
+  end
+
   describe "authentication" do
     defmodule Test.UnauthorizedRouter do
       @instructions """
