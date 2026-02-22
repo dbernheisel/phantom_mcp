@@ -48,6 +48,7 @@ defmodule Phantom.Tool do
     :output_schema,
     :input_schema,
     :annotations,
+    :icons,
     meta: %{}
   ]
 
@@ -60,7 +61,8 @@ defmodule Phantom.Tool do
           meta: map(),
           input_schema: JSONSchema.t(),
           output_schema: JSONSchema.t(),
-          annotations: Annotation.t()
+          annotations: Annotation.t(),
+          icons: [Phantom.Icon.t()] | nil
         }
 
   @type json :: %{
@@ -189,9 +191,13 @@ defmodule Phantom.Tool do
       struct!(__MODULE__, attrs)
       | annotations: Annotation.build(annotation_attrs),
         output_schema: JSONSchema.build(attrs[:output_schema]),
-        input_schema: JSONSchema.build(attrs[:input_schema])
+        input_schema: JSONSchema.build(attrs[:input_schema]),
+        icons: build_icons(attrs[:icons])
     }
   end
+
+  defp build_icons(nil), do: nil
+  defp build_icons(icons) when is_list(icons), do: Enum.map(icons, &Phantom.Icon.build/1)
 
   @doc """
   Represent a Tool spec as json when listing the available tools to clients.
@@ -202,7 +208,8 @@ defmodule Phantom.Tool do
       description: tool.description,
       inputSchema: JSONSchema.to_json(tool.input_schema),
       outputSchema: if(tool.output_schema, do: JSONSchema.to_json(tool.output_schema)),
-      annotations: Annotation.to_json(tool.annotations)
+      annotations: Annotation.to_json(tool.annotations),
+      icons: Phantom.Icon.to_json_list(tool.icons)
     })
   end
 

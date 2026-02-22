@@ -9,7 +9,20 @@ defmodule Test.MCP.Router do
   use Phantom.Router,
     name: "Test",
     vsn: "1.0",
-    instructions: @instructions
+    instructions: @instructions,
+    icons: [
+      %{
+        src: {Phoenix.VerifiedRoutes, :static_url, [Test.Endpoint, "/images/test-icon.png"]},
+        mime_type: "image/png",
+        sizes: ["48x48"]
+      },
+      %{
+        src: {Phoenix.VerifiedRoutes, :static_url, [Test.Endpoint, "/images/test-icon-dark.svg"]},
+        mime_type: "image/svg+xml",
+        theme: "dark"
+      }
+    ],
+    website_url: {Test.Endpoint, :url, []}
 
   alias Phantom.Session
   require Phantom.Tool, as: Tool
@@ -89,6 +102,7 @@ defmodule Test.MCP.Router do
 
   tool :echo_tool,
     description: "A test that echos your message",
+    icons: [%{src: "https://example.com/echo-icon.png", mime_type: "image/png"}],
     input_schema: %{
       required: [:message],
       properties: %{
