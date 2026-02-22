@@ -17,6 +17,66 @@ Add Phantom to your dependencies:
   {:phantom_mcp, "~> 0.3.4"},
 ```
 
+## Stdio Transport (Local Clients)
+
+For local-only clients like Claude Desktop, you can expose your MCP server
+over stdin/stdout without needing an HTTP server. Add `Phantom.Stdio` to
+your supervision tree:
+
+```elixir
+# lib/my_app/application.ex
+children = [
+  {Phantom.Stdio, router: MyApp.MCP.Router}
+]
+```
+
+Then configure your client to launch the server. For example, in Claude Desktop's
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "my_app": {
+      "command": "mix",
+      "args": ["run", "--no-halt"],
+      "cwd": "/path/to/my_app"
+    }
+  }
+}
+```
+
+Options:
+
+- `:router` - The MCP router module (required)
+- `:session_timeout` - Session inactivity timeout (default: `:infinity`)
+- `:log` - Where to redirect the `:default` Logger handler at runtime.
+  Defaults to `:stderr`. Set to a file path string to log to a file,
+  or `false` to manage Logger configuration yourself (see below).
+
+> #### Logger and stdout {: .warning}
+>
+> Elixir's default Logger handler writes to stdout, which would corrupt
+> the JSON-RPC stream. `Phantom.Stdio` automatically redirects it to
+> stderr at runtime.
+>
+> This only affects the `:default` handler. If you have added custom
+> Logger handlers that write to stdout, you must redirect those yourself.
+>
+> If you prefer to configure Logger through application config instead,
+> set `log: false` and redirect the default handler in your config:
+>
+> ```elixir
+> # config/runtime.exs
+> config :logger, :default_handler,
+>   config: [type: {:device, :standard_error}]
+> ```
+
+To send logs to the MCP client, use `Phantom.ClientLogger` — it sends
+`notifications/message` notifications and works identically across
+stdio and HTTP transports.
+
+## Streamable HTTP Transport (Remote Clients)
+
 When using with Plug/Phoenix, configure MIME to accept SSE:
 
 ```elixir

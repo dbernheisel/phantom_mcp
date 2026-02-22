@@ -156,7 +156,7 @@ defmodule Phantom.Session do
   """
   @spec set_log_level(Session.t(), Request.t(), String.t()) :: :ok
   def set_log_level(%__MODULE__{} = session, request, level) do
-    case Phantom.Tracker.get_session(session) do
+    case Phantom.Tracker.get_session(session) || session.pid do
       nil -> :error
       pid -> GenServer.cast(pid, {:set_log_level, request, level})
     end
@@ -272,8 +272,7 @@ defmodule Phantom.Session do
 
   @doc false
   def handle_continue(cb, state) do
-    timer = Process.send_after(self(), :inactivity, state.timeout)
-    state = Map.put(state, :timer, timer)
+    state = schedule_inactivity(Map.put(state, :timer, nil))
 
     if is_function(cb, 1) do
       maybe_finish(cb.(state))
@@ -403,8 +402,14 @@ defmodule Phantom.Session do
   end
 
   def handle_cast({:set_log_level, request, log_level}, state) do
+    level_num =
+      Keyword.fetch!(
+        Phantom.ClientLogger.log_levels(),
+        String.to_existing_atom(log_level)
+      )
+
     state = state.stream_fun.(state, request.id, "message", %{})
-    {:noreply, %{state | log_level: log_level}}
+    {:noreply, %{state | log_level: level_num}}
   end
 
   defp maybe_finish(state) do
@@ -434,14 +439,110 @@ defmodule Phantom.Session do
     end
   end
 
+  def handle_info({:phantom_dispatch, requests}, state) do
+    cancel_inactivity(state)
+
+    state =
+      Enum.reduce(requests, state, fn raw_request, state_acc ->
+        case Request.build(raw_request) do
+          {:ok, request} ->
+            dispatch_stdio_request(request, state_acc)
+
+          {:error, error} ->
+            state_acc.stream_fun.(state_acc, error.id, "message", error.response)
+        end
+      end)
+
+    {:noreply, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  def handle_info({:phantom_dispatch_error, :parse_error}, state) do
+    cancel_inactivity(state)
+    error = Request.error(nil, Request.parse_error("Parse error: Invalid JSON"))
+    state = state.stream_fun.(state, nil, "message", error)
+    {:noreply, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  def handle_info({:phantom_reader_closed, _reason}, state) do
+    state.session.router.disconnect(state.session)
+    {:stop, {:shutdown, :eof}, state}
+  end
+
   def handle_info(_what, state) do
     {:noreply, state}
+  end
+
+  defp dispatch_stdio_request(%Request{id: nil} = request, state) do
+    # Notifications have no id; dispatch but don't write a response
+    try do
+      case state.session.router.dispatch_method([
+             request.method,
+             request.params,
+             request,
+             state.session
+           ]) do
+        {:reply, _result, %__MODULE__{} = session} -> put_in(state.session, session)
+        {:noreply, %__MODULE__{} = session} -> put_in(state.session, session)
+        {:error, _error, %__MODULE__{} = session} -> put_in(state.session, session)
+        _ -> state
+      end
+    rescue
+      _ -> state
+    end
+  end
+
+  defp dispatch_stdio_request(request, state) do
+    stream_fun = state.stream_fun
+
+    try do
+      case state.session.router.dispatch_method([
+             request.method,
+             request.params,
+             request,
+             state.session
+           ]) do
+        {:noreply, %__MODULE__{} = session} ->
+          requests = Map.put(session.requests, request.id, request.response)
+          put_in(state.session, %{session | requests: requests})
+
+        {:reply, result, %__MODULE__{} = session} ->
+          request = Request.result(request, "message", result)
+          state = put_in(state.session, session)
+          stream_fun.(state, request.id, request.type, request.response)
+
+        {:reply, nil, %__MODULE__{} = session} ->
+          put_in(state.session, session)
+
+        {:error, error, %__MODULE__{} = session} ->
+          error = Request.error(request.id, error)
+          state = put_in(state.session, session)
+          stream_fun.(state, error[:id], "message", error)
+
+        {:error, error} ->
+          error = Request.error(request.id, error)
+          stream_fun.(state, error[:id], "message", error)
+
+        _other ->
+          error = Request.error(request.id, Request.internal_error())
+          stream_fun.(state, error[:id], "message", error)
+      end
+    rescue
+      exception ->
+        IO.warn(
+          "Phantom.Stdio dispatch error: #{Exception.message(exception)}\n#{Exception.format_stacktrace(__STACKTRACE__)}"
+        )
+
+        error = Request.error(request.id, Request.internal_error(Exception.message(exception)))
+        stream_fun.(state, request.id, "message", error)
+    end
   end
 
   defp cancel_inactivity(%{timer: ref}) when is_reference(ref), do: Process.cancel_timer(ref)
   defp cancel_inactivity(_), do: :ok
 
   defp set_activity(state), do: %{state | last_activity: System.system_time()}
+
+  defp schedule_inactivity(%{timeout: :infinity} = state), do: state
 
   defp schedule_inactivity(state) do
     %{state | timer: Process.send_after(self(), :inactivity, state.timeout)}

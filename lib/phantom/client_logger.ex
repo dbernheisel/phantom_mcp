@@ -24,7 +24,7 @@ defmodule Phantom.ClientLogger do
   def log_levels, do: @log_grades
 
   @doc false
-  def do_log(%Session{pubsub: nil}, _level_num, _name, _domain, _payload), do: :ok
+  def do_log(%Session{pubsub: nil, pid: nil}, _level_num, _name, _domain, _payload), do: :ok
 
   def do_log(%Session{pid: pid, id: id}, level_num, level_name, domain, payload) do
     payload = if is_binary(payload), do: %{message: payload}, else: payload
