@@ -1,22 +1,22 @@
-## 0.3.3
+## 0.3.3 (2026-02-22)
 
 - Fixup Cache key mismatch
 - Fixup updating state in async returns
 - Fixup running without `phoenix_pubsub`
 
-## 0.3.2
+## 0.3.2 (2025-07-04)
 
 - Fix error message referring to wrong arity.
 - Allow nil origin when Plug options is set to `origins: :all`.
 - Better error handling when `Phantom.Tracker` is not in the supervision tree. Phantom.MCP will now emit a Logger warning when Phantom.Tracker can be used, but is not in the supervision tree.
 - Fix terminate bug introduced in 0.3.1
 
-## 0.3.1
+## 0.3.1 (2025-07-03)
 
 - Add `[:phantom, :plug, :request, :terminate]` telemetry event.
 - Improve docs
 
-## 0.3.0
+## 0.3.0 (2025-06-29)
 
 - Move logging functions from `Phantom.Session` into `Phantom.ClientLogger`.
 - Rename `Phantom.Tracker` functions to be clearer and more straightforward.
@@ -31,20 +31,20 @@
 - Fixed resource subscription response and implemented unsubscribe method.
 - Improve documentation
 
-## 0.2.3
+## 0.2.3 (2025-06-24)
 
 - Fix the `initialize` request status code and headers. In 0.2.2 it worked
 with mcp-inspector but not with Claude Desktop or Zed. Now it works with all.
 
-## 0.2.2
+## 0.2.2 (2025-06-22)
 
 - Fix the `initialize` request. It should have kept the SSE stream open.
 - Fix bugs
 
-## 0.2.1
+## 0.2.1 (2025-06-21)
 
 - Fix default `list_resources/2` callback and default implementation.
 
-## 0.2.0
+## 0.2.0 (2025-06-17)
 
 Phantom MCP released!
