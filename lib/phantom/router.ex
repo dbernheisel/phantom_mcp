@@ -23,6 +23,7 @@ defmodule Phantom.Router do
   alias Phantom.ResourceTemplate
   alias Phantom.Session
   alias Phantom.Tool
+  alias Phantom.Tool.JSONSchema
 
   @doc """
   When the connection is opening, this callback will be invoked.
@@ -124,7 +125,16 @@ defmodule Phantom.Router do
       require Phantom.Tool
 
       import Phantom.Router,
-        only: [tool: 2, tool: 3, resource: 2, resource: 3, resource: 4, prompt: 2, prompt: 3]
+        only: [
+          tool: 2,
+          tool: 3,
+          tool: 4,
+          resource: 2,
+          resource: 3,
+          resource: 4,
+          prompt: 2,
+          prompt: 3
+        ]
 
       @before_compile Phantom.Router
       @after_verify Phantom.Router
@@ -482,7 +492,6 @@ defmodule Phantom.Router do
 
       tool :local_echo,
         description: "A test that echos your message",
-        # or supply a `@description` before defining the tool
         input_schema: %{
           required: [:message],
           properties: %{
@@ -493,27 +502,76 @@ defmodule Phantom.Router do
           }
         }
 
-      ### handled by your function syncronously:
+      # Or with the inline DSL:
 
-      require Phantom.Tool, as: Tool
-      def local_echo(params, session) do
-        # Maps will be JSON-encoded and also provided
-        # as structured content.
-        {:reply, Tool.text(params), session}
+      tool :search, description: "Search for stuff" do
+        field :query, :string, required: true
+        field :limit, :integer, default: 10
       end
 
-      # Or asyncronously:
+      # With an external handler module:
 
-      require Phantom.Tool, as: Tool
-      def local_echo(params, session) do
-        Task.async(fn ->
-          Process.sleep(1000)
-          Session.respond(session, Tool.text(params))
-        end)
-
-        {:noreply, session}
+      tool :search, MyApp.MCP, description: "Search" do
+        field :query, :string, required: true
       end
   """
+
+  # tool/4: handler + opts + do block
+  defmacro tool(name, handler, opts, [{:do, block}]) when is_list(opts) do
+    {defs, fields} = JSONSchema.transform_block(block)
+    meta = %{line: __CALLER__.line, file: __CALLER__.file}
+
+    quote line: meta.line, file: meta.file, generated: true do
+      description = Module.delete_attribute(__MODULE__, :description)
+      opts = Keyword.put_new(unquote(opts), :description, description)
+
+      unquote_splicing(defs)
+
+      @phantom_tools Phantom.Tool.build(
+                       Keyword.merge(
+                         [
+                           name: to_string(unquote(name)),
+                           handler: unquote(handler),
+                           function: unquote(name),
+                           input_schema:
+                             Phantom.Tool.JSONSchema.build_from_fields(unquote(fields)),
+                           meta: unquote(Macro.escape(meta))
+                         ],
+                         opts
+                       )
+                     )
+    end
+  end
+
+  # tool/3: opts + do block (self handler), OR handler + opts (no do block)
+  @doc false
+  defmacro tool(name, opts, [{:do, block}]) when is_list(opts) do
+    {defs, fields} = JSONSchema.transform_block(block)
+    handler = __CALLER__.module
+    meta = %{line: __CALLER__.line, file: __CALLER__.file}
+
+    quote line: meta.line, file: meta.file, generated: true do
+      description = Module.delete_attribute(__MODULE__, :description)
+      opts = Keyword.put_new(unquote(opts), :description, description)
+
+      unquote_splicing(defs)
+
+      @phantom_tools Phantom.Tool.build(
+                       Keyword.merge(
+                         [
+                           name: to_string(unquote(name)),
+                           handler: unquote(handler),
+                           function: unquote(name),
+                           input_schema:
+                             Phantom.Tool.JSONSchema.build_from_fields(unquote(fields)),
+                           meta: unquote(Macro.escape(meta))
+                         ],
+                         opts
+                       )
+                     )
+    end
+  end
+
   defmacro tool(name, handler, opts) when is_list(opts) do
     meta = %{line: __CALLER__.line, file: __CALLER__.file}
 
@@ -535,8 +593,11 @@ defmodule Phantom.Router do
     end
   end
 
-  @doc "See `Phantom.Router.tool/3`"
-  defmacro tool(name, opts_or_handler \\ []) do
+  # tool/2: name + opts or handler (with default)
+  @doc false
+  defmacro tool(name, opts_or_handler \\ [])
+
+  defmacro tool(name, opts_or_handler) do
     {handler, function, opts} =
       cond do
         is_list(opts_or_handler) ->
@@ -1079,15 +1140,21 @@ defmodule Phantom.Router do
       tool ->
         params = Map.get(params, "arguments", %{})
 
-        wrap(
-          :tool,
-          apply(
-            tool.handler,
-            tool.function,
-            [params, %{session | request: %{request | spec: tool}}]
-          ),
-          session
-        )
+        case JSONSchema.maybe_validate(tool.input_schema, params) do
+          {:ok, params} ->
+            wrap(
+              :tool,
+              apply(
+                tool.handler,
+                tool.function,
+                [params, %{session | request: %{request | spec: tool}}]
+              ),
+              session
+            )
+
+          {:error, reasons} ->
+            {:error, Request.invalid_params(%{validation_errors: reasons}), session}
+        end
     end
   end
 

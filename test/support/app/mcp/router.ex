@@ -55,6 +55,29 @@ defmodule Test.MCP.Router do
     {:reply, Resource.list(page, next_cursor), session}
   end
 
+  tool :validated_echo_tool, description: "Echo with validation" do
+    field :message, :string, required: true
+    field :count, :integer, default: 1
+    field :tags, {:array, :string}
+  end
+
+  tool :validated_nested_tool, description: "Nested validation tool" do
+    field :query, :string, required: true
+
+    field :filters, :map do
+      field :category, :string
+      field :min_price, :number
+    end
+  end
+
+  tool :validated_custom_tool, description: "Custom validator tool" do
+    field :query, :string,
+      required: true,
+      validate: fn value ->
+        if String.length(value) >= 3, do: :ok, else: {:error, "must be at least 3 characters"}
+      end
+  end
+
   tool :explode_tool, description: "Always throws an exception"
   tool :binary_tool, mime_type: "image/png", description: "A binary tool"
   tool :audio_tool, description: "An audio tool"
@@ -177,6 +200,18 @@ defmodule Test.MCP.Router do
   end
 
   def explode_tool(_params, _session), do: raise("boom")
+
+  def validated_echo_tool(params, session) do
+    {:reply, Phantom.Tool.text(params), session}
+  end
+
+  def validated_nested_tool(params, session) do
+    {:reply, Phantom.Tool.text(params), session}
+  end
+
+  def validated_custom_tool(params, session) do
+    {:reply, Phantom.Tool.text(params), session}
+  end
 
   def echo_tool(params, session) do
     {:reply, Phantom.Tool.text(params["message"] || ""), session}

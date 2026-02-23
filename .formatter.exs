@@ -1,11 +1,16 @@
 locals_without_parens = [
   tool: 2,
   tool: 3,
+  tool: 4,
   prompt: 2,
   prompt: 3,
   resource: 2,
   resource: 3,
-  resource: 4
+  resource: 4,
+  input_schema: 1,
+  field: 2,
+  field: 3,
+  field: 4
 ]
 
 [
