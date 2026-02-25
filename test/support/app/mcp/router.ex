@@ -16,7 +16,7 @@ defmodule Test.MCP.Router do
   require Phantom.Prompt, as: Prompt
   require Phantom.Resource, as: Resource
 
-  def connect(session, %{headers: _headers, params: _params}) do
+  def connect(session, _conn) do
     {:ok, session}
   end
 
