@@ -20,7 +20,6 @@ defmodule Test.MCP.Router do
     {:ok, session}
   end
 
-  @salt "cursor"
   def list_resources(cursor, session) do
     {:ok, uri1, _spec} = resource_for(session, :binary_resource, id: "foo")
     {:ok, uri2, spec} = resource_for(session, :binary_resource, id: "bar")
@@ -32,8 +31,11 @@ defmodule Test.MCP.Router do
 
     cursor =
       if cursor do
-        {:ok, cursor} = Phoenix.Token.verify(Test.Endpoint, @salt, cursor)
+        # Don't copy this example. Use Phoenix.Token.verify instead
         cursor
+        |> Base.decode64!()
+        |> :erlang.binary_to_term()
+        |> Keyword.fetch!(:offset)
       else
         0
       end
@@ -48,11 +50,17 @@ defmodule Test.MCP.Router do
     {_before_cursor, after_cursor} =
       resource_links |> Enum.with_index() |> Enum.split_while(fn {_, i} -> i < cursor end)
 
-    {page, [{next, _} | _drop]} = Enum.split(after_cursor, 100)
-    next_cursor = Phoenix.Token.sign(Test.Endpoint, @salt, next)
+    {page, rest} = Enum.split(after_cursor, 100)
     page = Enum.map(page, &elem(&1, 0))
 
-    {:reply, Resource.list(page, next_cursor), session}
+    case rest do
+      [{next, _} | _] ->
+        next_cursor = [offset: next] |> :erlang.term_to_binary() |> Base.encode64()
+        {:reply, Resource.list(page, next_cursor), session}
+
+      [] ->
+        {:reply, Resource.list(page, nil), session}
+    end
   end
 
   tool :explode_tool, description: "Always throws an exception"
@@ -60,6 +68,8 @@ defmodule Test.MCP.Router do
   tool :audio_tool, description: "An audio tool"
   tool :with_error_tool, description: "A test tool with an error"
   tool :elicit_tool, description: "A tool that always needs info"
+  tool :url_elicit_tool, description: "A tool that requires URL elicitation"
+  tool :elicitation_required_tool, description: "A tool that returns elicitation_required error"
 
   for i <- 0..200 do
     tool :"zzz_tool_#{String.pad_leading(to_string(i), 3, "0")}",
@@ -214,33 +224,69 @@ defmodule Test.MCP.Router do
                      description: "for realisies",
                      pattern: Regex.source(~r/^[^@]+@[^@]+\.[^@]+$/),
                      format: :email
+                   },
+                   %{
+                     type: :enum,
+                     name: "role",
+                     required: true,
+                     title: "Your role",
+                     description: "Pick one",
+                     enum: [
+                       {"dev", "Developer"},
+                       {"pm", "Product Manager"},
+                       {"design", "Designer"}
+                     ]
                    }
                  ]
                })
   def elicit_tool(_params, session) do
-    with {:ok, request_id} <- Session.elicit(session, @elicit_name),
-         {:ok, response} <- await_elicitation(request_id) do
-      case response["name"] do
-        :error -> {:reply, Phantom.Request.invalid_params("Did not receive name"), session}
-        name -> {:reply, Tool.text(%{hello: "my name is #{name}"}), session}
-      end
-    else
+    case Session.elicit(session, @elicit_name) do
+      {:ok, %{"action" => "accept", "content" => content}} ->
+        {:reply, Tool.text(%{hello: "my name is #{content["name"]}"}), session}
+
+      {:ok, _rejected} ->
+        {:reply, Tool.error("Elicitation was rejected"), session}
+
       :not_supported ->
         {:reply, Tool.text(%{hello: "my name is Joe Schmoe"}), session}
+
+      :timeout ->
+        {:reply, Tool.error("Elicitation timed out"), session}
+
+      :error ->
+        {:reply, Tool.error("Elicitation failed"), session}
     end
   end
 
-  defp await_elicitation(request_id) do
-    receive do
-      {:response, ^request_id, response} ->
-        if response["action"] == "accept" do
-          {:ok, response["content"]}
-        else
-          :error
-        end
-    after
-      10_000 -> :error
+  def url_elicit_tool(_params, session) do
+    case Session.elicit_url(session, "https://example.com/auth", "Please authenticate") do
+      {:ok, %{"action" => "accept", "content" => content}} ->
+        {:reply, Tool.text(%{authenticated: true, token: content["token"]}), session}
+
+      {:ok, _rejected} ->
+        {:reply, Tool.error("Authentication was rejected"), session}
+
+      :not_supported ->
+        {:reply, Tool.error("URL elicitation not supported"), session}
+
+      :timeout ->
+        {:reply, Tool.error("Authentication timed out"), session}
+
+      :error ->
+        {:reply, Tool.error("Authentication failed"), session}
     end
+  end
+
+  def elicitation_required_tool(_params, _session) do
+    elicitations = [
+      Phantom.Elicit.url(%{
+        message: "Please authenticate first",
+        url: "https://example.com/oauth",
+        elicitation_id: "elicit-123"
+      })
+    ]
+
+    {:elicitation_required, elicitations}
   end
 
   def structured_echo_tool(params, session) do

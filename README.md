@@ -30,50 +30,8 @@ children = [
 ]
 ```
 
-Then configure your client to launch the server. For example, in Claude Desktop's
-`claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "my_app": {
-      "command": "mix",
-      "args": ["run", "--no-halt"],
-      "cwd": "/path/to/my_app"
-    }
-  }
-}
-```
-
-Options:
-
-- `:router` - The MCP router module (required)
-- `:session_timeout` - Session inactivity timeout (default: `:infinity`)
-- `:log` - Where to redirect the `:default` Logger handler at runtime.
-  Defaults to `:stderr`. Set to a file path string to log to a file,
-  or `false` to manage Logger configuration yourself (see below).
-
-> #### Logger and stdout {: .warning}
->
-> Elixir's default Logger handler writes to stdout, which would corrupt
-> the JSON-RPC stream. `Phantom.Stdio` automatically redirects it to
-> stderr at runtime.
->
-> This only affects the `:default` handler. If you have added custom
-> Logger handlers that write to stdout, you must redirect those yourself.
->
-> If you prefer to configure Logger through application config instead,
-> set `log: false` and redirect the default handler in your config:
->
-> ```elixir
-> # config/runtime.exs
-> config :logger, :default_handler,
->   config: [type: {:device, :standard_error}]
-> ```
-
-To send logs to the MCP client, use `Phantom.ClientLogger` — it sends
-`notifications/message` notifications and works identically across
-stdio and HTTP transports.
+For more information about running your MCP server locally with stdio, see
+[Phantom.Stdio].
 
 ## Streamable HTTP Transport (Remote Clients)
 
@@ -159,7 +117,8 @@ generated example as a starting point.
 Now the fun begins: it's time to define your MCP router that catalogs all your tools, prompts, and resources. When you're creating your MCP server, make sure
 you test it with the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) or your client of choice.
 
-For local testing, you can use [`mcp-remote`](https://github.com/geelen/mcp-remote) to proxy local-only clients to your Phantom-powered MCP server, either while it's hosted locally or remotely. Don't use `mcp-proxy` since it's designed for older SSE-based MCP servers (Phantom is using the newer Streamable HTTP behavior).
+See `Phantom.Plug` for local testing instructions with `mcp-remote`, or
+`Phantom.Stdio` for building an escript for direct stdio clients.
 
 First we're define the MCP router:
 

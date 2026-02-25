@@ -1,3 +1,6 @@
+phoenix_tracker_available? =
+  Code.ensure_loaded?(Phoenix.Tracker) and Code.ensure_loaded?(Phoenix.PubSub)
+
 defmodule Phantom.Tracker do
   @moduledoc """
   Track open streams so that notifications and requests can be sent to clients.
@@ -16,14 +19,16 @@ defmodule Phantom.Tracker do
   See `m:Phantom#module-persistent-streams` section for more information.
   """
 
-  use Phoenix.Tracker
+  if phoenix_tracker_available? do
+    Code.eval_quoted(quote(do: use(Phoenix.Tracker)), [], __ENV__)
+  end
 
+  @available phoenix_tracker_available?
   @sessions "phantom:sessions"
   @requests "phantom:requests"
   @resources "phantom:resources"
 
-  @available Code.ensure_loaded?(Phoenix.Tracker) and Code.ensure_loaded?(Phoenix.PubSub)
-
+  def available?, do: @available
   def resource_subscription_topic, do: @resources
   def requests_topic, do: @requests
   def sessions_topic, do: @sessions
@@ -75,13 +80,63 @@ defmodule Phantom.Tracker do
 
         {:error, :tracker_not_in_supervision_tree}
     end
+
+    defp warned? do
+      :persistent_term.get({Phantom.Tracker, :warned}, false) == true ||
+        :persistent_term.put({Phantom.Tracker, :warned}, true) != :ok
+    end
   else
-    def track_session(pid, session_id, meta \\ %{}), do: {:error, :not_available}
+    def track_session(_pid, _session_id, _meta \\ %{}), do: {:error, :not_available}
   end
 
-  defp warned? do
-    :persistent_term.get({Phantom.Tracker, :warned}, false) == true ||
-      :persistent_term.put({Phantom.Tracker, :warned}, true) != :ok
+  @doc "Update metadata for a tracked session.
+
+  Falls back to process dictionary when Phoenix.Tracker is not tracking
+  (e.g. stdio transport).
+  "
+  if @available do
+    def update_session_meta(session_id, meta) do
+      case Phoenix.Tracker.get_by_key(__MODULE__, @sessions, session_id) do
+        [{pid, existing_meta} | _] ->
+          Phoenix.Tracker.update(
+            __MODULE__,
+            pid,
+            @sessions,
+            session_id,
+            Map.merge(existing_meta, meta)
+          )
+
+        _ ->
+          update_local_session_meta(meta)
+      end
+    rescue
+      _ -> update_local_session_meta(meta)
+    end
+  else
+    def update_session_meta(_session_id, meta), do: update_local_session_meta(meta)
+  end
+
+  @doc "Get metadata for a tracked session.
+
+  Falls back to process dictionary when Phoenix.Tracker is not tracking.
+  "
+  if @available do
+    def get_session_meta(session_id) do
+      case Phoenix.Tracker.get_by_key(__MODULE__, @sessions, session_id) do
+        [{_pid, meta} | _] -> meta
+        _ -> Process.get(:phantom_session_meta, %{})
+      end
+    rescue
+      _ -> Process.get(:phantom_session_meta, %{})
+    end
+  else
+    def get_session_meta(_session_id), do: Process.get(:phantom_session_meta, %{})
+  end
+
+  defp update_local_session_meta(meta) do
+    existing = Process.get(:phantom_session_meta, %{})
+    Process.put(:phantom_session_meta, Map.merge(existing, meta))
+    :ok
   end
 
   @doc "Return a list of all open sessions"
@@ -291,6 +346,27 @@ defmodule Phantom.Tracker do
     end
   else
     def notify_resource_list, do: {:ok, 0}
+  end
+
+  @doc "Notify tracked sessions that a URL elicitation has completed"
+  if @available do
+    def notify_elicitation_complete(elicitation_id) do
+      tracked =
+        try do
+          Phoenix.Tracker.get_by_key(__MODULE__, @requests, elicitation_id)
+        rescue
+          _ -> []
+        end
+
+      Enum.each(tracked, fn {pid, %{type: :elicitation}} ->
+        GenServer.cast(pid, {:send, Phantom.Request.elicitation_complete(elicitation_id)})
+        Phoenix.Tracker.untrack(__MODULE__, pid, @requests, elicitation_id)
+      end)
+
+      {:ok, length(tracked)}
+    end
+  else
+    def notify_elicitation_complete(_elicitation_id), do: {:ok, 0}
   end
 
   @doc false

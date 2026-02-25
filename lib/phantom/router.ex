@@ -106,7 +106,7 @@ defmodule Phantom.Router do
               | {:noreply, Session.t()}
               | {:error, any(), Session.t()}
 
-  @supported_protocol_versions ~w[2024-11-05 2025-03-26 2025-06-18]
+  @supported_protocol_versions ~w[2024-11-05 2025-03-26 2025-06-18 2025-11-25]
 
   defmacro __using__(opts) do
     name = Keyword.get(opts, :name, "Phantom MCP Server")
@@ -290,24 +290,29 @@ defmodule Phantom.Router do
             _ -> %{}
           end
 
+        client_capabilities = %{
+          roots: params["capabilities"]["roots"],
+          sampling: params["capabilities"]["sampling"],
+          elicitation: params["capabilities"]["elicitation"]
+        }
+
         session = %{
           session
           | client_info: params["clientInfo"],
-            client_capabilities: %{
-              roots: params["roots"],
-              sampling: params["sampling"],
-              elicitation: params["elicitation"]
-            }
+            client_capabilities: client_capabilities
         }
+
+        Phantom.Tracker.update_session_meta(session.id, %{
+          client_capabilities: client_capabilities
+        })
 
         with {:ok, protocol_version} <-
                Phantom.Router.validate_protocol(params["protocolVersion"], session) do
           {:reply,
            %{
              protocolVersion: protocol_version,
-             # %{elicitation: %{}}
              capabilities:
-               %{}
+               %{elicitation: %{}}
                |> Phantom.Router.tool_capability(__MODULE__, session)
                |> Phantom.Router.prompt_capability(__MODULE__, session)
                |> Phantom.Router.resource_capability(__MODULE__, session)
@@ -373,7 +378,7 @@ defmodule Phantom.Router do
 
       def dispatch_method("resources/subscribe", %{"uri" => uri} = _params, request, session) do
         if is_nil(session.pubsub) do
-          {:error, Request.method_not_found(), session}
+          {:error, Request.not_found(), session}
         else
           case Session.subscribe_to_resource(session, uri) do
             :ok ->
@@ -387,7 +392,7 @@ defmodule Phantom.Router do
 
       def dispatch_method("resources/unsubscribe", %{"uri" => uri} = _params, request, session) do
         if is_nil(session.pubsub) do
-          {:error, Request.method_not_found(), session}
+          {:error, Request.not_found(), session}
         else
           case Session.unsubscribe_to_resource(session, uri) do
             :ok ->
@@ -444,21 +449,20 @@ defmodule Phantom.Router do
         {:reply, nil, session}
       end
 
-      # if Code.ensure_loaded?(Phoenix.PubSub) do
-      #   def dispatch_method(
-      #         _method,
-      #         _params,
-      #         %{id: request_id, response: %{} = response} = request,
-      #         session
-      #       ) do
-      #     case Phantom.Tracker.pid_for_request(request.id) do
-      #       nil -> :ok
-      #       pid -> GenServer.cast(pid, {:response, request.id, response})
-      #     end
+      def dispatch_method(
+            _method,
+            _params,
+            %{id: request_id, response: %{} = response},
+            session
+          )
+          when is_binary(request_id) do
+        case Phantom.Tracker.get_session(session) do
+          nil -> :ok
+          pid -> GenServer.cast(pid, {:elicitation_response, request_id, response})
+        end
 
-      #     {:reply, nil, session}
-      #   end
-      # end
+        {:reply, nil, session}
+      end
 
       def dispatch_method(method, _params, request, session) do
         {:error, Request.not_found(), session}
@@ -744,12 +748,10 @@ defmodule Phantom.Router do
 
   def validate_protocol(unsupported_protocol, session) do
     {:error,
-     Request.invalid_params(
-       data: %{
-         supported: @supported_protocol_versions,
-         requested: unsupported_protocol
-       }
-     ), session}
+     Request.invalid_params(%{
+       supported: @supported_protocol_versions,
+       requested: unsupported_protocol
+     }), session}
   end
 
   @doc false
@@ -943,16 +945,7 @@ defmodule Phantom.Router do
 
     task =
       Task.async(fn ->
-        receive do
-          {:"$gen_cast", {:respond, ^request_id, %{result: result}}} ->
-            result
-
-          other ->
-            send(session_pid, other)
-        after
-          10_000 ->
-            {:error, Request.internal_error(), session}
-        end
+        await_resource_response(request_id, session_pid, session)
       end)
 
     intercept_session = %{session | pid: task.pid}
@@ -991,6 +984,20 @@ defmodule Phantom.Router do
     end
   end
 
+  defp await_resource_response(request_id, session_pid, session) do
+    receive do
+      {:"$gen_cast", {:respond, ^request_id, %{result: result}}} ->
+        result
+
+      other ->
+        send(session_pid, other)
+        await_resource_response(request_id, session_pid, session)
+    after
+      10_000 ->
+        {:error, Request.internal_error(), session}
+    end
+  end
+
   @doc false
   def wrap(_type, {:error, error}, session), do: {:error, error, session}
   def wrap(_type, {:error, _, %Session{}} = result, _session), do: result
@@ -999,6 +1006,10 @@ defmodule Phantom.Router do
 
   def wrap(:prompt, {:reply, result, %Session{} = session}, _session) do
     {:reply, Prompt.response(result, session.request.spec), session}
+  end
+
+  def wrap(:tool, {:elicitation_required, elicitations}, session) when is_list(elicitations) do
+    {:error, Request.url_elicitation_required(elicitations), session}
   end
 
   def wrap(:tool, {:reply, result, %Session{} = session}, _session) do

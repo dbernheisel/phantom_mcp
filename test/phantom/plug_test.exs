@@ -485,4 +485,136 @@ defmodule Phantom.PlugTest do
       params: %{uri: ^uri}
     })
   end
+
+  describe "elicitation" do
+    defp initialize_with_elicitation(session_id) do
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: %{
+          protocolVersion: "2025-11-25",
+          capabilities: %{roots: %{}, sampling: %{}, elicitation: %{}},
+          clientInfo: %{name: "TestClient", version: "1.0"}
+        }
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(%{session_id: session_id})
+
+      assert_receive {:response, 1, "message", _}, 500
+    end
+
+    test "form elicitation round-trip", context do
+      session_id = to_string(context.test)
+
+      # Initialize with elicitation capability (POST becomes SSE stream)
+      initialize_with_elicitation(session_id)
+
+      # Call elicit_tool — this blocks until we respond
+      request_tool("elicit_tool", %{}, session_id: session_id, id: 42)
+
+      # Receive elicitation request from SSE stream
+      assert_receive {:response, elicit_id, "message",
+                      %{
+                        "method" => "elicitation/create",
+                        "params" => %{mode: "form", message: "What is your info?"}
+                      }},
+                     500
+
+      # Send elicitation response
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: elicit_id,
+        result: %{
+          "action" => "accept",
+          "content" => %{
+            "name" => "Alice",
+            "email" => "alice@test.com",
+            "role" => "dev"
+          }
+        }
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(%{session_id: session_id})
+
+      # Receive tool result
+      assert_response(42, response)
+      assert %{result: %{content: [%{type: "text", text: text}]}} = response
+      assert %{"hello" => "my name is Alice"} = JSON.decode!(text)
+    end
+
+    test "form elicitation with rejected response", context do
+      session_id = to_string(context.test)
+
+      request_sse_stream(session_id: session_id)
+      assert_sse_connected()
+      initialize_with_elicitation(session_id)
+
+      request_tool("elicit_tool", %{}, session_id: session_id, id: 43)
+
+      assert_receive {:response, elicit_id, "message", %{"method" => "elicitation/create"}}
+
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: elicit_id,
+        result: %{"action" => "reject"}
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(%{session_id: session_id})
+
+      assert_response(43, response)
+      assert %{result: %{isError: true}} = response
+    end
+
+    test "elicitation without client capability returns fallback", context do
+      session_id = to_string(context.test)
+
+      # Initialize WITHOUT elicitation capability
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: %{
+          protocolVersion: "2025-11-25",
+          capabilities: %{roots: %{}, sampling: %{}},
+          clientInfo: %{name: "NoElicitClient", version: "1.0"}
+        }
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(%{session_id: session_id})
+
+      assert_sse_connected()
+      assert_receive {:response, 1, "message", _}, 500
+
+      request_tool("elicit_tool", %{}, session_id: session_id, id: 2)
+      assert_response(2, response)
+
+      assert %{result: %{content: [%{type: "text", text: text}]}} = response
+      assert %{"hello" => "my name is Joe Schmoe"} = JSON.decode!(text)
+    end
+
+    test "elicitation_required error response" do
+      request_tool("elicitation_required_tool", %{}, id: 44)
+
+      assert_receive {:response, 44, "message", response}
+      assert response[:error][:code] == -32042
+      assert response[:error][:message] == "This request requires more information."
+
+      assert [%{mode: "url", url: "https://example.com/oauth"}] =
+               response[:error][:data][:elicitations]
+    end
+
+    test "initialize response advertises elicitation capability" do
+      request_initialize()
+      assert_sse_connected()
+      assert_receive {:response, 1, "message", response}, 500
+
+      assert %{result: %{capabilities: capabilities}} = response
+      assert capabilities[:elicitation] == %{}
+    end
+  end
 end

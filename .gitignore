@@ -26,3 +26,4 @@ phantom_mcp-*.tar
 /tmp/
 /.claude/*.local.*
 .tool-versions
+phantom_mcp

@@ -24,19 +24,130 @@ defmodule Phantom.Stdio do
   - `:session_timeout` - Session inactivity timeout (default: `:infinity`)
   - `:log` - Where to redirect the `:default` Logger handler at runtime.
     Defaults to `:stderr`. Set to a file path string to log to a file,
-    or `false` to manage Logger configuration yourself (e.g. via
-    `config :logger, :default_handler` in your application config).
+    or `false` to manage Logger configuration yourself (see below).
 
   > #### Logger and stdout {: .warning}
   >
   > Elixir's default Logger handler writes to stdout, which would corrupt
-  > the JSON-RPC stream. This option only redirects the `:default` handler.
-  > If you have added custom Logger handlers that write to stdout, you must
-  > redirect those yourself.
+  > the JSON-RPC stream. `Phantom.Stdio` automatically redirects it to
+  > stderr at runtime.
+  >
+  > This only affects the `:default` handler. If you have added custom
+  > Logger handlers that write to stdout, you must redirect those yourself.
+  >
+  > If you prefer to configure Logger through application config instead,
+  > set `log: false` and redirect the default handler in your config:
+  >
+  > ```elixir
+  > # config/runtime.exs
+  > config :logger, :default_handler,
+  >   config: [type: {:device, :standard_error}]
+  > ```
 
   To send logs to the MCP client, use `Phantom.ClientLogger` — it sends
   `notifications/message` notifications and works identically across
   stdio and HTTP transports.
+
+  ## Building an escript
+
+  For clients with short startup timeouts (e.g. Codex), an escript is
+  recommended. Escripts are pre-compiled binaries that start instantly,
+  avoiding compilation delays that can cause the client to kill the server.
+
+  Create an entry point module:
+
+      defmodule MyApp.CLI do
+        def main(_args) do
+          # Redirect Logger to stderr BEFORE anything else.
+          # The escript starts before OTP applications are loaded,
+          # so use Erlang's logger API and formatter directly.
+          :logger.remove_handler(:default)
+
+          :logger.add_handler(:default, :logger_std_h, %{
+            config: %{type: {:device, :standard_error}},
+            formatter:
+              {:logger_formatter, %{template: [:time, " [", :level, "] ", :msg, "\\n"]}}
+          })
+
+          Application.ensure_all_started(:telemetry)
+
+          {:ok, _} =
+            Supervisor.start_link(
+              [{Phantom.Stdio, router: MyApp.MCP.Router, log: false}],
+              strategy: :one_for_one
+            )
+
+          Process.sleep(:infinity)
+        end
+      end
+
+  Add to your `mix.exs`:
+
+      def project do
+        [
+          # ...
+          escript: [main_module: MyApp.CLI, app: nil]
+        ]
+      end
+
+  Build:
+
+      mix escript.build
+      # produces ./my_app
+
+  > #### PATH must include Erlang and Elixir {: .warning}
+  >
+  > Escripts are compiled BEAM bytecode and require the Erlang runtime
+  > to execute. The `PATH` environment variable must include the
+  > directories for both `erl` and `elixir`. If you use a version
+  > manager like `mise` or `asdf`, ensure the shims or install paths
+  > are included.
+
+  ## Client configuration
+
+  <!-- tabs-open -->
+
+  ### Claude Desktop
+
+  Find your `claude_desktop_config.json`:
+  - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+  ```json
+  {
+    "mcpServers": {
+      "my_app": {
+        "command": "/path/to/my_app",
+        "env": {
+          "PATH": "/path/to/elixir/bin:/path/to/erlang/bin:/usr/local/bin:/usr/bin:/bin"
+        }
+      }
+    }
+  }
+  ```
+
+  ### Codex
+
+  Add to `~/.codex/config.toml`:
+
+  ```toml
+  [mcp_servers.my-app]
+  command = "/path/to/my_app"
+  env.PATH = "/path/to/elixir/bin:/path/to/erlang/bin:/usr/local/bin:/usr/bin:/bin"
+  ```
+
+  ### Cursor
+
+  Configure in Cursor's MCP settings with the same command as above.
+
+  <!-- tabs-close -->
+
+  ## Telemetry
+
+  Telemetry is provided with these events:
+
+  - `[:phantom, :stdio, :connect]` with meta: `~w[session router]a`
+  - `[:phantom, :stdio, :terminate]` with meta: `~w[session router reason]a`
+  - `[:phantom, :stdio, :exception]` with meta: `~w[session router exception stacktrace request]a`
   """
 
   alias Phantom.Cache
@@ -64,6 +175,8 @@ defmodule Phantom.Stdio do
 
     if not Cache.initialized?(router), do: Cache.register(router)
 
+    Phantom.Tracker.update_session_meta(nil, %{stdio_output: output})
+
     session =
       Session.new(nil,
         router: router,
@@ -73,6 +186,12 @@ defmodule Phantom.Stdio do
 
     case router.connect(session, %{headers: [], params: %{}}) do
       {:ok, session} ->
+        :telemetry.execute(
+          [:phantom, :stdio, :connect],
+          %{},
+          %{session: session, router: router}
+        )
+
         :proc_lib.init_ack({:ok, self()})
 
         Session.start_loop(

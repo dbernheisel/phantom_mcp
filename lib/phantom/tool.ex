@@ -185,6 +185,8 @@ defmodule Phantom.Tool do
         name: attrs[:name] || to_string(attrs[:function])
       })
 
+    validate_name!(attrs[:name])
+
     %{
       struct!(__MODULE__, attrs)
       | annotations: Annotation.build(annotation_attrs),
@@ -345,5 +347,22 @@ defmodule Phantom.Tool do
 
   def response(results) do
     %{content: List.wrap(results)}
+  end
+
+  defp validate_name!("") do
+    raise ArgumentError, "tool name must be between 1 and 128 characters, got: empty string"
+  end
+
+  defp validate_name!(name) when byte_size(name) > 128 do
+    raise ArgumentError, "tool name must be between 1 and 128 characters, got: #{inspect(name)}"
+  end
+
+  defp validate_name!(name) when is_atom(name), do: validate_name!(to_string(name))
+
+  defp validate_name!(name) do
+    unless name =~ ~r/^[A-Za-z0-9_\-.]+$/ do
+      raise ArgumentError,
+            "tool name must only contain letters, digits, underscores, dashes, and dots, got: #{inspect(name)}"
+    end
   end
 end
