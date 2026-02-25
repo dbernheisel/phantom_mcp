@@ -18,6 +18,7 @@ defmodule Phantom.Request do
   @invalid_params -32602
   @internal_error -32603
   @parse_error -32700
+  @url_elicitation_required -32042
 
   import Phantom.Utils
   alias Phantom.Session
@@ -53,6 +54,24 @@ defmodule Phantom.Request do
   @doc "The resource is not found"
   def resource_not_found(data),
     do: %{code: @resource_not_found, data: data, message: "Resource not found"}
+
+  @doc "Error indicating URL mode elicitation is required before retrying"
+  def url_elicitation_required(elicitations) when is_list(elicitations) do
+    %{
+      code: @url_elicitation_required,
+      message: "This request requires more information.",
+      data: %{elicitations: Enum.map(elicitations, &Phantom.Elicit.to_json/1)}
+    }
+  end
+
+  @doc "Elicitation complete notification"
+  def elicitation_complete(elicitation_id) do
+    %{
+      jsonrpc: "2.0",
+      method: "notifications/elicitation/complete",
+      params: %{elicitationId: elicitation_id}
+    }
+  end
 
   @doc false
   def build(nil), do: nil

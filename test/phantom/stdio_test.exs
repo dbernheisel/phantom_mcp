@@ -401,6 +401,58 @@ defmodule Phantom.StdioTest do
     end
   end
 
+  describe "telemetry" do
+    test "emits connect event on startup" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:phantom, :stdio, :connect]])
+      ctx = start_stdio()
+
+      assert_receive {[:phantom, :stdio, :connect], ^ref, %{}, %{session: _, router: Test.MCP.Router}}
+
+      # cleanup: stop the stdio process so the handler is detached
+      stop_supervised!(Phantom.Stdio)
+      _ = ctx
+    end
+
+    test "emits terminate event on EOF" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:phantom, :stdio, :terminate]])
+      ctx = start_stdio()
+      monitor = Process.monitor(ctx.pid)
+
+      MockIO.push_eof(ctx.input)
+
+      assert_receive {[:phantom, :stdio, :terminate], ^ref, %{},
+                      %{session: _, router: Test.MCP.Router, reason: :eof}}
+
+      assert_receive {:DOWN, ^monitor, :process, _, _}, 2000
+    end
+
+    test "emits exception event on tool crash" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:phantom, :stdio, :exception]])
+      ctx = start_stdio()
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: %{name: "explode_tool", arguments: %{}}
+      })
+
+      assert_receive {[:phantom, :stdio, :exception], ^ref, %{},
+                      %{
+                        session: _,
+                        router: Test.MCP.Router,
+                        exception: %RuntimeError{},
+                        stacktrace: _,
+                        request: _
+                      }}
+
+      # Process should still be alive
+      response = read_response(ctx)
+      assert response["error"]["code"] == -32603
+      assert Process.alive?(ctx.pid)
+    end
+  end
+
   describe "connect callback" do
     defmodule RejectRouter do
       use Phantom.Router,
