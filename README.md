@@ -17,6 +17,24 @@ Add Phantom to your dependencies:
   {:phantom_mcp, "~> 0.3.4"},
 ```
 
+## Stdio Transport (Local Clients)
+
+For local-only clients like Claude Desktop, you can expose your MCP server
+over stdin/stdout without needing an HTTP server. Add `Phantom.Stdio` to
+your supervision tree:
+
+```elixir
+# lib/my_app/application.ex
+children = [
+  {Phantom.Stdio, router: MyApp.MCP.Router}
+]
+```
+
+For more information about running your MCP server locally with stdio, see
+[Phantom.Stdio].
+
+## Streamable HTTP Transport (Remote Clients)
+
 When using with Plug/Phoenix, configure MIME to accept SSE:
 
 ```elixir
@@ -99,7 +117,8 @@ generated example as a starting point.
 Now the fun begins: it's time to define your MCP router that catalogs all your tools, prompts, and resources. When you're creating your MCP server, make sure
 you test it with the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) or your client of choice.
 
-For local testing, you can use [`mcp-remote`](https://github.com/geelen/mcp-remote) to proxy local-only clients to your Phantom-powered MCP server, either while it's hosted locally or remotely. Don't use `mcp-proxy` since it's designed for older SSE-based MCP servers (Phantom is using the newer Streamable HTTP behavior).
+See `Phantom.Plug` for local testing instructions with `mcp-remote`, or
+`Phantom.Stdio` for building an escript for direct stdio clients.
 
 First we're define the MCP router:
 

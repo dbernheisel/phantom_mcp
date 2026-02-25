@@ -10,6 +10,7 @@ defmodule Phantom.MixProject do
       docs: docs(),
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
+      escript: escript(Mix.env()),
       package: package(),
       start_permanent: Mix.env() == :prod,
       version: "0.3.4",
@@ -30,13 +31,17 @@ defmodule Phantom.MixProject do
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(:stdio), do: ["lib", "test/support/app/mcp", "test/support/app/stdio.ex"]
   defp elixirc_paths(_), do: ["lib"]
+
+  defp escript(:stdio), do: [main_module: Test.Stdio, app: nil]
+  defp escript(_), do: []
 
   defp deps do
     [
       {:plug, "~> 1.0"},
       {:telemetry, "~> 1.0"},
-      {:phoenix_pubsub, "~> 2.0", optional: true},
+      {:phoenix_pubsub, "~> 2.0", optional: true, only: [:dev, :test, :prod]},
       {:uuidv7, "~> 1.0"},
       ## Test
       {:phoenix, "~> 1.7", only: [:test]},
