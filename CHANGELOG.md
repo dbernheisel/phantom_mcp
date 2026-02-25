@@ -1,3 +1,23 @@
+## 0.3.4 (2026-02-24)
+
+- **Breaking** When using `Phantom.Plug`, pass the `conn` to the router connect 
+  callback instead of a map with params and headers keys. Upgrade and make this 
+  adjustment in your connect callback: 
+
+  ```elixir
+  # Before
+  def connect(session, context) do
+    %{params: params, headers: headers} = context
+    # ...
+  end
+
+  # After
+  def connect(session, conn) do
+    %{query_params: params, req_headers: headers} = conn
+    # ...
+  end
+  ```
+
 ## 0.3.3 (2026-02-22)
 
 - Fixup Cache key mismatch

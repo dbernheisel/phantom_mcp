@@ -146,10 +146,7 @@ defmodule Phantom.Plug do
       )
 
     try do
-      case router.connect(session, %{
-             params: conn.query_params,
-             headers: conn.req_headers
-           }) do
+      case router.connect(session, conn) do
         {:ok, session} ->
           :telemetry.execute(
             [:phantom, :plug, :request, :connect],
@@ -165,8 +162,8 @@ defmodule Phantom.Plug do
           put_in(conn.private.phantom.session, session)
 
         {unauthorized, www_authenticate}
-        when (unauthorized in [401, :unauthorized] and
-                is_map(www_authenticate)) or is_binary(www_authenticate) ->
+        when unauthorized in [401, :unauthorized] and
+               (is_map(www_authenticate) or is_binary(www_authenticate)) ->
           www_authenticate =
             if is_map(www_authenticate),
               do: www_authenticate(www_authenticate),
@@ -175,22 +172,17 @@ defmodule Phantom.Plug do
           conn
           |> put_status(401)
           |> put_resp_header("www-authenticate", www_authenticate)
-          |> json_error(Request.error(Request.closed("Unauthorized")))
+          |> request_error(Request.closed("Unauthorized"))
 
         {forbidden, message}
         when forbidden in [403, :forbidden] and is_binary(message) ->
-          conn
-          |> put_status(403)
-          |> json_error(Request.error(Request.closed(message)))
+          conn |> put_status(403) |> request_error(Request.closed(message))
 
         {:error, error} when is_map(error) ->
-          json_error(conn, Request.error(Request.closed(JSON.encode!(error))))
+          request_error(conn, error |> JSON.encode!() |> Request.closed())
 
         {:error, reason} ->
-          json_error(
-            conn,
-            Request.error(Request.closed("Connection failed: #{reason}"))
-          )
+          request_error(conn, Request.closed("Connection failed: #{reason}"))
       end
     rescue
       e ->
@@ -210,32 +202,34 @@ defmodule Phantom.Plug do
       opts[:validate_origin] && not valid_origin?(get_origin(conn), opts) ->
         conn
         |> put_status(403)
-        |> json_error(Request.error(Request.closed("Origin not allowed")))
+        |> request_error(Request.closed("Origin not allowed"))
 
       reported_content_length_exceeded?(conn, opts) ->
         conn
         |> put_status(413)
-        |> json_error(Request.error(Request.invalid("Request too large")))
+        |> request_error(Request.invalid("Request too large"))
 
       conn.method not in ~w[DELETE GET OPTIONS POST] ->
         conn
         |> put_status(405)
-        |> json_error(Request.error(Request.not_found("Method not allowed")))
+        |> request_error(Request.not_found("Method not allowed"))
 
       conn.method not in ~w[DELETE GET OPTIONS] and map_size(conn.body_params) == 0 ->
         conn
         |> put_status(400)
-        |> json_error(Request.error(Request.parse_error("Parse error: Invalid JSON")))
+        |> request_error(Request.parse_error("Parse error: Invalid JSON"))
 
       conn.body_params["_json"] == [] ->
         conn
         |> put_status(400)
-        |> json_error(Request.error(Request.parse_error("No requests")))
+        |> request_error(Request.parse_error("No requests"))
 
       true ->
         conn
     end
   end
+
+  defp request_error(conn, error), do: json_error(conn, Request.error(error))
 
   defp dispatch(%Plug.Conn{halted: true} = conn, _opts), do: conn
 

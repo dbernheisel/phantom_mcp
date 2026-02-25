@@ -26,6 +26,8 @@ defmodule Phantom.Router do
 
   @doc """
   When the connection is opening, this callback will be invoked.
+  You will receive the session and the adapter's context, for example, when using `Phantom.Plug`, you'll get the
+  `Plug.Conn`.
 
   This is critical for authentication and authorization.
 
@@ -37,10 +39,7 @@ defmodule Phantom.Router do
   but lacks the account permissions to access the MCP server.
   - `{:error, message}` - The connection should be rejected for any other reason.
   """
-  @callback connect(Session.t(), %{
-              optional(:headers) => Plug.Conn.headers(),
-              optional(:params) => Plug.Conn.query_params()
-            }) ::
+  @callback connect(Session.t(), term()) ::
               {:ok, Session.t()}
               | {:unauthorized | 401, www_authenticate_header :: Phantom.Plug.www_authenticate()}
               | {:forbidden | 403, message :: String.t()}
