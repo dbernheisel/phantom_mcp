@@ -89,9 +89,19 @@ defmodule Phantom.Router do
   if you need the instructions to be dynamic based on the session, you may implement this
   callback and return `{:ok, %{name: "my name", version: "my version"}`. Any other shape will result
   in no server information.
+
+  You may also include optional `:icons` (a list of serialized icon maps) and `:websiteUrl` (a URL string)
+  in the returned map. These are part of the MCP 2025-11-25 specification for `Implementation`.
   """
   @callback server_info(Session.t()) ::
-              {:ok, %{name: String.t(), version: String.t()}} | {:error, any()}
+              {:ok,
+               %{
+                 required(:name) => String.t(),
+                 required(:version) => String.t(),
+                 optional(:icons) => [map()],
+                 optional(:websiteUrl) => String.t()
+               }}
+              | {:error, any()}
   @doc """
   List resources available to the client.
 
@@ -112,6 +122,8 @@ defmodule Phantom.Router do
     name = Keyword.get(opts, :name, "Phantom MCP Server")
     vsn = Keyword.get(opts, :vsn, Mix.Project.config()[:version])
     instructions = Keyword.get(opts, :instructions, "")
+    icons = Keyword.get(opts, :icons, nil)
+    website_url = Keyword.get(opts, :website_url, nil)
 
     quote location: :keep, generated: true do
       @behaviour Phantom.Router
@@ -131,6 +143,8 @@ defmodule Phantom.Router do
       @name unquote(name)
       @vsn unquote(vsn)
       @instructions unquote(instructions)
+      @icons unquote(icons)
+      @website_url unquote(website_url)
 
       Module.register_attribute(__MODULE__, :phantom_tools, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_prompts, accumulate: true)
@@ -141,7 +155,23 @@ defmodule Phantom.Router do
       def terminate(session), do: {:error, nil}
 
       def instructions(_session), do: {:ok, @instructions}
-      def server_info(_session), do: {:ok, %{name: @name, version: @vsn}}
+
+      def server_info(_session) do
+        icons =
+          case @icons do
+            nil -> nil
+            [] -> nil
+            icons -> Enum.map(icons, &Phantom.Icon.build/1) |> Phantom.Icon.to_json_list()
+          end
+
+        {:ok,
+         Phantom.Utils.remove_nils(%{
+           name: @name,
+           version: @vsn,
+           icons: icons,
+           websiteUrl: Phantom.Utils.resolve_url(@website_url)
+         })}
+      end
 
       def list_resources(_cursor, session) do
         {:error, Request.not_found(), session}
