@@ -58,8 +58,8 @@ defmodule Phantom.Tool do
           function: atom(),
           mime_type: String.t(),
           meta: map(),
-          input_schema: JSONSchema.t(),
-          output_schema: JSONSchema.t(),
+          input_schema: JSONSchema.t() | nil,
+          output_schema: JSONSchema.t() | nil,
           annotations: Annotation.t()
         }
 
@@ -188,8 +188,8 @@ defmodule Phantom.Tool do
     %{
       struct!(__MODULE__, attrs)
       | annotations: Annotation.build(annotation_attrs),
-        output_schema: JSONSchema.build(attrs[:output_schema]),
-        input_schema: JSONSchema.build(attrs[:input_schema])
+        input_schema: JSONSchema.build(attrs[:input_schema]),
+        output_schema: JSONSchema.build(attrs[:output_schema])
     }
   end
 
