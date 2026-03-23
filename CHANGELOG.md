@@ -1,8 +1,16 @@
+## unreleased
+
+- Add `Phantom.Stdio` adapter
+- Add support for icons for the server info, tools, and prompts. See
+`Phantom.Icon`
+- Server now declares support for MCP spec 2025-11-25.
+- Elicitation support is fully implemented. See `Phantom.Elicit`
+
 ## 0.3.4 (2026-02-24)
 
-- **Breaking** When using `Phantom.Plug`, pass the `conn` to the router connect 
-  callback instead of a map with params and headers keys. Upgrade and make this 
-  adjustment in your connect callback: 
+- **Breaking** When using `Phantom.Plug`, pass the `conn` to the router connect
+  callback instead of a map with params and headers keys. Upgrade and make this
+  adjustment in your connect callback:
 
   ```elixir
   # Before
