@@ -55,6 +55,8 @@ defmodule Phantom.Session do
           transport_pid: pid()
         }
 
+  @elicitation_timeout :timer.minutes(5)
+
   @spec new(String.t() | nil, Keyword.t() | map) :: t()
   @doc """
   Builds a new session with the provided session ID.
@@ -86,19 +88,115 @@ defmodule Phantom.Session do
     params["_meta"]["progressToken"]
   end
 
-  @doc "Elicit input from the client"
-  @spec elicit(t, Phantom.Elicit.t()) ::
-          {:ok, request_id :: String.t()}
+  @doc """
+  Elicit input from the client.
+
+  Blocks until the client responds or timeout is reached. Returns
+  `{:ok, response}` where response is the client's JSON response map
+  (with `"action"` and `"content"` keys).
+
+  Options:
+    - `:timeout` - max time to wait in ms (default: 5 minutes)
+  """
+  @spec elicit(t, Phantom.Elicit.t(), keyword()) ::
+          {:ok, response :: map()}
           | :not_supported
-  def elicit(session, elicitation) do
-    if session.client_capabilities.elicitation do
-      case Phantom.Tracker.get_session(session) do
-        nil -> :error
-        pid -> GenServer.call(pid, {:elicit, elicitation})
+          | :error
+          | :timeout
+  def elicit(session, elicitation, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @elicitation_timeout)
+    meta = Phantom.Tracker.get_session_meta(session.id)
+
+    capabilities =
+      case meta do
+        %{client_capabilities: %{elicitation: caps}} -> caps
+        _ -> nil
       end
+
+    with_elicitation_support(capabilities, elicitation, fn ->
+      case {Phantom.Tracker.get_session(session), meta} do
+        {nil, %{stdio_output: output}} -> stdio_elicit(output, elicitation, timeout)
+        {nil, _} -> :error
+        {pid, _} when is_pid(pid) ->
+          try do
+            GenServer.call(pid, {:elicit, elicitation}, timeout)
+          catch
+            :exit, {:timeout, _} -> :timeout
+          end
+      end
+    end)
+  end
+
+  defp with_elicitation_support(nil, _elicitation, _fun), do: :not_supported
+  defp with_elicitation_support(false, _elicitation, _fun), do: :not_supported
+
+  defp with_elicitation_support(capabilities, elicitation, fun) when is_map(capabilities) do
+    if elicitation_mode_supported?(elicitation.mode, capabilities) do
+      fun.()
     else
       :not_supported
     end
+  end
+
+  defp stdio_elicit(output, elicitation, timeout) do
+    {:ok, request} =
+      Request.build(%{
+        "id" => UUIDv7.generate(),
+        "jsonrpc" => "2.0",
+        "method" => "elicitation/create",
+        "params" => Phantom.Elicit.to_json(elicitation)
+      })
+
+    IO.write(output, JSON.encode!(Request.to_json(request)) <> "\n")
+    stdio_await_response(request.id, timeout)
+  end
+
+  defp stdio_await_response(request_id, timeout) do
+    receive do
+      {:phantom_dispatch, requests} ->
+        case pop_response(requests, request_id) do
+          {nil, _requests} ->
+            send(self(), {:phantom_dispatch, requests})
+            stdio_await_response(request_id, timeout)
+
+          {response, []} ->
+            {:ok, response}
+
+          {response, remaining} ->
+            send(self(), {:phantom_dispatch, remaining})
+            {:ok, response}
+        end
+    after
+      timeout -> :timeout
+    end
+  end
+
+  defp pop_response(requests, request_id) do
+    Enum.reduce(requests, {nil, []}, fn
+      %{"id" => ^request_id, "result" => result}, {nil, rest} when is_map(result) ->
+        {result, rest}
+
+      other, {found, rest} ->
+        {found, [other | rest]}
+    end)
+  end
+
+  defp elicitation_mode_supported?(:form, _capabilities), do: true
+  defp elicitation_mode_supported?(:url, capabilities), do: is_map_key(capabilities, "url")
+
+  @doc "Convenience to elicit a URL mode interaction. Blocks until the client responds."
+  @spec elicit_url(t, url :: String.t(), message :: String.t(), keyword()) ::
+          {:ok, response :: map()} | :not_supported | :error | :timeout
+  def elicit_url(session, url, message, opts \\ []) do
+    elicit(
+      session,
+      Phantom.Elicit.url(%{
+        message: message,
+        url: url,
+        elicitation_id: UUIDv7.generate()
+      }),
+      opts
+    )
   end
 
   @spec assign(t(), atom(), any()) :: t()
@@ -156,7 +254,7 @@ defmodule Phantom.Session do
   """
   @spec set_log_level(Session.t(), Request.t(), String.t()) :: :ok
   def set_log_level(%__MODULE__{} = session, request, level) do
-    case Phantom.Tracker.get_session(session) do
+    case Phantom.Tracker.get_session(session) || session.pid do
       nil -> :error
       pid -> GenServer.cast(pid, {:set_log_level, request, level})
     end
@@ -272,8 +370,7 @@ defmodule Phantom.Session do
 
   @doc false
   def handle_continue(cb, state) do
-    timer = Process.send_after(self(), :inactivity, state.timeout)
-    state = Map.put(state, :timer, timer)
+    state = schedule_inactivity(Map.put(state, :timer, nil))
 
     if is_function(cb, 1) do
       maybe_finish(cb.(state))
@@ -287,7 +384,7 @@ defmodule Phantom.Session do
     {:reply, {:ok, Map.keys(state.subscriptions)}, state}
   end
 
-  def handle_call({:elicit, elicitation}, _from, state) do
+  def handle_call({:elicit, elicitation}, from, state) do
     cancel_inactivity(state)
 
     {:ok, request} =
@@ -298,8 +395,28 @@ defmodule Phantom.Session do
         "params" => Phantom.Elicit.to_json(elicitation)
       })
 
-    state = state.stream_fun.(state, request.id, "message", Request.to_json(request))
-    {:reply, {:ok, request.id}, state |> set_activity() |> schedule_inactivity()}
+    if elicitation.mode == :url do
+      Phantom.Tracker.track_request(self(), elicitation.elicitation_id, %{type: :elicitation})
+    end
+
+    state =
+      state
+      |> Map.update(:elicitation_callers, %{request.id => from}, &Map.put(&1, request.id, from))
+      |> state.stream_fun.(request.id, "message", Request.to_json(request))
+
+    {:noreply, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  @doc false
+  def handle_cast({:elicitation_response, request_id, response}, state) do
+    case pop_in(state, [:elicitation_callers, request_id]) do
+      {nil, state} ->
+        {:noreply, state}
+
+      {from, state} ->
+        GenServer.reply(from, {:ok, response})
+        {:noreply, state}
+    end
   end
 
   @doc false
@@ -403,8 +520,14 @@ defmodule Phantom.Session do
   end
 
   def handle_cast({:set_log_level, request, log_level}, state) do
+    level_num =
+      Keyword.fetch!(
+        Phantom.ClientLogger.log_levels(),
+        String.to_existing_atom(log_level)
+      )
+
     state = state.stream_fun.(state, request.id, "message", %{})
-    {:noreply, %{state | log_level: log_level}}
+    {:noreply, %{state | log_level: level_num}}
   end
 
   defp maybe_finish(state) do
@@ -434,14 +557,130 @@ defmodule Phantom.Session do
     end
   end
 
+  def handle_info({:phantom_dispatch, requests}, state) do
+    cancel_inactivity(state)
+
+    state =
+      Enum.reduce(requests, state, fn raw_request, state_acc ->
+        case Request.build(raw_request) do
+          {:ok, request} ->
+            dispatch_stdio_request(request, state_acc)
+
+          {:error, error} ->
+            state_acc.stream_fun.(state_acc, error.id, "message", error.response)
+        end
+      end)
+
+    {:noreply, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  def handle_info({:phantom_dispatch_error, :parse_error}, state) do
+    cancel_inactivity(state)
+    error = Request.error(nil, Request.parse_error("Parse error: Invalid JSON"))
+    state = state.stream_fun.(state, nil, "message", error)
+    {:noreply, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  def handle_info({:phantom_reader_closed, reason}, state) do
+    state.session.router.disconnect(state.session)
+    state.session.router.terminate(state.session)
+
+    :telemetry.execute(
+      [:phantom, :stdio, :terminate],
+      %{},
+      %{session: state.session, router: state.session.router, reason: reason}
+    )
+
+    {:stop, {:shutdown, :eof}, state}
+  end
+
   def handle_info(_what, state) do
     {:noreply, state}
+  end
+
+  defp dispatch_stdio_request(%Request{id: nil} = request, state) do
+    # Notifications have no id; dispatch but don't write a response
+    try do
+      case state.session.router.dispatch_method([
+             request.method,
+             request.params,
+             request,
+             state.session
+           ]) do
+        {:reply, _result, %__MODULE__{} = session} -> put_in(state.session, session)
+        {:noreply, %__MODULE__{} = session} -> put_in(state.session, session)
+        {:error, _error, %__MODULE__{} = session} -> put_in(state.session, session)
+        _ -> state
+      end
+    rescue
+      _ -> state
+    end
+  end
+
+  defp dispatch_stdio_request(request, state) do
+    stream_fun = state.stream_fun
+
+    try do
+      case state.session.router.dispatch_method([
+             request.method,
+             request.params,
+             request,
+             state.session
+           ]) do
+        {:noreply, %__MODULE__{} = session} ->
+          requests = Map.put(session.requests, request.id, request.response)
+          put_in(state.session, %{session | requests: requests})
+
+        {:reply, result, %__MODULE__{} = session} ->
+          request = Request.result(request, "message", result)
+          state = put_in(state.session, session)
+          stream_fun.(state, request.id, request.type, request.response)
+
+        {:reply, nil, %__MODULE__{} = session} ->
+          put_in(state.session, session)
+
+        {:error, error, %__MODULE__{} = session} ->
+          error = Request.error(request.id, error)
+          state = put_in(state.session, session)
+          stream_fun.(state, error[:id], "message", error)
+
+        {:error, error} ->
+          error = Request.error(request.id, error)
+          stream_fun.(state, error[:id], "message", error)
+
+        _other ->
+          error = Request.error(request.id, Request.internal_error())
+          stream_fun.(state, error[:id], "message", error)
+      end
+    rescue
+      exception ->
+        :telemetry.execute(
+          [:phantom, :stdio, :exception],
+          %{},
+          %{
+            session: state.session,
+            router: state.session.router,
+            exception: exception,
+            stacktrace: __STACKTRACE__,
+            request: request
+          }
+        )
+
+        IO.warn(
+          "Phantom.Stdio dispatch error: #{Exception.message(exception)}\n#{Exception.format_stacktrace(__STACKTRACE__)}"
+        )
+
+        error = Request.error(request.id, Request.internal_error(Exception.message(exception)))
+        stream_fun.(state, request.id, "message", error)
+    end
   end
 
   defp cancel_inactivity(%{timer: ref}) when is_reference(ref), do: Process.cancel_timer(ref)
   defp cancel_inactivity(_), do: :ok
 
   defp set_activity(state), do: %{state | last_activity: System.system_time()}
+
+  defp schedule_inactivity(%{timeout: :infinity} = state), do: state
 
   defp schedule_inactivity(state) do
     %{state | timer: Process.send_after(self(), :inactivity, state.timeout)}

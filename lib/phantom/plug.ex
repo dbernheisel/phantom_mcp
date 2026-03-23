@@ -77,6 +77,30 @@ defmodule Phantom.Plug do
   #{inspect(@default_opts, pretty: true)}
   ```
 
+  ## Local testing
+
+  When testing locally with clients that only support stdio (e.g. Claude Desktop, Codex), use
+  [`mcp-remote`](https://github.com/geelen/mcp-remote) to proxy the client to your Phantom HTTP server:
+
+  ```json
+  {
+    "mcpServers": {
+      "my_app": {
+        "command": "npx",
+        "args": ["mcp-remote", "http://localhost:4000/mcp"]
+      }
+    }
+  }
+  ```
+
+  > #### Don't use `mcp-proxy` {: .warning}
+  >
+  > `mcp-proxy` is designed for older SSE-based MCP servers.
+  > Phantom uses the newer Streamable HTTP transport —
+  > use `mcp-remote` instead.
+
+  For a direct stdio transport without HTTP, see `Phantom.Stdio`.
+
   ## Telemetry
 
   Telemetry is provided with these events:
@@ -668,8 +692,8 @@ defmodule Phantom.Plug do
     existing_stream = Phantom.Tracker.get_session(conn.private.phantom.session.id)
     track? = conn.body_params["method"] == "initialize" || conn.method == "GET"
 
-    case {track?, existing_stream} do
-      {true, nil} ->
+    case {track?, existing_stream, conn.method} do
+      {true, nil, _} ->
         session = %{conn.private.phantom.session | close_after_complete: !track?}
 
         Phantom.Tracker.track_session(
@@ -680,7 +704,7 @@ defmodule Phantom.Plug do
 
         put_in(conn.private.phantom.session, session)
 
-      {true, _} ->
+      {true, _, "GET"} ->
         conn
         |> put_status(409)
         |> json_error(
