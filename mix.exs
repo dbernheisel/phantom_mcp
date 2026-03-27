@@ -4,6 +4,8 @@ defmodule Phantom.MixProject do
   def project do
     [
       aliases: aliases(),
+      compilers: Mix.compilers() ++ [:runorcomp],
+      elixirc_options: [tracers: [Runorcomp.Tracer]],
       app: :phantom_mcp,
       description: "Elixir MCP (Model Context Protocol) server library with Plug",
       deps: deps(),
@@ -49,6 +51,7 @@ defmodule Phantom.MixProject do
       {:ex_doc, "~> 0.31", only: :dev, warn_if_outdated: true, runtime: false},
       {:tidewave, "~> 0.5", only: [:test], warn_if_outdated: true},
       {:exsync, "~> 0.4", only: [:test]},
+      {:runorcomp, "~> 0.1", only: [:dev], runtime: false},
       {:bandit, "~> 1.0", only: [:test]}
     ]
   end
