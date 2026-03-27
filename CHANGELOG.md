@@ -1,35 +1,36 @@
-## unreleased
+## 0.4.0 (2026-03-27)
 
-- Add `Phantom.Stdio` adapter
-- Add support for icons for the server info, tools, and prompts. See
-`Phantom.Icon`
-- Server now declares support for MCP spec 2025-11-25.
-- Elicitation support is fully implemented. See `Phantom.Elicit`
-- New tool DSL to provide input schemas. For example, before you had to
-  manually write the JSONSchema input schema
+- Add `Phantom.Stdio` adapter for local-only clients (e.g. Claude Desktop).
+  Add `{Phantom.Stdio, router: MyApp.MCP.Router}` to your supervision tree.
+  See `Phantom.Stdio` for more details.
+- Add `Phantom.Icon` support for server info, tools, and prompts per MCP
+  2025-11-25 specification. Icons can be set at the router level with
+  `use Phantom.Router, icons: [...]` or per-tool/prompt.
+- Server now declares support for MCP spec `2025-11-25`.
+- Elicitation support is fully implemented. `Phantom.Session.elicit/3` now
+  blocks until the client responds (with configurable timeout) and works
+  across both HTTP and stdio transports. See `Phantom.Elicit`.
+- `Phantom.Tracker` now works without `phoenix_pubsub` for stdio transport,
+  falling back to process dictionary for session metadata.
+- Fixed bugs with rendering embedded_resources
+- New tool DSL with `do` block to provide input schemas using an
+  Ecto.Schema-like syntax. For example, before you had to manually write
+  the JSONSchema input schema:
 
   ```elixir
-  tool :validated_echo_tool, description: "Echo with validation" do
+  tool :validated_echo_tool,
+    description: "Echo with validation",
     input_schema: %{
       required: ~w[message],
       properties: %{
-        message: %{
-          type: "string",
-          description: "Foo bar"
-        },
-        count: %{
-          type: "string",
-          description: "Foo bar"
-        },
-        tags: %{
-          type: "array",
-          items: %{type: :string}
-          description: "Foo bar"
-        }
+        message: %{type: "string", description: "Foo bar"},
+        count: %{type: "integer", description: "Foo bar"},
+        tags: %{type: "array", items: %{type: :string}, description: "Foo bar"}
       }
+    }
   ```
 
-  But now you can declare it with an Ecto-schema like syntax:
+  But now you can declare it with a `do` block:
 
   ```elixir
   tool :validated_echo_tool, description: "Echo with validation" do
@@ -38,6 +39,10 @@
     field :tags, {:array, :string}, description: "Foo bar"
   end
   ```
+
+  The `do` block also supports nested maps, custom validators, and all
+  JSON Schema types. The old map-based `input_schema` syntax continues
+  to work. See `Phantom.Tool.JSONSchema` for more info.
 
 ## 0.3.4 (2026-02-24)
 

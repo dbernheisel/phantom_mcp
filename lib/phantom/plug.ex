@@ -79,25 +79,28 @@ defmodule Phantom.Plug do
 
   ## Local testing
 
-  When testing locally with clients that only support stdio (e.g. Claude Desktop, Codex), use
-  [`mcp-remote`](https://github.com/geelen/mcp-remote) to proxy the client to your Phantom HTTP server:
+  Most MCP clients support Streamable HTTP natively. Configure them to
+  connect directly to your Phantom server:
 
   ```json
   {
     "mcpServers": {
       "my_app": {
-        "command": "npx",
-        "args": ["mcp-remote", "http://localhost:4000/mcp"]
+        "type": "http",
+        "url": "http://localhost:4000/mcp"
       }
     }
   }
   ```
 
-  > #### Don't use `mcp-proxy` {: .warning}
+  > #### Avoid `mcp-remote` and `mcp-proxy` {: .warning}
   >
-  > `mcp-proxy` is designed for older SSE-based MCP servers.
-  > Phantom uses the newer Streamable HTTP transport —
-  > use `mcp-remote` instead.
+  > Third-party proxies like `mcp-remote` and `mcp-proxy` can break MCP
+  > features such as elicitation, resource subscriptions, and session
+  > management. Connect directly over HTTP when possible.
+  >
+  > If your client only supports stdio, use `Phantom.Stdio` instead of
+  > proxying HTTP through a stdio wrapper.
 
   For a direct stdio transport without HTTP, see `Phantom.Stdio`.
 

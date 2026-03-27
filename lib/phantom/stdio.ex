@@ -156,7 +156,8 @@ defmodule Phantom.Stdio do
   def child_spec(opts) do
     %{
       id: __MODULE__,
-      start: {__MODULE__, :start_link, [opts]}
+      start: {__MODULE__, :start_link, [opts]},
+      restart: :transient
     }
   end
 

@@ -61,5 +61,14 @@ defmodule Phantom.Icon do
   @spec to_json_list([t()] | nil) :: [map()] | nil
   def to_json_list(nil), do: nil
   def to_json_list([]), do: nil
-  def to_json_list(icons) when is_list(icons), do: Enum.map(icons, &to_json/1)
+
+  def to_json_list(icons) when is_list(icons) do
+    icons
+    |> Enum.map(&to_json/1)
+    |> Enum.filter(&is_map_key(&1, :src))
+    |> case do
+      [] -> nil
+      list -> list
+    end
+  end
 end

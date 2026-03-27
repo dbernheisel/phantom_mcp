@@ -521,28 +521,44 @@ defmodule Phantom.Router do
   @doc """
   Define a tool that can be called by the MCP client.
 
-  ## Examples
+  ## Input schema DSL
 
-      tool :local_echo,
-        description: "A test that echos your message",
-        input_schema: %{
-          required: [:message],
-          properties: %{
-            message: %{
-              type: "string",
-              description: "message to echo"
-            }
-          }
-        }
-
-      # Or with the inline DSL:
+  Use a `do` block to define input fields with an Ecto-like syntax. This
+  generates JSON Schema for clients and validates incoming arguments at
+  dispatch time. See `Phantom.Tool.JSONSchema` for the full list of field
+  types, options, and validators.
 
       tool :search, description: "Search for stuff" do
         field :query, :string, required: true
         field :limit, :integer, default: 10
+        field :tags, {:array, :string}
       end
 
-      # With an external handler module:
+  Nested objects are supported with a `do` block on `:map` fields:
+
+      tool :search, description: "Search" do
+        field :query, :string, required: true
+        field :filters, :map do
+          field :category, :string, in: ~w[books movies music]
+          field :min_price, :number, minimum: 0
+        end
+      end
+
+  ## Map-based input schema
+
+  For full control over the JSON Schema (without server-side validation),
+  pass `:input_schema` directly:
+
+      tool :echo,
+        description: "Echo a message",
+        input_schema: %{
+          required: [:message],
+          properties: %{
+            message: %{type: "string", description: "message to echo"}
+          }
+        }
+
+  ## External handler module
 
       tool :search, MyApp.MCP, description: "Search" do
         field :query, :string, required: true
@@ -1060,6 +1076,7 @@ defmodule Phantom.Router do
     case router.call(fake_conn, router.init([])).assigns.result do
       {:noreply, _session} ->
         case Task.yield(task) do
+          {:ok, %{contents: [first | _]}} -> {:ok, uri, first}
           {:ok, result} -> {:ok, uri, result}
           {:error, error} -> {:error, error, session}
           {:error, error, session} -> {:error, error, session}

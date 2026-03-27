@@ -117,8 +117,8 @@ generated example as a starting point.
 Now the fun begins: it's time to define your MCP router that catalogs all your tools, prompts, and resources. When you're creating your MCP server, make sure
 you test it with the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) or your client of choice.
 
-See `Phantom.Plug` for local testing instructions with `mcp-remote`, or
-`Phantom.Stdio` for building an escript for direct stdio clients.
+See `Phantom.Plug` for local testing instructions, or `Phantom.Stdio`
+for building an escript for direct stdio clients.
 
 First we're define the MCP router:
 
@@ -153,40 +153,68 @@ Now we'll go through each one and show how to respond synchronously or asynchron
 
 ## Defining Tools
 
-You can define tools that have an optional `input_schema` and an optional `output_schema`.
+You can define tools with an optional `input_schema` and an optional `output_schema`.
 If no `input_schema` is provided, then the client will not know to send arguments to your handlers.
+
+Use a `do` block with `field` declarations to define the input schema. This
+generates JSON Schema for clients **and** validates incoming arguments at
+dispatch time. See `Phantom.Tool.JSONSchema` for the full type system and
+options reference.
 
 ```elixir
 defmodule MyApp.MCP.Router do
   # ...
 
-  # Defining available tools
-  # the `@description` attribute will automatically be read, or you can provide `:description` directly.
+  # the `@description` attribute will automatically be read,
+  # or you can provide `:description` directly.
   @description """
   Create a question for the provided Study.
   """
-  tool :create_question,
-    # Provide a handler. If not provided, the current module will be assumed.
-    MyApp.MCP,
-    # Provide an `input_schema`.
-    input_schema: %{
-      required: ~w[description label study_id],
-      properties: %{
-        study_id: %{
-          type: "integer",
-          description: "The unique identifier for the Study"
-        },
-        label: %{
-          type: "string",
-          description: "The title of the Question. The first thing the participant will see when presented with the question"
-        },
-        description: %{
-          type: "string",
-          description: "The contents of the question. About one paragraph of detail that defines one question or task for the participant to perform or answer"
-        }
-      }
-    }
+  tool :create_question, MyApp.MCP do
+    field :study_id, :integer, required: true,
+      description: "The unique identifier for the Study"
+
+    field :label, :string, required: true,
+      description: "The title of the Question"
+
+    field :description, :string, required: true,
+      description: "About one paragraph of detail that defines the question"
+  end
 end
+```
+
+Fields support nested objects, arrays, enums, pattern matching, custom
+validators, and more:
+
+```elixir
+@description "Search for studies"
+tool :search_studies do
+  field :query, :string, required: true
+  field :limit, :integer, default: 10, maximum: 100
+  field :status, :string, in: ~w[draft active archived]
+  field :tags, {:array, :string}
+
+  field :filters, :map do
+    field :category, :string
+    field :min_price, :number, minimum: 0
+  end
+end
+```
+
+You can also use the map-based `input_schema` option for full control over
+the JSON Schema. This form skips server-side validation — it only advertises
+the schema to clients:
+
+```elixir
+tool :create_question, MyApp.MCP,
+  input_schema: %{
+    required: ~w[study_id label description],
+    properties: %{
+      study_id: %{type: "integer", description: "The Study ID"},
+      label: %{type: "string", description: "The title"},
+      description: %{type: "string", description: "The contents"}
+    }
+  }
 ```
 
 Then implement it:

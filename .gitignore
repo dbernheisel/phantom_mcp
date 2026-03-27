@@ -27,3 +27,4 @@ phantom_mcp-*.tar
 /.claude/*.local.*
 .tool-versions
 phantom_mcp
+/bin/phantom-stdio

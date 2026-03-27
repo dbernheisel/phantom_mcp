@@ -26,6 +26,8 @@ defmodule Phantom.Utils do
   """
   def resolve_url({mod, fun, args}) when is_atom(mod) and is_atom(fun) and is_list(args) do
     apply(mod, fun, args)
+  rescue
+    _ -> nil
   end
 
   def resolve_url(url) when is_binary(url), do: url

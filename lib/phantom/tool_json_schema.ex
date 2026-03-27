@@ -3,22 +3,11 @@ defmodule Phantom.Tool.JSONSchema do
   JSON Schema for tool input and output schemas.
 
   Provides an Ecto-like DSL for defining input schemas that both generate
-  JSON Schema for clients AND validate/default incoming params at dispatch time.
-
-  ## Standalone usage
-
-  Define reusable schemas as modules:
-
-      defmodule MyApp.MCP.Schemas.Filters do
-        use Phantom.Tool.JSONSchema
-
-        input_schema do
-          field :category, :string
-          field :min_price, :number
-        end
-      end
+  JSON Schema for clients AND validate/coerce incoming params at dispatch time.
 
   ## Router usage
+
+  When defining tools in a `Phantom.Router`, use a `do` block with `field` declarations:
 
       tool :search, description: "Search for stuff" do
         field :query, :string, required: true
@@ -26,7 +15,26 @@ defmodule Phantom.Tool.JSONSchema do
         field :tags, {:array, :string}
       end
 
-  ## Type System
+  This generates the equivalent JSON Schema sent to clients **and** validates
+  incoming arguments at dispatch time, returning structured errors for invalid
+  input.
+
+  You can still use the map-based `input_schema` option for full control:
+
+      tool :search,
+        description: "Search for stuff",
+        input_schema: %{
+          required: ~w[query],
+          properties: %{
+            query: %{type: "string", description: "Search query"},
+            limit: %{type: "integer", description: "Max results"}
+          }
+        }
+
+  The map-based form skips server-side validation — it only advertises the
+  schema to clients.
+
+  ## Type system
 
   | DSL type | Elixir guard | JSON Schema type |
   |----------|-------------|-----------------|
@@ -36,7 +44,89 @@ defmodule Phantom.Tool.JSONSchema do
   | `:boolean` | `is_boolean` | `"boolean"` |
   | `{:array, subtype}` | `is_list` + validate each | `"array"` with `items` |
   | `:map` with `do` block | `is_map` + validate nested | `"object"` with `properties` |
-  | `ModuleName` | delegate to module | delegate to module |
+  | `ModuleName` | delegate to module schema | delegate to module schema |
+
+  ## Field options
+
+  Every `field` accepts the following options:
+
+  | Option | Type | Description |
+  |--------|------|-------------|
+  | `:required` | `boolean` | Mark the field as required (default: `false`) |
+  | `:default` | `any` | Default value injected when the field is absent |
+  | `:description` | `string` | Description sent to clients in the JSON Schema |
+  | `:enum` or `:in` | `list` | Restrict to an allowed set of values |
+  | `:exclusion` | `list` | Reject specific values |
+  | `:minimum` or `:greater_than_or_equal_to` | `number` | Minimum value (inclusive) |
+  | `:maximum` or `:less_than_or_equal_to` | `number` | Maximum value (inclusive) |
+  | `:greater_than` | `number` | Exclusive minimum |
+  | `:less_than` | `number` | Exclusive maximum |
+  | `:min_length` | `integer` | Minimum string length or list length |
+  | `:max_length` | `integer` | Maximum string length or list length |
+  | `:length` | `integer` | Exact string length or list length |
+  | `:pattern` or `:format` | `string` or `Regex` | Regex pattern the string must match |
+  | `:message` | `string` | Custom error message on validation failure |
+  | `:validate` | `function` | Custom validator (see below) |
+
+  Options like `:in`, `:greater_than_or_equal_to`, `:less_than_or_equal_to`,
+  and `:format` are Ecto-style aliases for their JSON Schema equivalents.
+
+  ## Nested objects
+
+  Use a `do` block on a `:map` field to define nested properties:
+
+      tool :search, description: "Search" do
+        field :query, :string, required: true
+
+        field :filters, :map do
+          field :category, :string, in: ~w[books movies music]
+          field :min_price, :number, minimum: 0
+        end
+      end
+
+  ## Custom validators
+
+  The `:validate` option accepts an anonymous function, a local function name,
+  or an MFA tuple. The function receives the field value and must return
+  `:ok` or `{:error, reason}`:
+
+      tool :create_user, description: "Create a user" do
+        field :email, :string,
+          required: true,
+          pattern: ~r/@/,
+          validate: fn value ->
+            if String.contains?(value, "@"),
+              do: :ok,
+              else: {:error, "must be a valid email"}
+          end
+
+        # Or reference a local function by name:
+        field :username, :string, required: true, validate: :validate_username
+      end
+
+      def validate_username(value) do
+        if String.length(value) >= 3, do: :ok, else: {:error, "too short"}
+      end
+
+  ## Reusable schemas
+
+  Define reusable schemas as modules with `use Phantom.Tool.JSONSchema`:
+
+      defmodule MyApp.MCP.Schemas.Filters do
+        use Phantom.Tool.JSONSchema
+
+        input_schema do
+          field :category, :string
+          field :min_price, :number, minimum: 0
+        end
+      end
+
+  Then reference the module as a field type:
+
+      tool :search, description: "Search" do
+        field :query, :string, required: true
+        field :filters, MyApp.MCP.Schemas.Filters
+      end
   """
 
   import Phantom.Utils

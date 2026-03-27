@@ -406,7 +406,8 @@ defmodule Phantom.StdioTest do
       ref = :telemetry_test.attach_event_handlers(self(), [[:phantom, :stdio, :connect]])
       ctx = start_stdio()
 
-      assert_receive {[:phantom, :stdio, :connect], ^ref, %{}, %{session: _, router: Test.MCP.Router}}
+      assert_receive {[:phantom, :stdio, :connect], ^ref, %{},
+                      %{session: _, router: Test.MCP.Router}}
 
       # cleanup: stop the stdio process so the handler is detached
       stop_supervised!(Phantom.Stdio)

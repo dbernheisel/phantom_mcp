@@ -115,8 +115,12 @@ defmodule Phantom.Session do
 
     with_elicitation_support(capabilities, elicitation, fn ->
       case {Phantom.Tracker.get_session(session), meta} do
-        {nil, %{stdio_output: output}} -> stdio_elicit(output, elicitation, timeout)
-        {nil, _} -> :error
+        {nil, %{stdio_output: output}} ->
+          stdio_elicit(output, elicitation, timeout)
+
+        {nil, _} ->
+          :error
+
         {pid, _} when is_pid(pid) ->
           try do
             GenServer.call(pid, {:elicit, elicitation}, timeout)

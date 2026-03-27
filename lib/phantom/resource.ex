@@ -191,7 +191,7 @@ defmodule Phantom.Resource do
       uri: uri,
       mimeType: attrs[:mime_type] || resource_template.mime_type,
       description: attrs[:description] || resource_template.description,
-      name: attrs[:name]
+      name: attrs[:name] || resource_template.name
     })
   end
 end

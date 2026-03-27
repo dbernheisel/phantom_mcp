@@ -250,9 +250,10 @@ defmodule Phantom.Elicit do
 
   @doc "Build a form mode elicitation"
   def form(attrs) do
-    %{struct!(__MODULE__, attrs) |
-      mode: :form,
-      requested_schema: attrs[:requested_schema] |> List.wrap() |> Enum.map(&build_property/1)
+    %{
+      struct!(__MODULE__, attrs)
+      | mode: :form,
+        requested_schema: attrs[:requested_schema] |> List.wrap() |> Enum.map(&build_property/1)
     }
   end
 
