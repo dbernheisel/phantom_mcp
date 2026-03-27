@@ -5,6 +5,39 @@
 `Phantom.Icon`
 - Server now declares support for MCP spec 2025-11-25.
 - Elicitation support is fully implemented. See `Phantom.Elicit`
+- New tool DSL to provide input schemas. For example, before you had to
+  manually write the JSONSchema input schema
+
+  ```elixir
+  tool :validated_echo_tool, description: "Echo with validation" do
+    input_schema: %{
+      required: ~w[message],
+      properties: %{
+        message: %{
+          type: "string",
+          description: "Foo bar"
+        },
+        count: %{
+          type: "string",
+          description: "Foo bar"
+        },
+        tags: %{
+          type: "array",
+          items: %{type: :string}
+          description: "Foo bar"
+        }
+      }
+  ```
+
+  But now you can declare it with an Ecto-schema like syntax:
+
+  ```elixir
+  tool :validated_echo_tool, description: "Echo with validation" do
+    field :message, :string, required: true, description: "Foo bar"
+    field :count, :integer, default: 1, description: "Foo bar"
+    field :tags, {:array, :string}, description: "Foo bar"
+  end
+  ```
 
 ## 0.3.4 (2026-02-24)
 
