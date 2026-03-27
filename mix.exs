@@ -13,7 +13,7 @@ defmodule Phantom.MixProject do
       escript: escript(Mix.env()),
       package: package(),
       start_permanent: Mix.env() == :prod,
-      version: "0.3.4",
+      version: "0.4.0",
       source_url: "https://github.com/dbernheisel/phantom_mcp"
     ]
   end
