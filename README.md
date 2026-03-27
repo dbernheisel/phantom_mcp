@@ -524,13 +524,13 @@ Phantom will implement these MCP requests on your behalf:
 - `notifications/resources/list_changed` - The server informs the client the list of resources has updated. This is not done automatically; you will need to trigger this with `Phantom.Tracker.notify_resource_list/0`, but also be mindful of what resources the session may have access to.
 - `notifications/prompts/list_changed` - The server informs the client the list of prompts has updated. This is triggered when `Phantom.Cache.add_prompt/2` is called.
 - `notifications/tools/list_changed` - The server informs the client the list of tools has updated. This is triggered when `Phantom.Cache.add_tool/2` is called.
+- `elicitation/create` - The server requests input from
+  the client in order to complete a request the client has made of it.
 
 Phantom **does not yet support these methods**:
 
 - `roots/list` - The server requests the client to provide a list of files available for interaction. This is like `resources/list` but for the client.
 - `sampling/createMessage` - The server requests the client to query their LLM and provide its response. This is for human-in-the-loop agentic actions and could be leveraged when the client requests a prompt from the server.
-- `elicitation/create` - The server requests input from
-  the client in order to complete a request the client has made of it.
 
 ## Batched Requests
 
