@@ -74,19 +74,11 @@ defmodule Phantom.Tool do
         }
 
   @type image_response :: %{
-          content: [
-            type: :image,
-            data: base64_binary :: binary(),
-            mimeType: String.t()
-          ]
+          content: [%{type: :image, data: base64_binary :: binary(), mimeType: String.t()}]
         }
 
   @type audio_response :: %{
-          content: [
-            type: :audio,
-            data: base64_binary :: binary(),
-            mimeType: String.t()
-          ]
+          content: [%{type: :audio, data: base64_binary :: binary(), mimeType: String.t()}]
         }
 
   @type embedded_text_resource :: %{
@@ -106,44 +98,37 @@ defmodule Phantom.Tool do
 
   @type embedded_resource_response :: %{
           content: [
-            type: :resource,
-            resource:
-              embedded_text_resource()
-              | embedded_blob_resource()
+            %{
+              type: :resource,
+              resource: embedded_text_resource() | embedded_blob_resource()
+            }
           ]
         }
 
   @type resource_link_response :: %{
           content: [
-            type: :resource_link,
-            uri: String.t(),
-            name: String.t(),
-            description: String.t(),
-            mimeType: String.t()
+            %{
+              type: :resource_link,
+              uri: String.t(),
+              name: String.t(),
+              description: String.t(),
+              mimeType: String.t()
+            }
           ]
         }
 
   @type text_response :: %{
-          content: [
-            type: :text,
-            text: String.t()
-          ]
+          content: [%{type: :text, text: String.t()}]
         }
 
   @type structured_response :: %{
           structuredContent: map(),
-          content: [
-            type: :text,
-            text: json_encoded :: String.t()
-          ]
+          content: [%{type: :text, text: json_encoded :: String.t()}]
         }
 
   @type error_response :: %{
           isError: true,
-          content: [
-            type: :text,
-            text: String.t()
-          ]
+          content: [%{type: :text, text: String.t()}]
         }
 
   @type response ::
@@ -184,9 +169,7 @@ defmodule Phantom.Tool do
       Map.split(attrs, ~w[title idempotent destructive read_only open_world]a)
 
     attrs =
-      Map.merge(attrs, %{
-        name: attrs[:name] || to_string(attrs[:function])
-      })
+      Map.put(attrs, :name, attrs[:name] || to_string(attrs[:function]))
 
     validate_name!(attrs[:name])
 
@@ -220,18 +203,18 @@ defmodule Phantom.Tool do
   def text(data) when is_map(data) do
     %{
       structuredContent: data,
-      content: [%{type: "text", text: JSON.encode!(data)}]
+      content: [%{type: :text, text: JSON.encode!(data)}]
     }
   end
 
   @spec text(String.t()) :: text_response()
   def text(data) do
-    %{content: [%{type: "text", text: data || ""}]}
+    %{content: [%{type: :text, text: data || ""}]}
   end
 
   @spec error(message :: String.t()) :: error_response()
   def error(message) do
-    %{content: [%{type: "text", text: message}], isError: true}
+    %{content: [%{type: :text, text: message}], isError: true}
   end
 
   @spec audio(binary()) :: audio_response()
@@ -267,7 +250,7 @@ defmodule Phantom.Tool do
       %{
         content: [
           %{
-            type: "audio",
+            type: :audio,
             data: Base.encode64(unquote(binary) || <<>>),
             mimeType: unquote(mime_type)
           }
@@ -309,7 +292,7 @@ defmodule Phantom.Tool do
       %{
         content: [
           %{
-            type: "image",
+            type: :image,
             data: Base.encode64(unquote(binary) || <<>>),
             mimeType: unquote(mime_type)
           }
