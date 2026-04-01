@@ -88,7 +88,7 @@ defmodule Phantom.Resource do
         mime_type: "image/png"
       )
   """
-  @spec blob(binary(), Keyword.t() | map()) :: blob_content()
+  @spec blob(binary(), Access.t()) :: blob_content()
   defmacro blob(binary, attrs \\ []) do
     mime_type =
       get_var(attrs, :mime_type, [:spec, :mime_type], __CALLER__, "application/octet-stream")
@@ -141,7 +141,7 @@ defmodule Phantom.Resource do
         # mime_type: "application/json"  # set by Phantom
       )
   """
-  @spec text(String.t() | map, Keyword.t() | map()) :: text_content()
+  @spec text(String.t() | map, Access.t()) :: text_content()
   defmacro text(text, attrs \\ %{}) do
     mime_type = get_var(attrs, :mime_type, [:spec, :mime_type], __CALLER__, "text/plain")
     uri = get_var(attrs, :uri, [:params, "uri"], __CALLER__)
@@ -184,7 +184,7 @@ defmodule Phantom.Resource do
   Formats a resource_template and the provided attributes as a resource link. This is
   typicaly used when listing resources or when tools embed a resource_link within its result.
   """
-  @spec resource_link(string_uri :: String.t(), Phantom.ResourceTemplate.t(), map()) ::
+  @spec resource_link(string_uri :: String.t(), Phantom.ResourceTemplate.t(), Access.t()) ::
           resource_link()
   def resource_link(uri, %Phantom.ResourceTemplate{} = resource_template, attrs \\ %{}) do
     remove_nils(%{
