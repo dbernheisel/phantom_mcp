@@ -147,12 +147,13 @@ defmodule Phantom.Tool do
         }
 
   @type response ::
-          image_response()
-          | audio_response()
-          | text_response()
-          | structured_response()
+          audio_response()
           | embedded_resource_response()
+          | error_response()
+          | image_response()
           | resource_link_response()
+          | structured_response()
+          | text_response()
 
   @doc """
   Build a tool spec. Be intentional with the name and description when defining
