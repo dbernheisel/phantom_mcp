@@ -250,7 +250,7 @@ defmodule Phantom.Tool do
         content: [
           %{
             type: :audio,
-            data: Base.encode64(unquote(binary) || <<>>),
+            data: Base.encode64(unquote(binary)),
             mimeType: unquote(mime_type)
           }
         ]
@@ -291,7 +291,7 @@ defmodule Phantom.Tool do
         content: [
           %{
             type: :image,
-            data: Base.encode64(unquote(binary) || <<>>),
+            data: Base.encode64(unquote(binary)),
             mimeType: unquote(mime_type)
           }
         ]
