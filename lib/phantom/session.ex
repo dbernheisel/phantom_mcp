@@ -112,40 +112,18 @@ defmodule Phantom.Session do
           | :timeout
   def elicit(session, elicitation, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @elicitation_timeout)
-    meta = Phantom.Tracker.get_session_meta(session.id)
 
     capabilities =
-      case meta do
-        %{client_capabilities: %{elicitation: caps}} ->
-          caps
-
-        _ ->
-          # Tracker meta unavailable — fall back to the session struct.
-          # When the adapter provides an elicit function but the session
-          # has default (false) capabilities, the tracker likely died after
-          # a successful initialize. Trust the adapter in this case.
-          case session.client_capabilities[:elicitation] do
-            false when is_function(session.elicit) -> %{}
-            other -> other
-          end
+      case session.client_capabilities[:elicitation] do
+        false when is_function(session.elicit) -> %{}
+        other -> other
       end
 
     with_elicitation_support(capabilities, elicitation, fn ->
-      cond do
-        is_function(session.elicit) ->
-          session.elicit.(elicitation, timeout)
-
-        # Fallback for async Tasks without transport context
-        (pid = Phantom.Tracker.get_session(session)) != nil ->
-          try do
-            GenServer.call(pid, {:elicit, elicitation}, timeout)
-          catch
-            :exit, {:timeout, _} -> :timeout
-            :exit, _reason -> :error
-          end
-
-        true ->
-          :error
+      if is_function(session.elicit) do
+        session.elicit.(elicitation, timeout)
+      else
+        :error
       end
     end)
   end

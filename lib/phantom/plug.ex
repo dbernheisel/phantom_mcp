@@ -175,6 +175,8 @@ defmodule Phantom.Plug do
     try do
       case router.connect(session, conn) do
         {:ok, session} ->
+          session = inherit_session_meta(session)
+
           :telemetry.execute(
             [:phantom, :plug, :request, :connect],
             %{},
@@ -742,6 +744,16 @@ defmodule Phantom.Plug do
           Phantom.Tracker.untrack_request(request.id)
           :timeout
       end
+    end
+  end
+
+  defp inherit_session_meta(%Session{} = session) do
+    case Phantom.Tracker.get_session_meta(session.id) do
+      %{client_capabilities: caps} when is_map(caps) ->
+        %{session | client_capabilities: caps}
+
+      _ ->
+        session
     end
   end
 
