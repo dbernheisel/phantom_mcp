@@ -389,7 +389,12 @@ defmodule Phantom.Plug do
               {:ok, request} ->
                 state_acc = maybe_track_response(state_acc, request)
                 state_acc = put_in(state_acc.conn, maybe_track_session_stream(state_acc.conn))
-                state_acc = put_in(state_acc.session, state_acc.conn.private.phantom.session)
+
+                state_acc =
+                  put_in(state_acc.session, %{
+                    state_acc.conn.private.phantom.session
+                    | elicit: elicit_fun(state_acc.conn)
+                  })
 
                 try do
                   case state_acc.session.router.dispatch_method([
@@ -701,6 +706,51 @@ defmodule Phantom.Plug do
       end)
 
     "#{method} #{info}"
+  end
+
+  defp elicit_fun(%Plug.Conn{} = conn) do
+    fn elicitation, timeout ->
+      {:ok, request} =
+        Request.build(%{
+          "id" => UUIDv7.generate(),
+          "jsonrpc" => "2.0",
+          "method" => "elicitation/create",
+          "params" => Phantom.Elicit.to_json(elicitation)
+        })
+
+      ref = make_ref()
+
+      Phantom.Tracker.track_request(self(), request.id, %{
+        type: :elicitation,
+        reply_ref: ref,
+        reply_pid: self()
+      })
+
+      if elicitation.mode == :url do
+        Phantom.Tracker.track_request(self(), elicitation.elicitation_id, %{type: :elicitation})
+      end
+
+      json = JSON.encode!(Request.to_json(request))
+      id_line = ["id: #{request.id}\n"]
+      sse = id_line ++ ["event: message\n", "data: #{json}\n\n"]
+
+      case chunk(conn, sse) do
+        {:ok, _conn} ->
+          receive do
+            {:phantom_elicitation_response, ^ref, response} ->
+              Phantom.Tracker.untrack_request(request.id)
+              {:ok, response}
+          after
+            timeout ->
+              Phantom.Tracker.untrack_request(request.id)
+              :timeout
+          end
+
+        {:error, _reason} ->
+          Phantom.Tracker.untrack_request(request.id)
+          :error
+      end
+    end
   end
 
   defp maybe_track_response(state, %{response: %{}, id: id}) when is_binary(id) do
