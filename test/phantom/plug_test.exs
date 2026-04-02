@@ -616,5 +616,38 @@ defmodule Phantom.PlugTest do
       assert %{result: %{capabilities: capabilities}} = response
       assert capabilities[:elicitation] == %{}
     end
+
+    test "elicitation response POST returns 202", context do
+      session_id = to_string(context.test)
+      initialize_with_elicitation(session_id)
+
+      parser =
+        Plug.Parsers.init(
+          parsers: [{:json, length: 1_000_000}],
+          pass: ["application/json"],
+          json_decoder: JSON
+        )
+
+      opts =
+        Phantom.Plug.init(
+          pubsub: Test.PubSub,
+          router: Test.MCP.Router,
+          validate_origin: false
+        )
+
+      resp_conn =
+        :post
+        |> conn("/mcp", %{
+          jsonrpc: "2.0",
+          id: "fake-elicit-id",
+          result: %{"action" => "accept", "content" => %{}}
+        })
+        |> put_req_header("content-type", "application/json")
+        |> Plug.Parsers.call(parser)
+        |> put_req_header("mcp-session-id", session_id)
+        |> Phantom.Plug.call(opts)
+
+      assert resp_conn.status == 202
+    end
   end
 end

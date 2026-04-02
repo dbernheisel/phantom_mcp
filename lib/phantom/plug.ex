@@ -294,6 +294,25 @@ defmodule Phantom.Plug do
     end
   end
 
+  # JSON-RPC response POST (e.g. elicitation response) → 202 Accepted per MCP spec §4
+  defp dispatch(%Plug.Conn{body_params: params, method: "POST"} = conn, _opts)
+       when is_map(params) and is_map_key(params, "result") and
+              not is_map_key(params, "method") do
+    session = conn.private.phantom.session
+
+    case Request.build(params) do
+      {:ok, request} ->
+        session.router.dispatch_method([request.method, request.params, request, session])
+
+      {:error, _} ->
+        :ok
+    end
+
+    conn
+    |> put_resp_header("mcp-session-id", session.id)
+    |> send_resp(202, "")
+  end
+
   defp dispatch(%Plug.Conn{body_params: params, method: "POST"} = conn, opts)
        when is_map(params) or is_map_key(params, "_json") do
     session = conn.private.phantom.session
