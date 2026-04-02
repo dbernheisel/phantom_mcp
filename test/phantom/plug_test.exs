@@ -617,6 +617,42 @@ defmodule Phantom.PlugTest do
       assert capabilities[:elicitation] == %{}
     end
 
+    test "form elicitation works after tracked session closes", context do
+      session_id = to_string(context.test)
+      initialize_with_elicitation(session_id)
+
+      Process.sleep(50)
+
+      [{_key, %{pid: init_pid}}] =
+        Phoenix.Tracker.get_by_key(Phantom.Tracker, "phantom:sessions", session_id)
+
+      Process.unlink(init_pid)
+      Process.exit(init_pid, :kill)
+      Process.sleep(100)
+      assert Phantom.Tracker.get_session(session_id) == nil
+
+      request_tool("elicit_tool", %{}, session_id: session_id, id: 50)
+
+      assert_receive {:response, elicit_id, "message", %{"method" => "elicitation/create"}},
+                     500
+
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: elicit_id,
+        result: %{
+          "action" => "accept",
+          "content" => %{"name" => "Bob", "email" => "b@test.com", "role" => "eng"}
+        }
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(%{session_id: session_id})
+
+      assert_response(50, response)
+      assert %{result: %{content: [%{type: :text, text: text}]}} = response
+      assert %{"hello" => "my name is Bob"} = JSON.decode!(text)
+    end
+
     test "elicitation response POST returns 202", context do
       session_id = to_string(context.test)
       initialize_with_elicitation(session_id)
