@@ -504,16 +504,25 @@ defmodule Phantom.Router do
           when is_binary(request_id) do
         require Logger
 
-        session_pid = Phantom.Tracker.get_session(session)
+        case Phantom.Tracker.get_request_meta(request_id) do
+          %{type: :elicitation, reply_ref: ref, reply_pid: pid} when is_pid(pid) ->
+            Logger.debug("Direct routing elicitation response #{request_id} to #{inspect(pid)}")
 
-        Logger.debug(
-          "Routing elicitation response #{request_id} for session #{session.id}: " <>
-            "tracked_pid=#{inspect(session_pid)} response=#{inspect(response)}"
-        )
+            send(pid, {:phantom_elicitation_response, ref, response})
+            Phantom.Tracker.untrack_request(request_id)
 
-        case session_pid do
-          nil -> :ok
-          pid -> GenServer.cast(pid, {:elicitation_response, request_id, response})
+          _ ->
+            session_pid = Phantom.Tracker.get_session(session)
+
+            Logger.debug(
+              "Fallback routing elicitation response #{request_id} " <>
+                "via tracked session #{inspect(session_pid)}"
+            )
+
+            case session_pid do
+              nil -> :ok
+              pid -> GenServer.cast(pid, {:elicitation_response, request_id, response})
+            end
         end
 
         {:reply, nil, session}

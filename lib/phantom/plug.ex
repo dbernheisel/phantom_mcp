@@ -393,7 +393,7 @@ defmodule Phantom.Plug do
                 state_acc =
                   put_in(state_acc.session, %{
                     state_acc.conn.private.phantom.session
-                    | elicit: elicit_fun(state_acc.conn)
+                    | elicit: elicit_fun(state_acc.conn, stream_fun)
                   })
 
                 try do
@@ -708,7 +708,7 @@ defmodule Phantom.Plug do
     "#{method} #{info}"
   end
 
-  defp elicit_fun(%Plug.Conn{} = conn) do
+  defp elicit_fun(%Plug.Conn{} = conn, stream_fun) do
     fn elicitation, timeout ->
       {:ok, request} =
         Request.build(%{
@@ -730,25 +730,17 @@ defmodule Phantom.Plug do
         Phantom.Tracker.track_request(self(), elicitation.elicitation_id, %{type: :elicitation})
       end
 
-      json = JSON.encode!(Request.to_json(request))
-      id_line = ["id: #{request.id}\n"]
-      sse = id_line ++ ["event: message\n", "data: #{json}\n\n"]
+      state = %{conn: conn}
+      stream_fun.(state, request.id, "message", Request.to_json(request))
 
-      case chunk(conn, sse) do
-        {:ok, _conn} ->
-          receive do
-            {:phantom_elicitation_response, ^ref, response} ->
-              Phantom.Tracker.untrack_request(request.id)
-              {:ok, response}
-          after
-            timeout ->
-              Phantom.Tracker.untrack_request(request.id)
-              :timeout
-          end
-
-        {:error, _reason} ->
+      receive do
+        {:phantom_elicitation_response, ^ref, response} ->
           Phantom.Tracker.untrack_request(request.id)
-          :error
+          {:ok, response}
+      after
+        timeout ->
+          Phantom.Tracker.untrack_request(request.id)
+          :timeout
       end
     end
   end
