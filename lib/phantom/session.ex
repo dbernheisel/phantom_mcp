@@ -161,49 +161,6 @@ defmodule Phantom.Session do
     end
   end
 
-  defp stdio_elicit(output, elicitation, timeout) do
-    {:ok, request} =
-      Request.build(%{
-        "id" => UUIDv7.generate(),
-        "jsonrpc" => "2.0",
-        "method" => "elicitation/create",
-        "params" => Phantom.Elicit.to_json(elicitation)
-      })
-
-    IO.write(output, JSON.encode!(Request.to_json(request)) <> "\n")
-    stdio_await_response(request.id, timeout)
-  end
-
-  defp stdio_await_response(request_id, timeout) do
-    receive do
-      {:phantom_dispatch, requests} ->
-        case pop_response(requests, request_id) do
-          {nil, _requests} ->
-            send(self(), {:phantom_dispatch, requests})
-            stdio_await_response(request_id, timeout)
-
-          {response, []} ->
-            {:ok, response}
-
-          {response, remaining} ->
-            send(self(), {:phantom_dispatch, remaining})
-            {:ok, response}
-        end
-    after
-      timeout -> :timeout
-    end
-  end
-
-  defp pop_response(requests, request_id) do
-    Enum.reduce(requests, {nil, []}, fn
-      %{"id" => ^request_id, "result" => result}, {nil, rest} when is_map(result) ->
-        {result, rest}
-
-      other, {found, rest} ->
-        {found, [other | rest]}
-    end)
-  end
-
   defp elicitation_mode_supported?(:form, _capabilities), do: true
   defp elicitation_mode_supported?(:url, capabilities), do: is_map_key(capabilities, "url")
 
