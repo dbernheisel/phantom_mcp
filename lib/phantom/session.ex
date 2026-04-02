@@ -12,6 +12,7 @@ defmodule Phantom.Session do
     :allowed_prompts,
     :allowed_resource_templates,
     :allowed_tools,
+    :elicit,
     :id,
     :last_event_id,
     :pid,
@@ -36,6 +37,10 @@ defmodule Phantom.Session do
           allowed_prompts: [String.t()],
           allowed_resource_templates: [String.t()],
           allowed_tools: [String.t()],
+          elicit:
+            (Phantom.Elicit.t(), timeout :: pos_integer() ->
+               {:ok, map()} | :error | :timeout)
+            | nil,
           assigns: map(),
           close_after_complete: boolean(),
           id: binary(),

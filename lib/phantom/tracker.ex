@@ -196,6 +196,30 @@ defmodule Phantom.Tracker do
     def get_request(_request_id), do: nil
   end
 
+  @doc "Fetch the full metadata map of the open request by ID"
+  def get_request_meta(%Phantom.Request{id: request_id}), do: get_request_meta(request_id)
+
+  if @available do
+    def get_request_meta(request_id) do
+      case Phoenix.Tracker.get_by_key(__MODULE__, @requests, request_id) do
+        [{_key, %{pid: pid} = meta} | _] ->
+          if Process.alive?(pid) do
+            meta
+          else
+            Phoenix.Tracker.untrack(__MODULE__, pid)
+            nil
+          end
+
+        _ ->
+          nil
+      end
+    rescue
+      _ -> nil
+    end
+  else
+    def get_request_meta(_request_id), do: nil
+  end
+
   @doc "Fetch the PID of the open session by ID"
   def get_session(%Phantom.Session{id: session_id}), do: get_session(session_id)
 
