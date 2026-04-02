@@ -182,7 +182,8 @@ defmodule Phantom.Stdio do
       Session.new(nil,
         router: router,
         pid: self(),
-        close_after_complete: false
+        close_after_complete: false,
+        elicit: elicit_fun(output)
       )
 
     case router.connect(session, %{headers: [], params: %{}}) do
@@ -271,6 +272,41 @@ defmodule Phantom.Stdio do
         config: Map.put(config.config, :type, type),
         formatter: config.formatter
       })
+    end
+  end
+
+  defp elicit_fun(output) do
+    fn elicitation, timeout ->
+      {:ok, request} =
+        Phantom.Request.build(%{
+          "id" => UUIDv7.generate(),
+          "jsonrpc" => "2.0",
+          "method" => "elicitation/create",
+          "params" => Phantom.Elicit.to_json(elicitation)
+        })
+
+      IO.write(output, JSON.encode!(Phantom.Request.to_json(request)) <> "\n")
+      await_elicitation(request.id, timeout)
+    end
+  end
+
+  defp await_elicitation(request_id, timeout) do
+    receive do
+      {:phantom_dispatch, requests} ->
+        {match, rest} =
+          Enum.split_with(requests, &match?(%{"id" => ^request_id, "result" => _}, &1))
+
+        case match do
+          [%{"result" => result} | _] ->
+            if rest != [], do: send(self(), {:phantom_dispatch, rest})
+            {:ok, result}
+
+          [] ->
+            send(self(), {:phantom_dispatch, requests})
+            await_elicitation(request_id, timeout)
+        end
+    after
+      timeout -> :timeout
     end
   end
 
