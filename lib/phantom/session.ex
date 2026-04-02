@@ -55,7 +55,9 @@ defmodule Phantom.Session do
           transport_pid: pid()
         }
 
-  @elicitation_timeout :timer.minutes(5)
+  require Logger
+
+  @elicitation_timeout to_timeout(minute: 5)
 
   @spec new(String.t() | nil, Keyword.t() | map) :: t()
   @doc """
@@ -126,6 +128,7 @@ defmodule Phantom.Session do
             GenServer.call(pid, {:elicit, elicitation}, timeout)
           catch
             :exit, {:timeout, _} -> :timeout
+            :exit, _reason -> :error
           end
       end
     end)
@@ -415,9 +418,15 @@ defmodule Phantom.Session do
   def handle_cast({:elicitation_response, request_id, response}, state) do
     case pop_in(state, [:elicitation_callers, request_id]) do
       {nil, state} ->
+        Logger.warning(
+          "Elicitation response #{request_id} has no matching caller. " <>
+            "Known callers: #{inspect(Map.keys(state[:elicitation_callers] || %{}))}"
+        )
+
         {:noreply, state}
 
       {from, state} ->
+        Logger.debug("Elicitation response #{request_id} matched, replying to caller")
         GenServer.reply(from, {:ok, response})
         {:noreply, state}
     end
@@ -602,23 +611,21 @@ defmodule Phantom.Session do
     {:noreply, state}
   end
 
+  # Notifications have no id; dispatch but don't write a response
   defp dispatch_stdio_request(%Request{id: nil} = request, state) do
-    # Notifications have no id; dispatch but don't write a response
-    try do
-      case state.session.router.dispatch_method([
-             request.method,
-             request.params,
-             request,
-             state.session
-           ]) do
-        {:reply, _result, %__MODULE__{} = session} -> put_in(state.session, session)
-        {:noreply, %__MODULE__{} = session} -> put_in(state.session, session)
-        {:error, _error, %__MODULE__{} = session} -> put_in(state.session, session)
-        _ -> state
-      end
-    rescue
+    case state.session.router.dispatch_method([
+           request.method,
+           request.params,
+           request,
+           state.session
+         ]) do
+      {:reply, _result, %__MODULE__{} = session} -> put_in(state.session, session)
+      {:noreply, %__MODULE__{} = session} -> put_in(state.session, session)
+      {:error, _error, %__MODULE__{} = session} -> put_in(state.session, session)
       _ -> state
     end
+  rescue
+    _ -> state
   end
 
   defp dispatch_stdio_request(request, state) do

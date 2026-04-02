@@ -129,12 +129,6 @@ defmodule Phantom.Router do
     quote location: :keep, generated: true do
       @behaviour Phantom.Router
 
-      require Phantom.ClientLogger
-      require Phantom.Prompt
-      require Phantom.Resource
-      require Phantom.Session
-      require Phantom.Tool
-
       import Phantom.Router,
         only: [
           tool: 2,
@@ -146,6 +140,12 @@ defmodule Phantom.Router do
           prompt: 2,
           prompt: 3
         ]
+
+      require Phantom.ClientLogger
+      require Phantom.Prompt
+      require Phantom.Resource
+      require Phantom.Session
+      require Phantom.Tool
 
       @before_compile Phantom.Router
       @after_verify Phantom.Router
@@ -171,7 +171,7 @@ defmodule Phantom.Router do
           case @icons do
             nil -> nil
             [] -> nil
-            icons -> Enum.map(icons, &Phantom.Icon.build/1) |> Phantom.Icon.to_json_list()
+            icons -> icons |> Enum.map(&Phantom.Icon.build/1) |> Phantom.Icon.to_json_list()
           end
 
         {:ok,
@@ -372,12 +372,7 @@ defmodule Phantom.Router do
         Phantom.Router.list_tools(__MODULE__, session, params["cursor"])
       end
 
-      def dispatch_method(
-            "logging/setLevel",
-            %{"level" => log_level},
-            request,
-            session
-          ) do
+      def dispatch_method("logging/setLevel", %{"level" => log_level}, request, session) do
         case Session.set_log_level(session, request, log_level) do
           :ok -> {:reply, %{}, session}
           :error -> {:error, Request.closed(), session}
@@ -489,14 +484,18 @@ defmodule Phantom.Router do
         {:reply, nil, session}
       end
 
-      def dispatch_method(
-            _method,
-            _params,
-            %{id: request_id, response: %{} = response},
-            session
-          )
+      def dispatch_method(_method, _params, %{id: request_id, response: %{} = response}, session)
           when is_binary(request_id) do
-        case Phantom.Tracker.get_session(session) do
+        require Logger
+
+        session_pid = Phantom.Tracker.get_session(session)
+
+        Logger.debug(
+          "Routing elicitation response #{request_id} for session #{session.id}: " <>
+            "tracked_pid=#{inspect(session_pid)} response=#{inspect(response)}"
+        )
+
+        case session_pid do
           nil -> :ok
           pid -> GenServer.cast(pid, {:elicitation_response, request_id, response})
         end
