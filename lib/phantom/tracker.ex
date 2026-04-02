@@ -56,7 +56,7 @@ defmodule Phantom.Tracker do
   @doc "Track a request PID"
   if @available do
     def track_request(pid, request_id, meta \\ %{}) do
-      Phoenix.Tracker.track(__MODULE__, pid, @requests, request_id, meta)
+      Phoenix.Tracker.track(__MODULE__, pid, @requests, request_id, Map.put(meta, :pid, pid))
     rescue
       _ -> {:error, :tracker_not_in_supervision_tree}
     end
@@ -69,7 +69,7 @@ defmodule Phantom.Tracker do
     require Logger
 
     def track_session(pid, session_id, meta \\ %{}) do
-      Phoenix.Tracker.track(__MODULE__, pid, @sessions, session_id, meta)
+      Phoenix.Tracker.track(__MODULE__, pid, @sessions, session_id, Map.put(meta, :pid, pid))
     rescue
       _ ->
         if not warned?() do
@@ -97,7 +97,7 @@ defmodule Phantom.Tracker do
   if @available do
     def update_session_meta(session_id, meta) do
       case Phoenix.Tracker.get_by_key(__MODULE__, @sessions, session_id) do
-        [{pid, existing_meta} | _] ->
+        [{_key, %{pid: pid} = existing_meta} | _] ->
           Phoenix.Tracker.update(
             __MODULE__,
             pid,
@@ -123,7 +123,7 @@ defmodule Phantom.Tracker do
   if @available do
     def get_session_meta(session_id) do
       case Phoenix.Tracker.get_by_key(__MODULE__, @sessions, session_id) do
-        [{_pid, meta} | _] -> meta
+        [{_key, meta} | _] -> meta
         _ -> Process.get(:phantom_session_meta, %{})
       end
     rescue
@@ -178,7 +178,7 @@ defmodule Phantom.Tracker do
   if @available do
     def get_request(request_id) do
       case Phoenix.Tracker.get_by_key(__MODULE__, @requests, request_id) do
-        [{pid, _} | _] ->
+        [{_key, %{pid: pid}} | _] ->
           if Process.alive?(pid) do
             pid
           else
@@ -202,7 +202,7 @@ defmodule Phantom.Tracker do
   if @available do
     def get_session(session_id) do
       case Phoenix.Tracker.get_by_key(__MODULE__, @sessions, session_id) do
-        [{pid, _} | _] ->
+        [{_key, %{pid: pid}} | _] ->
           if Process.alive?(pid) do
             pid
           else
@@ -239,7 +239,7 @@ defmodule Phantom.Tracker do
           _ -> []
         end
 
-      Enum.each(tracked, fn {pid, _} -> Phoenix.Tracker.untrack(__MODULE__, pid) end)
+      Enum.each(tracked, fn {_key, %{pid: pid}} -> Phoenix.Tracker.untrack(__MODULE__, pid) end)
 
       :ok
     rescue
@@ -261,7 +261,7 @@ defmodule Phantom.Tracker do
           _ -> []
         end
 
-      Enum.each(tracked, fn {pid, _meta} -> Phoenix.Tracker.untrack(__MODULE__, pid) end)
+      Enum.each(tracked, fn {_key, %{pid: pid}} -> Phoenix.Tracker.untrack(__MODULE__, pid) end)
 
       :ok
     rescue
@@ -274,7 +274,7 @@ defmodule Phantom.Tracker do
   @doc "Subscribe the process to resource notifications from the PubSub on topic #{inspect(@resources)}"
   if @available do
     def subscribe_resource(uri) do
-      Phoenix.Tracker.track(__MODULE__, self(), @resources, uri, %{})
+      Phoenix.Tracker.track(__MODULE__, self(), @resources, uri, %{pid: self()})
     rescue
       _ -> {:error, :tracker_not_in_supervision_tree}
     end
@@ -304,7 +304,9 @@ defmodule Phantom.Tracker do
         end
 
       {:ok,
-       Enum.count(tracked, fn {pid, _meta} -> GenServer.cast(pid, {:resource_updated, uri}) end)}
+       Enum.count(tracked, fn {_key, %{pid: pid}} ->
+         GenServer.cast(pid, {:resource_updated, uri})
+       end)}
     rescue
       _ -> {:error, :tracker_not_in_supervision_tree}
     end
@@ -358,7 +360,7 @@ defmodule Phantom.Tracker do
           _ -> []
         end
 
-      Enum.each(tracked, fn {pid, %{type: :elicitation}} ->
+      Enum.each(tracked, fn {_key, %{type: :elicitation, pid: pid}} ->
         GenServer.cast(pid, {:send, Phantom.Request.elicitation_complete(elicitation_id)})
         Phoenix.Tracker.untrack(__MODULE__, pid, @requests, elicitation_id)
       end)
