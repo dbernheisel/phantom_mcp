@@ -132,6 +132,7 @@ defmodule Phantom.Router do
 
   defmacro __using__(opts) do
     name = Keyword.get(opts, :name, "Phantom MCP Server")
+
     vsn =
       opts
       |> Keyword.get_lazy(:vsn, fn -> default_vsn(Keyword.get(opts, :otp_app)) end)
