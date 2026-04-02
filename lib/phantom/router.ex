@@ -1077,8 +1077,8 @@ defmodule Phantom.Router do
         case Task.yield(task) do
           {:ok, %{contents: [first | _]}} -> {:ok, uri, first}
           {:ok, result} -> {:ok, uri, result}
-          {:error, error} -> {:error, error, session}
-          {:error, error, session} -> {:error, error, session}
+          {:exit, reason} -> {:error, reason, session}
+          nil -> {:error, :timeout, session}
         end
 
       {:reply, result, _session} ->

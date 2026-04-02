@@ -77,7 +77,7 @@ defmodule Phantom.Cache do
   @doc """
   List all the entities for the given type.
   """
-  @spec list(Session.t() | nil, module(), :tools | :prompts | :resource_templates) ::
+  @spec list(Phantom.Session.t() | nil, module(), :tools | :prompts | :resource_templates) ::
           list(Phantom.Tool.t() | Phantom.Prompt.t() | Phantom.ResourceTemplate.t())
   def list(nil, module, type) do
     :persistent_term.get({Phantom, module, type}, [])

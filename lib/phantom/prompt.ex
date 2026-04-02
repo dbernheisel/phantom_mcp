@@ -67,7 +67,7 @@ defmodule Phantom.Prompt do
 
   @type text_content :: %{
           type: :text,
-          data: String.t()
+          text: String.t()
         }
 
   @type image_content :: %{
@@ -84,16 +84,20 @@ defmodule Phantom.Prompt do
 
   @type embedded_resource_content :: %{
           type: :resource,
-          resource: Phantom.Resource.response()
+          resource: Phantom.Resource.blob_content() | Phantom.Resource.text_content()
         }
+  @type content ::
+          text_content()
+          | image_content()
+          | audio_content()
+          | embedded_resource_content()
+
   @type message :: %{
           role: :assistant | :user,
-          content:
-            text_content()
-            | image_content()
-            | audio_content()
-            | embedded_resource_content()
+          content: content()
         }
+
+  @type message_input :: {role :: :assistant | :user, content()}
 
   @type response :: %{
           description: String.t(),
@@ -193,7 +197,7 @@ defmodule Phantom.Prompt do
   See `response/1` macro version that do the same thing but will fetch the
   prompt spec from the current session.
   """
-  @spec response([message()], Phantom.Prompt.t()) :: response()
+  @spec response([message_input()], Phantom.Prompt.t()) :: response()
   def response(messages, prompt) when is_list(messages) do
     %{
       description: prompt.description,

@@ -2,7 +2,9 @@
 
 - Add additional Logging when dispatching requests to unalive PIDs
 - Catch exits due to calling unalive PIDs (thanks @davydog187)
-- Fixup some dialyzer specs
+- Fix Phantom.Tracker
+- Fixup dialyzer specs
+- Providing nil to binary response content (eg, image, audio) will now raise instead of encoding `<<>>`.
 
 ## 0.4.0 (2026-03-27)
 

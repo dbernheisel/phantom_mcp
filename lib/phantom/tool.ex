@@ -217,7 +217,6 @@ defmodule Phantom.Tool do
     %{content: [%{type: :text, text: message}], isError: true}
   end
 
-  @spec audio(binary()) :: audio_response()
   @doc """
   Tool response as audio content
 
@@ -259,7 +258,6 @@ defmodule Phantom.Tool do
     end
   end
 
-  @spec image(binary()) :: image_response()
   @doc """
   Tool response as image content
 

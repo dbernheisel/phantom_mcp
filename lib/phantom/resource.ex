@@ -88,7 +88,6 @@ defmodule Phantom.Resource do
         mime_type: "image/png"
       )
   """
-  @spec blob(binary(), Access.t()) :: blob_content()
   defmacro blob(binary, attrs \\ []) do
     mime_type =
       get_var(attrs, :mime_type, [:spec, :mime_type], __CALLER__, "application/octet-stream")
@@ -141,8 +140,7 @@ defmodule Phantom.Resource do
         # mime_type: "application/json"  # set by Phantom
       )
   """
-  @spec text(String.t() | map, Access.t()) :: text_content()
-  defmacro text(text, attrs \\ %{}) do
+  defmacro text(text, attrs \\ []) do
     mime_type = get_var(attrs, :mime_type, [:spec, :mime_type], __CALLER__, "text/plain")
     uri = get_var(attrs, :uri, [:params, "uri"], __CALLER__)
 

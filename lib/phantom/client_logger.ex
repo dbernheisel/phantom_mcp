@@ -86,7 +86,7 @@ defmodule Phantom.ClientLogger do
 
   for {name, level} <- @log_grades do
     @doc "Notify the client with a log at level \"#{name}\""
-    @spec unquote(name)(Session.t(), structured_log :: map(), domain :: String.t()) ::
+    @spec unquote(name)(Session.t(), structured_log :: map() | String.t(), domain :: String.t()) ::
             :ok
     def unquote(name)(%Session{} = session, payload, domain) do
       quote bind_quoted: [
@@ -105,7 +105,6 @@ defmodule Phantom.ClientLogger do
     Notify the client with a log at level \"#{name}\" with default domain "server".
     Note: this requires the `session` variable to be within scope
     """
-    @spec unquote(name)(structured_log :: map(), domain :: String.t()) :: :ok
     defmacro unquote(name)(payload, domain \\ "server") do
       if not Macro.Env.has_var?(__CALLER__, {:session, nil}) do
         raise """

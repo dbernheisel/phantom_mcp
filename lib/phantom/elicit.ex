@@ -226,9 +226,8 @@ defmodule Phantom.Elicit do
           mode: :form | :url,
           url: String.t() | nil,
           elicitation_id: String.t() | nil,
-          requested_schema: [
-            number_property() | boolean_property() | enum_property() | string_property()
-          ]
+          requested_schema:
+            [number_property() | boolean_property() | enum_property() | string_property()] | nil
         }
 
   @type json :: %{

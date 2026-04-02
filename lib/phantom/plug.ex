@@ -697,7 +697,7 @@ defmodule Phantom.Plug do
 
     case {track?, existing_stream, conn.method} do
       {true, nil, _} ->
-        session = %{conn.private.phantom.session | close_after_complete: !track?}
+        session = %{conn.private.phantom.session | close_after_complete: false}
 
         Phantom.Tracker.track_session(
           self(),

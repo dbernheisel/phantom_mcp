@@ -131,7 +131,7 @@ defmodule MyApp.MCP.Router do
 
   use Phantom.Router,
     name: "MyApp",
-    vsn: "1.0",
+    vsn: "1.0", # or Application.spec(:my_app, :vsn),
     instructions: @moduledoc
 end
 ```

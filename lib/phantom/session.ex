@@ -259,7 +259,7 @@ defmodule Phantom.Session do
   Sets the log level for the SSE stream.
   Sets both for the current request for async tasks and the SSE stream
   """
-  @spec set_log_level(Session.t(), Request.t(), String.t()) :: :ok
+  @spec set_log_level(t(), Request.t(), String.t()) :: :ok
   def set_log_level(%__MODULE__{} = session, request, level) do
     case Phantom.Tracker.get_session(session) || session.pid do
       nil -> :error
@@ -268,7 +268,7 @@ defmodule Phantom.Session do
   end
 
   @doc "Closes the connection for the session"
-  @spec finish(Session.t() | pid) :: :ok
+  @spec finish(t() | pid) :: :ok
   def finish(%__MODULE__{pid: pid}), do: finish(pid)
   def finish(pid) when is_pid(pid), do: GenServer.cast(pid, :finish)
 
