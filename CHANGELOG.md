@@ -1,3 +1,9 @@
+## 0.4.1 (2026-04-02)
+
+- Add additional Logging when dispatching requests to unalive PIDs
+- Catch exits due to calling unalive PIDs (thanks @davydog187)
+- Fixup some dialyzer specs
+
 ## 0.4.0 (2026-03-27)
 
 - Add `Phantom.Stdio` adapter for local-only clients (e.g. Claude Desktop).

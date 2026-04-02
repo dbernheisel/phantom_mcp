@@ -24,7 +24,7 @@ defmodule Phantom.RouterTest do
       id: 1,
       jsonrpc: "2.0",
       result: %{
-        content: [%{text: "hello world", type: "text"}]
+        content: [%{text: "hello world", type: :text}]
       }
     }
 

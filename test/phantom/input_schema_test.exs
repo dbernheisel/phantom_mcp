@@ -817,7 +817,7 @@ defmodule Phantom.Tool.JSONSchemaTest do
       assert conn.status == 200
 
       assert_receive {:response, 1, "message", response}
-      assert %{jsonrpc: "2.0", id: 1, result: %{content: [%{type: "text"}]}} = response
+      assert %{jsonrpc: "2.0", id: 1, result: %{content: [%{type: :text}]}} = response
     end
 
     test "tools/call with missing required param returns -32602" do

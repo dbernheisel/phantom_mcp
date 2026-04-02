@@ -269,7 +269,7 @@ defmodule Phantom.PlugTest do
       assert_receive {:response, 1, "message", %{}}
 
       assert_receive {:response, 2, "message",
-                      %{result: %{content: [%{text: "test", type: "text"}]}}}
+                      %{result: %{content: [%{text: "test", type: :text}]}}}
 
       assert_receive {:response, nil, "closed", "finished"}
     end
@@ -541,7 +541,7 @@ defmodule Phantom.PlugTest do
 
       # Receive tool result
       assert_response(42, response)
-      assert %{result: %{content: [%{type: "text", text: text}]}} = response
+      assert %{result: %{content: [%{type: :text, text: text}]}} = response
       assert %{"hello" => "my name is Alice"} = JSON.decode!(text)
     end
 
@@ -593,7 +593,7 @@ defmodule Phantom.PlugTest do
       request_tool("elicit_tool", %{}, session_id: session_id, id: 2)
       assert_response(2, response)
 
-      assert %{result: %{content: [%{type: "text", text: text}]}} = response
+      assert %{result: %{content: [%{type: :text, text: text}]}} = response
       assert %{"hello" => "my name is Joe Schmoe"} = JSON.decode!(text)
     end
 

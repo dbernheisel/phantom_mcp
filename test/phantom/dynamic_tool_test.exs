@@ -263,7 +263,7 @@ defmodule Phantom.DynamicToolTest do
                jsonrpc: "2.0",
                id: 1,
                result: %{
-                 content: [%{type: "text", text: "Dynamic echo: hello"}]
+                 content: [%{type: :text, text: "Dynamic echo: hello"}]
                }
              } = response
     end
