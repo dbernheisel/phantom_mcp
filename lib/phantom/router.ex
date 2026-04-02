@@ -119,9 +119,24 @@ defmodule Phantom.Router do
 
   @supported_protocol_versions ~w[2024-11-05 2025-03-26 2025-06-18 2025-11-25]
 
+  @dialyzer {:nowarn_function, default_vsn: 1}
+  defp default_vsn(nil) do
+    Mix.Project.config()[:version]
+  rescue
+    _ -> "0.1.0"
+  end
+
+  defp default_vsn(otp_app) when is_atom(otp_app) do
+    otp_app |> Application.spec(:vsn) |> to_string()
+  end
+
   defmacro __using__(opts) do
     name = Keyword.get(opts, :name, "Phantom MCP Server")
-    vsn = Keyword.get(opts, :vsn, Mix.Project.config()[:version])
+    vsn =
+      opts
+      |> Keyword.get_lazy(:vsn, fn -> default_vsn(Keyword.get(opts, :otp_app)) end)
+      |> to_string()
+
     instructions = Keyword.get(opts, :instructions, "")
     icons = Keyword.get(opts, :icons, nil)
     website_url = Keyword.get(opts, :website_url, nil)
