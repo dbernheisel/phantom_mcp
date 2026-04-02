@@ -89,16 +89,7 @@ defmodule Phantom.ClientLogger do
     @spec unquote(name)(Session.t(), structured_log :: map() | String.t(), domain :: String.t()) ::
             :ok
     def unquote(name)(%Session{} = session, payload, domain) do
-      quote bind_quoted: [
-              level: unquote(level),
-              name: unquote(name),
-              domain: domain,
-              session: session,
-              payload: payload
-            ],
-            generated: true do
-        Phantom.ClientLogger.do_log(session, level, name, domain, payload)
-      end
+      Phantom.ClientLogger.do_log(session, unquote(level), unquote(name), domain, payload)
     end
 
     @doc """
