@@ -49,7 +49,7 @@ defmodule Phantom.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.31", only: :dev, warn_if_outdated: true, runtime: false},
       {:tidewave, "~> 0.5", only: [:test], warn_if_outdated: true},
-      {:exsync, "~> 0.4", only: [:test]},
+      {:exsync, "~> 0.4", only: [:test], runtime: !System.get_env("CI")},
       {:bandit, "~> 1.0", only: [:test]}
     ]
   end
