@@ -504,7 +504,7 @@ defmodule Phantom.Router do
           when is_binary(request_id) do
         require Logger
 
-        case Phantom.Tracker.get_request_meta(request_id) do
+        case Phantom.Router.await_request_meta(request_id) do
           %{type: :elicitation, reply_ref: ref, reply_pid: pid} when is_pid(pid) ->
             Logger.debug("Routing elicitation response #{request_id} to #{inspect(pid)}")
 
@@ -1033,6 +1033,24 @@ defmodule Phantom.Router do
         {:cont, capabilities}
       end
     end)
+  end
+
+  @doc false
+  # Wait for a tracked request to become visible via Tracker replication.
+  # In a distributed setup, the request may be tracked on one node but
+  # the response arrives on another before Phoenix.Tracker propagates.
+  def await_request_meta(request_id, retries \\ 20, interval \\ 100)
+  def await_request_meta(_request_id, 0, _interval), do: nil
+
+  def await_request_meta(request_id, retries, interval) do
+    case Phantom.Tracker.get_request_meta(request_id) do
+      nil ->
+        Process.sleep(interval)
+        await_request_meta(request_id, retries - 1, interval)
+
+      meta ->
+        meta
+    end
   end
 
   @doc """

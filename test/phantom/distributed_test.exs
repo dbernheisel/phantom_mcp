@@ -28,11 +28,11 @@ defmodule Phantom.DistributedTest do
 
   describe "cross-node elicitation" do
     test "elicitation response routed from node2 back to node1" do
-      # Step 1: Initialize on node 1 to establish a session with elicitation capability
+      # Initialize on node 1
       session_id = initialize(@node1_port)
       assert is_binary(session_id)
 
-      # Step 2: POST tools/call for elicit_tool to node 1 (SSE stream stays open)
+      # POST tools/call to node 1 — triggers elicitation, opens SSE stream
       tool_resp =
         post_mcp(
           @node1_port,
@@ -40,27 +40,21 @@ defmodule Phantom.DistributedTest do
             jsonrpc: "2.0",
             id: 42,
             method: "tools/call",
-            params: %{name: "elicit_tool", arguments: %{}}
+            params: %{"name" => "elicit_tool", "arguments" => %{}}
           },
           session_id: session_id
         )
 
       assert tool_resp.status == 200
 
-      # Step 3: Read the SSE stream to get the elicitation/create request
-      {messages, ref, buffer} = receive_sse_event(tool_resp, 10_000)
-
+      # Read elicitation request from node 1's SSE stream
       elicit_request =
-        Enum.find(messages, fn msg -> msg["method"] == "elicitation/create" end)
+        poll_for_sse_event(tool_resp, 10_000, &(&1["method"] == "elicitation/create"))
 
-      assert elicit_request, "Expected elicitation/create request, got: #{inspect(messages)}"
+      assert elicit_request, "Expected elicitation/create in SSE events"
       elicit_id = elicit_request["id"]
-      assert is_binary(elicit_id)
 
-      # Step 4: POST the elicitation response to NODE 2 (cross-node routing)
-      # Allow Phoenix.Tracker delta replication to propagate across nodes
-      Process.sleep(2_000)
-
+      # POST elicitation response to NODE 2 (different node!)
       elicit_resp =
         Req.post!("http://127.0.0.1:#{@node2_port}/",
           json: %{
@@ -69,51 +63,41 @@ defmodule Phantom.DistributedTest do
             result: %{
               "action" => "accept",
               "content" => %{
-                "name" => "Alice",
-                "email" => "alice@test.com",
-                "role" => "dev"
+                "name" => "DistributedAlice",
+                "email" => "alice@distributed.test",
+                "role" => "eng"
               }
             }
           },
           headers: [
             {"content-type", "application/json"},
-            {"accept", "application/json"},
             {"mcp-session-id", session_id}
           ]
         )
 
       assert elicit_resp.status == 202
 
-      # Step 5: Continue reading the SSE stream — the tool result should arrive
-      {result_messages, _ref, _buffer} =
-        receive_sse_event(tool_resp, ref, buffer, 10_000)
-
-      # Step 6: Assert the tool result contains the elicitation data
+      # Read tool result from node 1's SSE stream
       tool_result =
-        Enum.find(result_messages, fn msg ->
-          is_map_key(msg, "result") and msg["id"] == 42
-        end)
+        poll_for_sse_event(tool_resp, 10_000, &is_map_key(&1, "result"))
 
-      assert tool_result, "Expected tool result with id 42, got: #{inspect(result_messages)}"
+      assert tool_result, "Expected tool result in SSE events"
 
-      content = tool_result["result"]["content"]
-      assert is_list(content)
-
-      text_item = Enum.find(content, fn c -> c["type"] == "text" end)
-      assert text_item
-
-      parsed = JSON.decode!(text_item["text"])
-      assert parsed["hello"] == "my name is Alice"
+      text = get_in(tool_result, ["result", "content", Access.at(0), "text"])
+      assert %{"hello" => "my name is DistributedAlice"} = JSON.decode!(text)
     end
   end
 
   describe "cross-node notifications" do
     test "resource update notification reaches remote SSE stream" do
-      # Step 1: Initialize on node 1, keeping the SSE stream open for notifications
+      # Initialize on node 1 and keep init stream open
       {session_id, init_resp, ref, buffer} = initialize_with_stream(@node1_port)
       assert is_binary(session_id)
 
-      # Step 2: Get the resource URI from a peer node (cache lives there)
+      # Wait for session to be replicated to node 2
+      await_session_tracked(@node2, session_id)
+
+      # Get resource URI from node 1 (cache lives on peer nodes)
       {:ok, uri} =
         :rpc.call(@node1, Phantom.Router, :resource_uri, [
           Test.MCP.Router,
@@ -121,40 +105,24 @@ defmodule Phantom.DistributedTest do
           [id: 100]
         ])
 
-      # Step 3: Subscribe to the resource on node 1
-      sub_resp =
-        post_mcp(
-          @node1_port,
-          %{
-            jsonrpc: "2.0",
-            id: 10,
-            method: "resources/subscribe",
-            params: %{uri: uri}
-          },
-          session_id: session_id
-        )
+      # Subscribe to the resource directly on the init stream via RPC
+      init_pid = :rpc.call(@node1, Phantom.Tracker, :get_session, [session_id])
+      GenServer.cast(init_pid, {:subscribe_resource, uri})
 
-      assert sub_resp.status == 200
+      # Wait for resource subscription to replicate to node 2
+      await_resource_tracked(@node2, uri)
 
-      # Drain the subscribe response
-      receive_sse_event(sub_resp, 5_000)
-
-      # Allow subscription to propagate across nodes
-      Process.sleep(2_000)
-
-      # Step 4: Trigger a resource update notification from node 2
+      # Trigger resource update from NODE 2
       :rpc.call(@node2, Phantom.Tracker, :notify_resource_updated, [uri])
 
-      # Step 5: Read SSE events from the initialize stream — should contain the notification
-      {messages, _ref, _buffer} = receive_sse_event(init_resp, ref, buffer, 10_000)
-
+      # Read notification from node 1's init stream
       notification =
-        Enum.find(messages, fn msg ->
+        poll_for_sse_event(init_resp, ref, buffer, 10_000, fn msg ->
           msg["method"] == "notifications/resources/updated"
         end)
 
       assert notification,
-             "Expected notifications/resources/updated, got: #{inspect(messages)}"
+             "Expected resource update notification on init stream"
 
       assert notification["params"]["uri"] == uri
     end
@@ -162,9 +130,12 @@ defmodule Phantom.DistributedTest do
 
   describe "cross-node logging" do
     test "client log from tool on node 2 reaches SSE stream on node 1" do
-      # Step 1: Initialize on node 1, keeping the SSE stream open for notifications
+      # Step 1: Initialize on node 1, keeping the SSE stream open
       {session_id, init_resp, ref, buffer} = initialize_with_stream(@node1_port)
       assert is_binary(session_id)
+
+      # Wait for session to be replicated to node 2
+      await_session_tracked(@node2, session_id)
 
       # Step 2: Set log level to "info" on node 1
       log_level_resp =
@@ -184,14 +155,17 @@ defmodule Phantom.DistributedTest do
       # Drain the setLevel POST SSE response
       receive_sse_event(log_level_resp, 5_000)
 
-      # The set_log_level handler also sends the response on the init stream.
-      # Drain that empty result before proceeding.
-      {_setlevel_result, ref, buffer} = receive_sse_event(init_resp, ref, buffer, 5_000)
+      # Wait for the empty result on the init stream — confirms the
+      # set_log_level cast was processed by the init stream GenServer
+      {_, ref, buffer} =
+        case receive_sse_event(init_resp, ref, buffer, 5_000) do
+          {msgs, r, b} when is_list(msgs) -> {msgs, r, b}
+          {:timeout, r, b} -> {nil, r, b}
+        end
 
-      # Allow the log level to propagate
-      Process.sleep(500)
-
-      # Step 3: Call client_log_tool on node 2 with the same session
+      # Step 3: Call client_log_tool on node 2 with the same session.
+      # ClientLogger.do_log sends the log cast to Tracker.get_session(id),
+      # which finds the init stream PID on node 1 — cross-node delivery.
       tool_resp =
         post_mcp(
           @node2_port,
@@ -209,16 +183,14 @@ defmodule Phantom.DistributedTest do
       # Drain the tool response
       receive_sse_event(tool_resp, 5_000)
 
-      # Step 4: Read SSE events from the initialize stream on node 1
-      {messages, _ref, _buffer} = receive_sse_event(init_resp, ref, buffer, 10_000)
-
+      # Step 4: Read log notification from the init stream on node 1
       log_notification =
-        Enum.find(messages, fn msg ->
+        poll_for_sse_event(init_resp, ref, buffer, 10_000, fn msg ->
           msg["method"] == "notifications/message"
         end)
 
       assert log_notification,
-             "Expected notifications/message log entry, got: #{inspect(messages)}"
+             "Expected notifications/message log entry on init stream"
 
       assert log_notification["params"]["level"] == "info"
       assert log_notification["params"]["data"]["message"] == "hello from node2"

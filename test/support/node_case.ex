@@ -104,6 +104,35 @@ defmodule Phantom.Test.NodeCase do
     receive_sse_loop(ref, buffer, timeout)
   end
 
+  @doc """
+  Keep reading SSE event batches until `match_fn` returns truthy for a message.
+  Returns the matching message or nil on timeout.
+  """
+  def poll_for_sse_event(%Req.Response{} = resp, timeout, match_fn) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    poll_sse_loop(resp.body.ref, "", deadline, match_fn)
+  end
+
+  def poll_for_sse_event(_resp, ref, buffer, timeout, match_fn) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    poll_sse_loop(ref, buffer, deadline, match_fn)
+  end
+
+  defp poll_sse_loop(ref, buffer, deadline, match_fn) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    case receive_sse_loop(ref, buffer, remaining) do
+      {messages, ref, buffer} when is_list(messages) ->
+        case Enum.find(messages, match_fn) do
+          nil -> poll_sse_loop(ref, buffer, deadline, match_fn)
+          found -> found
+        end
+
+      _timeout_or_closed ->
+        nil
+    end
+  end
+
   defp receive_sse_loop(ref, buffer, timeout) do
     receive do
       {^ref, {:data, chunk}} ->
@@ -173,6 +202,61 @@ defmodule Phantom.Test.NodeCase do
     case resp.headers do
       %{"mcp-session-id" => [value | _]} -> value
       _ -> nil
+    end
+  end
+
+  @doc """
+  Wait until a session is visible in the Tracker on a given node.
+  Polls `get_session` since Phoenix.Tracker's `handle_diff` uses
+  `direct_broadcast!` which only broadcasts to the local node.
+  """
+  def await_session_tracked(node, session_id, timeout \\ 5_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_await_session(node, session_id, deadline)
+  end
+
+  @doc """
+  Wait until a resource subscription is visible in the Tracker on a given node.
+  """
+  def await_resource_tracked(node, uri, timeout \\ 5_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_await_resource(node, uri, deadline)
+  end
+
+  defp do_await_resource(node, uri, deadline) do
+    result =
+      :rpc.call(node, Phoenix.Tracker, :get_by_key, [
+        Phantom.Tracker,
+        Phantom.Tracker.resource_subscription_topic(),
+        uri
+      ])
+
+    case result do
+      [{_, _} | _] ->
+        :ok
+
+      _ ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(50)
+          do_await_resource(node, uri, deadline)
+        else
+          raise "Resource #{uri} not visible on #{node} within timeout"
+        end
+    end
+  end
+
+  defp do_await_session(node, session_id, deadline) do
+    case :rpc.call(node, Phantom.Tracker, :get_session, [session_id]) do
+      pid when is_pid(pid) ->
+        pid
+
+      _ ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(50)
+          do_await_session(node, session_id, deadline)
+        else
+          raise "Session #{session_id} not visible on #{node} within timeout"
+        end
     end
   end
 

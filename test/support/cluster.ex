@@ -52,6 +52,7 @@ defmodule Phantom.Test.Cluster do
     end
   end
 
+  @dialyzer {:nowarn_function, ensure_applications_started: 1}
   defp ensure_applications_started(node) do
     rpc(node, Application, :ensure_all_started, [:mix])
     rpc(node, Mix, :env, [Mix.env()])
@@ -63,7 +64,7 @@ defmodule Phantom.Test.Cluster do
 
   defp start_services(node, opts) do
     port = Keyword.fetch!(opts, :port)
-    pubsub_name = Keyword.get(opts, :pubsub, Test.PubSub)
+    pubsub_name = Keyword.get(opts, :pubsub, Phantom.Test.PubSub)
 
     rpc(node, Phantom.Cache, :register, [Test.MCP.Router])
 
