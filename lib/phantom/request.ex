@@ -181,6 +181,15 @@ defmodule Phantom.Request do
     {:error, resource_not_found(%{uri: uri}), session}
   end
 
+  def resource_response(
+        {:reply, %{code: code, message: _} = error, %Session{} = session},
+        _uri,
+        _session
+      )
+      when is_integer(code) and code < 0 do
+    {:error, error, session}
+  end
+
   def resource_response({:reply, results, %Session{} = session}, _uri, _session) do
     {:reply, Phantom.Resource.response(results), session}
   end

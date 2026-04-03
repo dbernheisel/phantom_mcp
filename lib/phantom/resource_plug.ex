@@ -54,6 +54,11 @@ defmodule Phantom.ResourcePlug do
     {:error, Request.resource_not_found(%{uri: uri}), session}
   end
 
+  defp wrap({:reply, %{code: code, message: _} = error, %Session{} = session}, _uri, _session)
+       when is_integer(code) and code < 0 do
+    {:error, error, session}
+  end
+
   defp wrap({:reply, results, %Session{} = session}, _uri, _session) do
     {:reply, Resource.response(results), session}
   end
@@ -68,7 +73,7 @@ defmodule Phantom.ResourcePlug do
 
     def call(conn, _opts) do
       result = Phantom.Request.resource_not_found(%{uri: conn.assigns.uri})
-      assign(conn, :result, {:reply, result, conn.assigns.session})
+      assign(conn, :result, {:error, result, conn.assigns.session})
     end
   end
 end

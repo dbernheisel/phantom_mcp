@@ -411,8 +411,8 @@ defmodule Phantom.PlugTest do
     assert File.read!("test/support/fixtures/bar.png") == decoded
   end
 
-  test "handles resource not found" do
-    # Test reading a resource that doesn't exist
+  test "handles resource not found for unrecognized URI scheme" do
+    # Test reading a resource with a completely unrecognized URI scheme
     not_found_message = %{
       jsonrpc: "2.0",
       method: "resources/read",
@@ -436,6 +436,23 @@ defmodule Phantom.PlugTest do
     error = response[:error]
     assert error[:code] == -32602
     assert error[:message] == "Invalid Params"
+  end
+
+  test "handles resource not found for unmatched URI template" do
+    # GH#14: URI matches a known scheme but not a registered template.
+    # Should return a JSON-RPC error, not a malformed contents response.
+    request_resource_read("test:///nonexistent/path", id: 6)
+
+    assert_response(6, response)
+    assert response[:jsonrpc] == "2.0"
+    assert response[:id] == 6
+    assert is_nil(response[:result])
+    assert is_map(response[:error])
+
+    error = response[:error]
+    assert error[:code] == -32002
+    assert error[:message] == "Resource not found"
+    assert error[:data][:uri] == "test:///nonexistent/path"
   end
 
   test "handles sending logs", context do
