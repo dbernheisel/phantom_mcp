@@ -765,11 +765,13 @@ defmodule Phantom.Plug do
   defp maybe_track_response(state, _), do: state
 
   defp maybe_track_session_stream(conn) do
-    existing_stream = Phantom.Tracker.get_session(conn.private.phantom.session.id)
-    track? = conn.body_params["method"] == "initialize" || conn.method == "GET"
+    session_id = conn.private.phantom.session.id
+    existing_streams = Phantom.Tracker.list_session_streams(session_id)
+    initialize? = conn.body_params["method"] == "initialize"
 
-    case {track?, existing_stream, conn.method} do
-      {true, nil, _} ->
+    case {initialize?, conn.method, existing_streams} do
+      # Initialize: always track (first session stream for this session)
+      {true, _, _} ->
         session = %{conn.private.phantom.session | close_after_complete: false}
 
         Phantom.Tracker.track_session(
@@ -780,7 +782,19 @@ defmodule Phantom.Plug do
 
         put_in(conn.private.phantom.session, session)
 
-      {true, _, "GET"} ->
+      # GET SSE: only if no existing stream (on any node)
+      {false, "GET", []} ->
+        session = %{conn.private.phantom.session | close_after_complete: false}
+
+        Phantom.Tracker.track_session(
+          self(),
+          session.id,
+          %{}
+        )
+
+        put_in(conn.private.phantom.session, session)
+
+      {false, "GET", _existing} ->
         conn
         |> put_status(409)
         |> json_error(

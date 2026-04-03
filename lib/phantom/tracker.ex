@@ -123,8 +123,14 @@ defmodule Phantom.Tracker do
   if @available do
     def get_session_meta(session_id) do
       case Phoenix.Tracker.get_by_key(__MODULE__, @sessions, session_id) do
-        [{_key, meta} | _] -> meta
-        _ -> Process.get(:phantom_session_meta, %{})
+        [] ->
+          Process.get(:phantom_session_meta, %{})
+
+        entries ->
+          # Merge all entries — the initialize entry has client_capabilities,
+          # a GET entry may not. Merging ensures we find capabilities regardless
+          # of which entry appears first.
+          Enum.reduce(entries, %{}, fn {_key, meta}, acc -> Map.merge(acc, meta) end)
       end
     rescue
       _ -> Process.get(:phantom_session_meta, %{})
@@ -137,6 +143,17 @@ defmodule Phantom.Tracker do
     existing = Process.get(:phantom_session_meta, %{})
     Process.put(:phantom_session_meta, Map.merge(existing, meta))
     :ok
+  end
+
+  @doc "Return all tracked streams for a given session ID (across all nodes)"
+  if @available do
+    def list_session_streams(session_id) do
+      Phoenix.Tracker.get_by_key(__MODULE__, @sessions, session_id)
+    rescue
+      _ -> []
+    end
+  else
+    def list_session_streams(_session_id), do: []
   end
 
   @doc "Return a list of all open sessions"
