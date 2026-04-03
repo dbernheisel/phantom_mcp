@@ -61,7 +61,7 @@ jobs:
         run: mix xref graph --format cycles --label compile-connected --fail-above 0
 
       - name: Run tests
-        run: mix test
+        run: epmd -daemon && mix test
 
   dialyzer:
     name: Dialyzer
