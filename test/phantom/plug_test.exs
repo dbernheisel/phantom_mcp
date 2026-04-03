@@ -455,6 +455,23 @@ defmodule Phantom.PlugTest do
     assert error[:data][:uri] == "test:///nonexistent/path"
   end
 
+  test "handles resource handler returning nil" do
+    request_resource_read("test:///unfound/1", id: 7)
+
+    assert_response(7, response)
+    assert is_nil(response[:result])
+    assert response[:error][:code] == -32002
+    assert response[:error][:message] == "Resource not found"
+  end
+
+  @tag :skip
+  test "handles resource handler raising an exception" do
+    request_resource_read("explode:///1", id: 8)
+
+    assert_exception_response(8, response, {%RuntimeError{message: "boom"}, _stacktrace})
+    assert response[:error][:code] == -32603
+  end
+
   test "handles sending logs", context do
     session_id = to_string(context.test)
 

@@ -233,6 +233,73 @@ defmodule Phantom.StdioTest do
       assert response["id"] == 1
       assert response["result"]["contents"]
     end
+
+    test "returns error for unrecognized URI scheme" do
+      ctx = start_stdio()
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "resources/read",
+        params: %{uri: "nonexistent:///missing/resource"}
+      })
+
+      response = read_response(ctx)
+      assert response["id"] == 1
+      assert response["error"]["code"] == -32602
+      assert response["error"]["message"] == "Invalid Params"
+    end
+
+    test "returns error for unmatched URI template" do
+      ctx = start_stdio()
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "resources/read",
+        params: %{uri: "test:///nonexistent/path"}
+      })
+
+      response = read_response(ctx)
+      assert response["id"] == 1
+      assert is_nil(response["result"])
+      assert response["error"]["code"] == -32002
+      assert response["error"]["message"] == "Resource not found"
+      assert response["error"]["data"]["uri"] == "test:///nonexistent/path"
+    end
+
+    test "returns error when resource handler returns nil" do
+      ctx = start_stdio()
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "resources/read",
+        params: %{uri: "test:///unfound/1"}
+      })
+
+      response = read_response(ctx)
+      assert response["id"] == 1
+      assert is_nil(response["result"])
+      assert response["error"]["code"] == -32002
+      assert response["error"]["message"] == "Resource not found"
+    end
+
+    test "returns error when resource handler raises" do
+      ctx = start_stdio()
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "resources/read",
+        params: %{uri: "explode:///1"}
+      })
+
+      response = read_response(ctx)
+      assert response["id"] == 1
+      assert response["error"]["code"] == -32603
+      assert Process.alive?(ctx.pid)
+    end
   end
 
   describe "parse errors" do
