@@ -93,7 +93,7 @@ defmodule Phantom.Test.NodeCase do
   `{:timeout, ref, buffer}` on timeout.
   """
   def receive_sse_event(resp, timeout \\ 5_000) do
-    ref = resp.body
+    ref = resp.body.ref
     receive_sse_loop(ref, "", timeout)
   end
 
@@ -170,10 +170,10 @@ defmodule Phantom.Test.NodeCase do
   Extract the `mcp-session-id` header from a Req response.
   """
   def session_id(%Req.Response{} = resp) do
-    Enum.find_value(resp.headers, fn
-      {"mcp-session-id", value} -> value
+    case resp.headers do
+      %{"mcp-session-id" => [value | _]} -> value
       _ -> nil
-    end)
+    end
   end
 
   @doc """

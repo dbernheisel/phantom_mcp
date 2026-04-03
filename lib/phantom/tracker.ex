@@ -203,7 +203,7 @@ defmodule Phantom.Tracker do
     def get_request_meta(request_id) do
       case Phoenix.Tracker.get_by_key(__MODULE__, @requests, request_id) do
         [{_key, %{pid: pid} = meta} | _] ->
-          if Process.alive?(pid) do
+          if process_alive?(pid) do
             meta
           else
             Phoenix.Tracker.untrack(__MODULE__, pid)
@@ -227,7 +227,7 @@ defmodule Phantom.Tracker do
     def get_session(session_id) do
       case Phoenix.Tracker.get_by_key(__MODULE__, @sessions, session_id) do
         [{_key, %{pid: pid}} | _] ->
-          if Process.alive?(pid) do
+          if process_alive?(pid) do
             pid
           else
             Phoenix.Tracker.untrack(__MODULE__, pid)
@@ -414,5 +414,13 @@ defmodule Phantom.Tracker do
     end
   else
     def handle_diff(_diff, state), do: {:ok, state}
+  end
+
+  # Process.alive?/1 only works for local PIDs. For remote PIDs on other
+  # nodes in the cluster, we make an RPC call to the owning node.
+  defp process_alive?(pid) when node(pid) == node(), do: Process.alive?(pid)
+
+  defp process_alive?(pid) do
+    :rpc.call(node(pid), Process, :alive?, [pid]) == true
   end
 end

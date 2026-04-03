@@ -67,18 +67,18 @@ defmodule Phantom.Test.Cluster do
 
     rpc(node, Phantom.Cache, :register, [Test.MCP.Router])
 
-    plug_opts =
-      Phantom.Plug.init(
-        router: Test.MCP.Router,
-        pubsub: pubsub_name,
-        validate_origin: false
-      )
+    plug_opts = [
+      router: Test.MCP.Router,
+      pubsub: pubsub_name,
+      validate_origin: false
+    ]
 
     rpc(node, Supervisor, :start_link, [
       [
         {Phoenix.PubSub, name: pubsub_name},
         {Phantom.Tracker, name: Phantom.Tracker, pubsub_server: pubsub_name},
-        {Bandit, plug: {Phantom.Plug, plug_opts}, port: port, scheme: :http}
+        {Bandit,
+         plug: {Phantom.Test.ClusterPlug, phantom_opts: plug_opts}, port: port, scheme: :http}
       ],
       [strategy: :one_for_one, name: :"phantom_test_sup_#{port}"]
     ])
