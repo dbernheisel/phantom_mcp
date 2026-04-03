@@ -1,3 +1,9 @@
+## 0.4.2 (2026-04-03)
+
+- Elicitation requests can use the POSTs connection. This should fix hung-up elicitations.
+- Phoenix.Tracker can take some time to replicate, so add retries when session metadata is not available
+- Improve cross-nodes tests
+
 ## 0.4.1 (2026-04-02)
 
 - Add additional Logging when dispatching requests to unalive PIDs
