@@ -1,3 +1,7 @@
+## 0.4.3 (2026-04-03)
+
+- Fix invalid response when client request an invalid resource_uri
+
 ## 0.4.2 (2026-04-03)
 
 - Elicitation requests can use the POSTs connection. This should fix hung-up elicitations.
