@@ -261,7 +261,6 @@ end
 
 :net_kernel.start([:"primary@127.0.0.1"])
 
-# Primary: PubSub + Tracker + Bandit backend on 4002
 plug_opts = [router: Test.MCP.Router, pubsub: Test.PubSub, validate_origin: false]
 
 {:ok, _} =
@@ -279,10 +278,8 @@ plug_opts = [router: Test.MCP.Router, pubsub: Test.PubSub, validate_origin: fals
     strategy: :one_for_one
   )
 
-# Peer: PubSub + Tracker + Bandit backend on 4003
 peer = PeerNode.spawn!(4003)
 
-# Load balancer on port 4000 → round-robins to 4002 and 4003
 {:ok, _lb} =
   Supervisor.start_link(
     [{LoadBalancer, port: 4000, backends: [4002, 4003]}],
