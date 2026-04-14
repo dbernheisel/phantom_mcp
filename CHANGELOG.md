@@ -4,6 +4,11 @@
   existing session. The conflict response (`409 -32000`) is now returned
   cleanly without attempting to write streaming headers on the sent conn.
 
+## 0.4.4 (2026-04-13)
+
+- Defend from potential elicitation replication lag
+- Track Elicitations to ensure duplicate requests are not sent
+
 ## 0.4.3 (2026-04-03)
 
 - Fix invalid response when client request an invalid resource_uri
