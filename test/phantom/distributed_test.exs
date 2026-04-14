@@ -88,6 +88,164 @@ defmodule Phantom.DistributedTest do
     end
   end
 
+  describe "async elicitation (cross-process)" do
+    test "elicit from a Task spawned after {:noreply, session}" do
+      # This exercises the cross-process elicit path: the tool handler
+      # returns `{:noreply, session}` and spawns a Task. The Task then
+      # invokes `Session.elicit/3` from outside the original request
+      # process — the captured conn / closure state may be stale.
+      session_id = initialize(@node1_port)
+      assert is_binary(session_id)
+
+      tool_resp =
+        post_mcp(
+          @node1_port,
+          %{
+            jsonrpc: "2.0",
+            id: 77,
+            method: "tools/call",
+            params: %{"name" => "async_elicit_tool", "arguments" => %{}}
+          },
+          session_id: session_id
+        )
+
+      assert tool_resp.status == 200
+
+      # The Task must be able to emit `elicitation/create` on the
+      # POST SSE stream even though it is running in a different
+      # process than the one that opened the stream.
+      elicit_request =
+        poll_for_sse_event(tool_resp, 10_000, &(&1["method"] == "elicitation/create"))
+
+      assert elicit_request,
+             "Expected elicitation/create on POST SSE stream — the async Task could not write to the stream"
+
+      elicit_id = elicit_request["id"]
+
+      # Answer from node 2 to confirm cross-node routing still works
+      # for async elicits.
+      elicit_resp =
+        Req.post!("http://127.0.0.1:#{@node2_port}/",
+          json: %{
+            jsonrpc: "2.0",
+            id: elicit_id,
+            result: %{
+              "action" => "accept",
+              "content" => %{
+                "name" => "AsyncBob",
+                "email" => "bob@async.test",
+                "role" => "eng"
+              }
+            }
+          },
+          headers: [
+            {"content-type", "application/json"},
+            {"mcp-session-id", session_id}
+          ]
+        )
+
+      assert elicit_resp.status == 202
+
+      tool_result =
+        poll_for_sse_event(tool_resp, 10_000, &is_map_key(&1, "result"))
+
+      assert tool_result, "Expected tool result in SSE events"
+
+      text = get_in(tool_result, ["result", "content", Access.at(0), "text"])
+      assert %{"hello" => "async my name is AsyncBob"} = JSON.decode!(text)
+    end
+  end
+
+  describe "duplicate tools/call dedup" do
+    # Simulates a client (or retrying load balancer / proxy) that
+    # POSTs the same `tools/call` JSON-RPC request to two nodes
+    # sharing a session. Two protections must combine:
+    #
+    #   (1) ingress dedup via `Phantom.Tracker.track_in_flight/2`
+    #       — the second dispatch is rejected with an "Invalid
+    #       request" (-32600) JSON-RPC error;
+    #   (2) deterministic elicitation request ids — if (1) loses
+    #       the replication race and both nodes dispatch, the two
+    #       `elicitation/create` messages share the same id so
+    #       the client can treat them as duplicates.
+    test "concurrent duplicate tools/call across nodes is either rejected or idempotent" do
+      session_id = initialize(@node1_port)
+
+      tool_call = %{
+        jsonrpc: "2.0",
+        id: 99,
+        method: "tools/call",
+        params: %{"name" => "elicit_tool", "arguments" => %{}}
+      }
+
+      # Both POSTs must be initiated from the test process so the
+      # SSE body chunks (Req `into: :self`) arrive in this inbox.
+      # The `elicit_tool` blocks server-side on the elicitation
+      # response, so `post_mcp` returns after headers and the
+      # bodies stream asynchronously — they are effectively
+      # concurrent for our purposes.
+      resp1 = post_mcp(@node1_port, tool_call, session_id: session_id)
+      resp2 = post_mcp(@node2_port, tool_call, session_id: session_id)
+
+      assert resp1.status == 200
+      assert resp2.status == 200
+
+      any_event = fn msg ->
+        msg["method"] == "elicitation/create" or is_map_key(msg, "error")
+      end
+
+      ev1 = poll_for_sse_event(resp1, 5_000, any_event)
+      ev2 = poll_for_sse_event(resp2, 5_000, any_event)
+
+      assert ev1, "node1 produced neither elicitation nor error"
+      assert ev2, "node2 produced neither elicitation nor error"
+
+      # Classify each response
+      classify = fn
+        %{"method" => "elicitation/create", "id" => id} -> {:elicit, id}
+        %{"error" => %{"code" => -32600}} -> :duplicate_rejected
+        other -> {:other, other}
+      end
+
+      c1 = classify.(ev1)
+      c2 = classify.(ev2)
+
+      case {c1, c2} do
+        # Preferred outcome: ingress dedup caught the duplicate
+        {{:elicit, id}, :duplicate_rejected} ->
+          answer_and_drain(session_id, id)
+
+        {:duplicate_rejected, {:elicit, id}} ->
+          answer_and_drain(session_id, id)
+
+        # Race fallback: both dispatched, but deterministic ids
+        # make them idempotent from the client's view
+        {{:elicit, id1}, {:elicit, id2}} ->
+          assert id1 == id2,
+                 "ingress dedup lost the race AND ids diverged: node1=#{id1} node2=#{id2}"
+
+          answer_and_drain(session_id, id1)
+
+        other ->
+          flunk("unexpected classification: #{inspect(other)}")
+      end
+    end
+  end
+
+  defp answer_and_drain(session_id, elicit_id) do
+    Req.post!("http://127.0.0.1:#{@node1_port}/",
+      json: %{
+        jsonrpc: "2.0",
+        id: elicit_id,
+        result: %{"action" => "reject"}
+      },
+      headers: [
+        {"content-type", "application/json"},
+        {"mcp-session-id", session_id}
+      ]
+    )
+  end
+
   describe "cross-node notifications" do
     test "resource update notification reaches remote SSE stream" do
       # Initialize on node 1 and keep init stream open

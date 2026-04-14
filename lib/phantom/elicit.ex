@@ -247,6 +247,75 @@ defmodule Phantom.Elicit do
         }) :: t
   def build(attrs), do: form(attrs)
 
+  @doc """
+  Generate a deterministic JSON-RPC request id for an elicitation.
+
+  Two dispatches of the same tool call (e.g. when a proxy retries
+  across nodes) produce the same elicitation id, so the client
+  sees identical duplicates rather than two logically distinct
+  requests.
+
+  When `tool_call_id` is `nil` (elicit called outside a request
+  context), falls back to `UUIDv7.generate/0` for uniqueness.
+  """
+  @spec deterministic_id(String.t(), term() | nil, t()) :: String.t()
+  def deterministic_id(_session_id, nil, _elicitation), do: UUIDv7.generate()
+
+  def deterministic_id(session_id, tool_call_id, %__MODULE__{} = elicitation) do
+    seq = next_elicit_sequence(session_id, tool_call_id)
+
+    payload =
+      "#{session_id}|#{inspect(tool_call_id)}|#{seq}|#{:erlang.phash2(elicitation)}"
+
+    <<a::32, b::16, c::16, d::16, e::48, _rest::binary>> = :crypto.hash(:sha256, payload)
+
+    :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
+    |> IO.iodata_to_binary()
+  end
+
+  defp next_elicit_sequence(session_id, tool_call_id) do
+    key = {:elicit_seq, session_id, tool_call_id}
+    seq = Process.get(key, 0)
+    Process.put(key, seq + 1)
+    seq
+  end
+
+  @doc """
+  Build the `elicitation/create` JSON-RPC request, assign it a
+  deterministic id, and register it with `Phantom.Tracker` so
+  the client's eventual response can route back.
+
+  Returns `{request, ref}`. The caller should write the request
+  to its transport and `receive do {:phantom_elicitation_response, ^ref, response}`.
+  Calling this function does not block.
+  """
+  @spec prepare_request(String.t(), term() | nil, t()) :: {struct(), reference()}
+  def prepare_request(session_id, tool_call_id, %__MODULE__{} = elicitation) do
+    request_id = deterministic_id(session_id, tool_call_id, elicitation)
+
+    {:ok, request} =
+      Phantom.Request.build(%{
+        "id" => request_id,
+        "jsonrpc" => "2.0",
+        "method" => "elicitation/create",
+        "params" => to_json(elicitation)
+      })
+
+    ref = make_ref()
+
+    Phantom.Tracker.track_request(self(), request.id, %{
+      type: :elicitation,
+      reply_ref: ref,
+      reply_pid: self()
+    })
+
+    if elicitation.mode == :url do
+      Phantom.Tracker.track_request(self(), elicitation.elicitation_id, %{type: :elicitation})
+    end
+
+    {request, ref}
+  end
+
   @doc "Build a form mode elicitation"
   def form(attrs) do
     %{

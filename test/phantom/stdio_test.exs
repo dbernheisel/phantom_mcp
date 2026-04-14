@@ -544,4 +544,151 @@ defmodule Phantom.StdioTest do
                )
     end
   end
+
+  describe "elicitation" do
+    defp initialize_with_elicitation(ctx) do
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: "init",
+        method: "initialize",
+        params: %{
+          protocolVersion: "2025-06-18",
+          capabilities: %{elicitation: %{}},
+          clientInfo: %{name: "TestClient", version: "1.0"}
+        }
+      })
+
+      drain_through(ctx, fn r -> r["id"] == "init" end)
+    end
+
+    test "async elicit — Task spawned in tool emits elicitation and receives response" do
+      # Regression: the async stdio elicit path routes response
+      # lookup through `Phantom.Tracker.await_request_meta/1`, which
+      # is unavailable when the tracker isn't in the supervision
+      # tree (default for stdio). Without a local fallback, the
+      # response is dropped and the Task times out — meaning the
+      # tool never produces a result.
+      ctx = start_stdio()
+      initialize_with_elicitation(ctx)
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 42,
+        method: "tools/call",
+        params: %{name: "async_elicit_tool", arguments: %{}}
+      })
+
+      elicit =
+        find_in_output(ctx, fn r -> r["method"] == "elicitation/create" end, 2_000)
+
+      assert elicit, "expected elicitation/create on output"
+      elicit_id = elicit["id"]
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: elicit_id,
+        result: %{
+          "action" => "accept",
+          "content" => %{
+            "name" => "Stdio Alice",
+            "email" => "alice@stdio.test",
+            "role" => "dev"
+          }
+        }
+      })
+
+      result =
+        find_in_output(ctx, fn r -> r["id"] == 42 and is_map(r["result"]) end, 2_000)
+
+      assert result, "expected tool result for id=42"
+      text = get_in(result, ["result", "content", Access.at(0), "text"])
+      assert %{"hello" => "async my name is Stdio Alice"} = JSON.decode!(text)
+    end
+  end
+
+  describe "duplicate request dedup" do
+    test "duplicate tools/call while an async tool holds the in-flight claim is rejected" do
+      # An async tool returns `{:noreply, session}` and does its
+      # work in a spawned Task. The session keeps the in-flight
+      # claim held until `Session.respond/2` — so a duplicate
+      # `tools/call` that arrives in that window is visible to
+      # the dispatch loop and gets rejected.
+      ctx = start_stdio()
+      initialize_with_elicitation(ctx)
+
+      # First call — returns {:noreply, _} after spawning a Task;
+      # the Task will eventually elicit. The in-flight claim is
+      # held for the entire duration.
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/call",
+        params: %{name: "async_elicit_tool", arguments: %{}}
+      })
+
+      # Wait until we see the elicitation on the wire — proves
+      # the Task is running and the in-flight claim is live.
+      elicit =
+        find_in_output(ctx, fn r -> r["method"] == "elicitation/create" end, 2_000)
+
+      assert elicit, "expected elicitation/create from first call"
+
+      # Duplicate with the same id while the original is in flight
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/call",
+        params: %{name: "async_elicit_tool", arguments: %{}}
+      })
+
+      dup_error =
+        find_in_output(ctx, fn r -> r["id"] == 7 and is_map(r["error"]) end, 2_000)
+
+      assert dup_error, "expected duplicate-request error for second call"
+      assert dup_error["error"]["code"] == -32600
+      assert dup_error["error"]["message"] =~ "Duplicate"
+
+      # Unblock the first call so the session shuts down cleanly
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: elicit["id"],
+        result: %{
+          "action" => "accept",
+          "content" => %{
+            "name" => "Stdio Alice",
+            "email" => "alice@stdio.test",
+            "role" => "dev"
+          }
+        }
+      })
+
+      _ = find_in_output(ctx, fn r -> r["id"] == 7 and is_map(r["result"]) end, 2_000)
+    end
+  end
+
+  # Polls the mock output until `predicate` matches one of the
+  # parsed responses or the timeout fires.
+  defp find_in_output(ctx, predicate, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    find_in_output_loop(ctx, predicate, deadline)
+  end
+
+  defp find_in_output_loop(ctx, predicate, deadline) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    if remaining == 0 do
+      nil
+    else
+      try do
+        output = MockIO.await_output(ctx.output, remaining)
+
+        case Enum.find(parse_responses(output), predicate) do
+          nil -> find_in_output_loop(ctx, predicate, deadline)
+          found -> found
+        end
+      catch
+        :exit, _ -> nil
+      end
+    end
+  end
 end

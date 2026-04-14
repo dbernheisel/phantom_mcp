@@ -104,6 +104,7 @@ defmodule Test.MCP.Router do
   tool :audio_tool, description: "An audio tool"
   tool :with_error_tool, description: "A test tool with an error"
   tool :elicit_tool, description: "A tool that always needs info"
+  tool :async_elicit_tool, description: "A tool that elicits from a spawned Task"
   tool :url_elicit_tool, description: "A tool that requires URL elicitation"
   tool :elicitation_required_tool, description: "A tool that returns elicitation_required error"
 
@@ -305,6 +306,36 @@ defmodule Test.MCP.Router do
       :error ->
         {:reply, Tool.error("Elicitation failed"), session}
     end
+  end
+
+  def async_elicit_tool(_params, session) do
+    # Exercises the cross-process elicit path: the Task spawned here
+    # runs after the original POST request process has returned
+    # `{:noreply, session}`, so `session.elicit`'s captured conn is
+    # closed by the time the Task invokes it.
+    Task.start(fn ->
+      reply =
+        case Session.elicit(session, @elicit_name) do
+          {:ok, %{"action" => "accept", "content" => content}} ->
+            Tool.text(%{hello: "async my name is #{content["name"]}"})
+
+          {:ok, _rejected} ->
+            Tool.error("Elicitation was rejected")
+
+          :not_supported ->
+            Tool.error("Elicitation not supported")
+
+          :timeout ->
+            Tool.error("Elicitation timed out")
+
+          :error ->
+            Tool.error("Elicitation failed")
+        end
+
+      Session.respond(session, reply)
+    end)
+
+    {:noreply, session}
   end
 
   def url_elicit_tool(_params, session) do

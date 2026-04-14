@@ -376,4 +376,67 @@ defmodule Phantom.ElicitTest do
       assert is_map(json.requestedSchema)
     end
   end
+
+  describe "deterministic_id/3" do
+    setup do
+      elicit =
+        Elicit.build(%{
+          message: "Confirm?",
+          requested_schema: [%{type: :boolean, name: "ok", required: true}]
+        })
+
+      %{elicit: elicit}
+    end
+
+    test "same inputs from separate processes produce same id", %{elicit: elicit} do
+      # Simulates two nodes dispatching the same tool call: each
+      # process has a fresh sequence counter starting at 0, so
+      # the first elicit in each process should match.
+      id1 = Task.async(fn -> Elicit.deterministic_id("sess", 42, elicit) end) |> Task.await()
+      id2 = Task.async(fn -> Elicit.deterministic_id("sess", 42, elicit) end) |> Task.await()
+      assert id1 == id2
+    end
+
+    test "different tool_call_id produces different id", %{elicit: elicit} do
+      id1 = Elicit.deterministic_id("sess", 42, elicit)
+      id2 = Elicit.deterministic_id("sess", 99, elicit)
+      refute id1 == id2
+    end
+
+    test "different session_id produces different id", %{elicit: elicit} do
+      id1 = Elicit.deterministic_id("sess-a", 42, elicit)
+      id2 = Elicit.deterministic_id("sess-b", 42, elicit)
+      refute id1 == id2
+    end
+
+    test "nil tool_call_id falls back to UUIDv7", %{elicit: elicit} do
+      id1 = Elicit.deterministic_id("sess", nil, elicit)
+      id2 = Elicit.deterministic_id("sess", nil, elicit)
+      refute id1 == id2, "nil tool_call_id should produce unique ids"
+    end
+
+    test "sequential calls with identical struct produce different ids", %{elicit: elicit} do
+      # A tool may call Session.elicit multiple times with the same
+      # struct (e.g. confirm → work → confirm again). The sequence
+      # counter ensures each call gets a distinct id.
+      ids =
+        for _ <- 1..5 do
+          Elicit.deterministic_id("sess", "multi", elicit)
+        end
+
+      assert length(Enum.uniq(ids)) == 5,
+             "expected 5 unique ids for sequential calls, got: #{inspect(ids)}"
+    end
+
+    test "sequence counter is per tool_call_id", %{elicit: elicit} do
+      id_a1 = Elicit.deterministic_id("sess", "tool-a", elicit)
+      id_b1 = Elicit.deterministic_id("sess", "tool-b", elicit)
+      id_a2 = Elicit.deterministic_id("sess", "tool-a", elicit)
+
+      # tool-a's second call differs from its first
+      refute id_a1 == id_a2
+      # tool-a and tool-b don't collide
+      refute id_a1 == id_b1
+    end
+  end
 end
