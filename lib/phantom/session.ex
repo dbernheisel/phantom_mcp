@@ -60,8 +60,6 @@ defmodule Phantom.Session do
           transport_pid: pid()
         }
 
-  require Logger
-
   @elicitation_timeout to_timeout(minute: 5)
 
   @spec new(String.t() | nil, Keyword.t() | map) :: t()
@@ -120,10 +118,35 @@ defmodule Phantom.Session do
       end
 
     with_elicitation_support(capabilities, elicitation, fn ->
-      if is_function(session.elicit) do
-        session.elicit.(elicitation, timeout)
-      else
-        :error
+      cond do
+        # Fast path: called from within the stream-owner process
+        # (e.g. a synchronous tool handler). The adapter-provided
+        # `session.elicit` closure writes to the transport directly
+        # and blocks in a receive.
+        is_function(session.elicit) and self() == session.pid ->
+          session.elicit.(elicitation, timeout)
+
+        # Cross-process path: called from a Task spawned after the
+        # tool returned `{:noreply, session}`. The captured conn in
+        # the closure can only be written from the stream owner
+        # (Bandit enforces this), so delegate to the session
+        # GenServer which owns the stream.
+        is_pid(session.pid) ->
+          tool_call_id = session.request && session.request.id
+
+          try do
+            GenServer.call(
+              session.pid,
+              {:elicit, elicitation, tool_call_id},
+              timeout + 1_000
+            )
+          catch
+            :exit, {:timeout, _} -> :timeout
+            :exit, _ -> :error
+          end
+
+        true ->
+          :error
       end
     end)
   end
@@ -342,45 +365,21 @@ defmodule Phantom.Session do
     {:reply, {:ok, Map.keys(state.subscriptions)}, state}
   end
 
-  def handle_call({:elicit, elicitation}, from, state) do
+  def handle_call({:elicit, elicitation, tool_call_id}, from, state) do
     cancel_inactivity(state)
 
-    {:ok, request} =
-      Request.build(%{
-        "id" => UUIDv7.generate(),
-        "jsonrpc" => "2.0",
-        "method" => "elicitation/create",
-        "params" => Phantom.Elicit.to_json(elicitation)
-      })
+    {request, ref} =
+      Phantom.Elicit.prepare_request(state.session.id, tool_call_id, elicitation)
 
-    if elicitation.mode == :url do
-      Phantom.Tracker.track_request(self(), elicitation.elicitation_id, %{type: :elicitation})
-    end
+    caller = %{from: from, request_id: request.id}
 
     state =
       state
-      |> Map.update(:elicitation_callers, %{request.id => from}, &Map.put(&1, request.id, from))
+      |> Map.update(:elicitation_callers, %{ref => caller}, &Map.put(&1, ref, caller))
+      |> Map.update(:pending_elicit_ids, %{request.id => ref}, &Map.put(&1, request.id, ref))
       |> state.stream_fun.(request.id, "message", Request.to_json(request))
 
     {:noreply, state |> set_activity() |> schedule_inactivity()}
-  end
-
-  @doc false
-  def handle_cast({:elicitation_response, request_id, response}, state) do
-    case pop_in(state, [:elicitation_callers, request_id]) do
-      {nil, state} ->
-        Logger.warning(
-          "Elicitation response #{request_id} has no matching caller. " <>
-            "Known callers: #{inspect(Map.keys(state[:elicitation_callers] || %{}))}"
-        )
-
-        {:noreply, state}
-
-      {from, state} ->
-        Logger.debug("Elicitation response #{request_id} matched, replying to caller")
-        GenServer.reply(from, {:ok, response})
-        {:noreply, state}
-    end
   end
 
   @doc false
@@ -426,6 +425,8 @@ defmodule Phantom.Session do
     state = state.stream_fun.(state, request_id, "message", payload)
     requests = Map.delete(state.session.requests, request_id)
     state = put_in(state.session.requests, requests)
+    Phantom.Tracker.untrack_in_flight(state.session.id, request_id)
+    state = release_in_flight(state, request_id)
     maybe_finish(state)
   end
 
@@ -506,6 +507,18 @@ defmodule Phantom.Session do
   # eat this message since we send once the stream loop is over
   def handle_info({:plug_conn, :sent}, state), do: {:noreply, state}
 
+  def handle_info({:phantom_elicitation_response, ref, response}, state) do
+    case pop_in(state, [:elicitation_callers, ref]) do
+      {nil, state} ->
+        {:noreply, state}
+
+      {%{from: from, request_id: request_id}, state} ->
+        GenServer.reply(from, {:ok, response})
+        state = forget_pending_elicit(state, request_id)
+        {:noreply, state |> set_activity() |> schedule_inactivity()}
+    end
+  end
+
   def handle_info(:inactivity, state) do
     cond do
       not state.session.close_after_complete ->
@@ -524,8 +537,18 @@ defmodule Phantom.Session do
   def handle_info({:phantom_dispatch, requests}, state) do
     cancel_inactivity(state)
 
+    # Intercept elicitation responses locally before dispatching
+    # to the router. When `Phantom.Tracker` isn't available (the
+    # default for stdio), the router's response path can't route
+    # back to the waiting `GenServer.call`. The local
+    # `:pending_elicit_ids` map is populated when this GenServer
+    # initiates an async elicitation via `handle_call({:elicit, ...})`.
+    {elicit_responses, other} = partition_elicit_responses(requests, state)
+
+    state = Enum.reduce(elicit_responses, state, &route_local_elicit_response/2)
+
     state =
-      Enum.reduce(requests, state, fn raw_request, state_acc ->
+      Enum.reduce(other, state, fn raw_request, state_acc ->
         case Request.build(raw_request) do
           {:ok, request} ->
             dispatch_stdio_request(request, state_acc)
@@ -562,6 +585,12 @@ defmodule Phantom.Session do
     {:noreply, state}
   end
 
+  # Methods that dispatch to user-defined handlers and may have
+  # side effects (including elicitation). Other methods are
+  # idempotent, so double-dispatch is harmless and we skip the
+  # dedup overhead for them.
+  @dedupable_methods ~w[tools/call prompts/get]
+
   # Notifications have no id; dispatch but don't write a response
   defp dispatch_stdio_request(%Request{id: nil} = request, state) do
     case state.session.router.dispatch_method([
@@ -579,7 +608,24 @@ defmodule Phantom.Session do
     _ -> state
   end
 
-  defp dispatch_stdio_request(request, state) do
+  defp dispatch_stdio_request(
+         %Request{method: method, id: request_id} = request,
+         state
+       )
+       when method in @dedupable_methods and not is_nil(request_id) do
+    if request_in_flight?(state, request_id) do
+      error = Request.error(request_id, Request.duplicate_request())
+      state.stream_fun.(state, request_id, "message", error)
+    else
+      state
+      |> claim_in_flight(request_id)
+      |> do_dispatch_stdio_request(request)
+    end
+  end
+
+  defp dispatch_stdio_request(request, state), do: do_dispatch_stdio_request(state, request)
+
+  defp do_dispatch_stdio_request(state, request) do
     stream_fun = state.stream_fun
 
     try do
@@ -590,29 +636,45 @@ defmodule Phantom.Session do
              state.session
            ]) do
         {:noreply, %__MODULE__{} = session} ->
+          # In-flight claim stays held until `Session.respond/2`
+          # casts back to this GenServer and untracks.
           requests = Map.put(session.requests, request.id, request.response)
           put_in(state.session, %{session | requests: requests})
 
         {:reply, result, %__MODULE__{} = session} ->
           request = Request.result(request, "message", result)
-          state = put_in(state.session, session)
-          stream_fun.(state, request.id, request.type, request.response)
+
+          state
+          |> put_session(session)
+          |> release_in_flight(request.id)
+          |> stream_fun.(request.id, request.type, request.response)
 
         {:reply, nil, %__MODULE__{} = session} ->
-          put_in(state.session, session)
+          state
+          |> put_session(session)
+          |> release_in_flight(request.id)
 
         {:error, error, %__MODULE__{} = session} ->
           error = Request.error(request.id, error)
-          state = put_in(state.session, session)
-          stream_fun.(state, error[:id], "message", error)
+
+          state
+          |> put_session(session)
+          |> release_in_flight(request.id)
+          |> stream_fun.(error[:id], "message", error)
 
         {:error, error} ->
           error = Request.error(request.id, error)
-          stream_fun.(state, error[:id], "message", error)
+
+          state
+          |> release_in_flight(request.id)
+          |> stream_fun.(error[:id], "message", error)
 
         _other ->
           error = Request.error(request.id, Request.internal_error())
-          stream_fun.(state, error[:id], "message", error)
+
+          state
+          |> release_in_flight(request.id)
+          |> stream_fun.(error[:id], "message", error)
       end
     rescue
       exception ->
@@ -633,8 +695,57 @@ defmodule Phantom.Session do
         )
 
         error = Request.error(request.id, Request.internal_error(Exception.message(exception)))
-        stream_fun.(state, request.id, "message", error)
+
+        state
+        |> release_in_flight(request.id)
+        |> stream_fun.(request.id, "message", error)
     end
+  end
+
+  defp put_session(state, %__MODULE__{} = session), do: put_in(state.session, session)
+
+  defp request_in_flight?(state, request_id),
+    do: MapSet.member?(Map.get(state, :in_flight, MapSet.new()), request_id)
+
+  defp claim_in_flight(state, request_id),
+    do:
+      Map.update(
+        state,
+        :in_flight,
+        MapSet.new([request_id]),
+        &MapSet.put(&1, request_id)
+      )
+
+  defp release_in_flight(state, request_id),
+    do: Map.update(state, :in_flight, MapSet.new(), &MapSet.delete(&1, request_id))
+
+  defp partition_elicit_responses(requests, state) do
+    pending = Map.get(state, :pending_elicit_ids, %{})
+
+    Enum.reduce(requests, {[], []}, fn raw_request, {resp_acc, other_acc} ->
+      if elicit_response?(raw_request, pending) do
+        {[{raw_request["id"], raw_request["result"]} | resp_acc], other_acc}
+      else
+        {resp_acc, [raw_request | other_acc]}
+      end
+    end)
+  end
+
+  defp elicit_response?(%{"id" => id, "result" => result}, pending) when is_map(result),
+    do: Map.has_key?(pending, id)
+
+  defp elicit_response?(_, _), do: false
+
+  defp route_local_elicit_response({request_id, response}, state) do
+    {ref, state} = pop_in(state, [Access.key(:pending_elicit_ids, %{}), request_id])
+
+    if ref, do: send(self(), {:phantom_elicitation_response, ref, response})
+
+    state
+  end
+
+  defp forget_pending_elicit(state, request_id) do
+    Map.update(state, :pending_elicit_ids, %{}, &Map.delete(&1, request_id))
   end
 
   defp cancel_inactivity(%{timer: ref}) when is_reference(ref), do: Process.cancel_timer(ref)

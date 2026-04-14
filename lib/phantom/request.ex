@@ -28,6 +28,10 @@ defmodule Phantom.Request do
     %{code: @invalid_request, message: message || "Invalid request"}
   end
 
+  @doc "Duplicate JSON-RPC request id for a session"
+  def duplicate_request,
+    do: %{code: @invalid_request, message: "Duplicate request id for session"}
+
   @doc "Invalid request due to bad parameters"
   def invalid_params(data), do: %{code: @invalid_params, message: "Invalid Params", data: data}
   def invalid_params, do: %{code: @invalid_params, message: "Invalid Params"}

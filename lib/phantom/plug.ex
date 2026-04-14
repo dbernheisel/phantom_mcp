@@ -369,93 +369,116 @@ defmodule Phantom.Plug do
   end
 
   defp continue(state) do
-    stream_fun = state.stream_fun
-
-    params =
-      cond do
-        state.conn.method == "GET" -> []
-        is_map_key(state.conn.body_params, "_json") -> state.conn.body_params["_json"]
-        true -> List.wrap(state.conn.body_params)
-      end
-
     {state, exceptions} =
-      Enum.reduce(
-        params,
-        {state, []},
-        fn
-          _request, {%{conn: %{halted: true}} = state_acc, exceptions_acc} ->
-            {state_acc, exceptions_acc}
-
-          request, {state_acc, exceptions_acc} ->
-            case Request.build(request) do
-              {:ok, request} ->
-                state_acc = maybe_track_response(state_acc, request)
-                state_acc = put_in(state_acc.conn, maybe_track_session_stream(state_acc.conn))
-
-                state_acc =
-                  put_in(state_acc.session, %{
-                    state_acc.conn.private.phantom.session
-                    | elicit: elicit_fun(state_acc.conn, stream_fun)
-                  })
-
-                try do
-                  case state_acc.session.router.dispatch_method([
-                         request.method,
-                         request.params,
-                         request,
-                         state_acc.session
-                       ]) do
-                    {:noreply, %Session{} = session_acc} ->
-                      requests = Map.put(session_acc.requests, request.id, request.response)
-                      state_acc = put_in(state_acc.session, %{session_acc | requests: requests})
-                      {state_acc, exceptions_acc}
-
-                    {:reply, result, %Session{} = session_acc} ->
-                      request = Request.result(request, "message", result)
-                      state_acc = put_in(state_acc.session, session_acc)
-
-                      state_acc =
-                        stream_fun.(state_acc, request.id, request.type, request.response)
-
-                      {state_acc, exceptions_acc}
-
-                    {:error, error, %Session{} = session_acc} ->
-                      error = Request.error(request.id, error)
-                      state_acc = put_in(state_acc.session, session_acc)
-                      state_acc = stream_fun.(state_acc, error[:id], "message", error)
-                      {state_acc, exceptions_acc}
-
-                    {:error, error} ->
-                      error = Request.error(request.id, error)
-                      state_acc = stream_fun.(state_acc, error[:id], "message", error)
-                      {state_acc, exceptions_acc}
-
-                    _response ->
-                      error = Request.error(request.id, Request.internal_error())
-                      state_acc = stream_fun.(state_acc, error[:id], "message", error)
-                      {state_acc, exceptions_acc}
-                  end
-                rescue
-                  exception ->
-                    error =
-                      Request.error(
-                        request.id,
-                        Request.internal_error(Exception.message(exception))
-                      )
-
-                    exceptions_acc = [{request, exception, __STACKTRACE__} | exceptions_acc]
-                    state_acc = stream_fun.(state_acc, request.id, "message", error)
-                    {state_acc, exceptions_acc}
-                end
-
-              {:error, error} ->
-                state_acc = stream_fun.(state_acc, error.id, "message", error.response)
-                {state_acc, exceptions_acc}
-            end
-        end
-      )
+      state
+      |> incoming_requests()
+      |> Enum.reduce({state, []}, &process_request/2)
 
     maybe_reraise(state, exceptions)
+  end
+
+  defp incoming_requests(%{conn: %{method: "GET"}}), do: []
+
+  defp incoming_requests(%{conn: %{body_params: %{"_json" => batch}}}), do: batch
+
+  defp incoming_requests(%{conn: %{body_params: body}}), do: List.wrap(body)
+
+  # Skip subsequent requests in a batch after the conn is halted.
+  defp process_request(_request, {%{conn: %{halted: true}} = state, exceptions}),
+    do: {state, exceptions}
+
+  defp process_request(raw_request, {state, exceptions}) do
+    case Request.build(raw_request) do
+      {:ok, request} ->
+        state
+        |> prepare_for_dispatch(request)
+        |> dispatch_or_reject(request, exceptions)
+
+      {:error, error} ->
+        state = state.stream_fun.(state, error.id, "message", error.response)
+        {state, exceptions}
+    end
+  end
+
+  defp prepare_for_dispatch(state, request) do
+    state = maybe_track_response(state, request)
+    state = put_in(state.conn, maybe_track_session_stream(state.conn))
+
+    put_in(state.session, %{
+      state.conn.private.phantom.session
+      | elicit: elicit_fun(state.conn, state.stream_fun, request)
+    })
+  end
+
+  defp dispatch_or_reject(state, request, exceptions) do
+    session_id = state.session.id
+
+    case claim_in_flight(session_id, request) do
+      :duplicate ->
+        error = Request.error(request.id, Request.duplicate_request())
+        state = state.stream_fun.(state, error[:id], "message", error)
+        {state, exceptions}
+
+      :ok ->
+        run_dispatch(state, request, exceptions)
+    end
+  end
+
+  defp run_dispatch(state, request, exceptions) do
+    result =
+      state.session.router.dispatch_method([
+        request.method,
+        request.params,
+        request,
+        state.session
+      ])
+
+    handle_dispatch_result(result, state, request, exceptions)
+  rescue
+    exception ->
+      error =
+        Request.error(request.id, Request.internal_error(Exception.message(exception)))
+
+      state = state.stream_fun.(state, request.id, "message", error)
+      release_in_flight(state.session.id, request)
+      {state, [{request, exception, __STACKTRACE__} | exceptions]}
+  end
+
+  defp handle_dispatch_result({:noreply, %Session{} = session}, state, request, exceptions) do
+    # Async tool — in-flight claim stays held until `Session.respond/2`
+    # eventually casts to the session GenServer and untracks.
+    requests = Map.put(session.requests, request.id, request.response)
+    {put_in(state.session, %{session | requests: requests}), exceptions}
+  end
+
+  defp handle_dispatch_result({:reply, result, %Session{} = session}, state, request, exceptions) do
+    request = Request.result(request, "message", result)
+    state = put_in(state.session, session)
+    state = state.stream_fun.(state, request.id, request.type, request.response)
+    release_in_flight(state.session.id, request)
+    {state, exceptions}
+  end
+
+  defp handle_dispatch_result({:error, error, %Session{} = session}, state, request, exceptions) do
+    error = Request.error(request.id, error)
+    state = put_in(state.session, session)
+    state = state.stream_fun.(state, error[:id], "message", error)
+    release_in_flight(state.session.id, request)
+    {state, exceptions}
+  end
+
+  defp handle_dispatch_result({:error, error}, state, request, exceptions) do
+    error = Request.error(request.id, error)
+    state = state.stream_fun.(state, error[:id], "message", error)
+    release_in_flight(state.session.id, request)
+    {state, exceptions}
+  end
+
+  defp handle_dispatch_result(_response, state, request, exceptions) do
+    error = Request.error(request.id, Request.internal_error())
+    state = state.stream_fun.(state, error[:id], "message", error)
+    release_in_flight(state.session.id, request)
+    {state, exceptions}
   end
 
   defp cors_preflight(%Plug.Conn{halted: true} = conn, _opts), do: conn
@@ -710,42 +733,50 @@ defmodule Phantom.Plug do
     "#{method} #{info}"
   end
 
-  defp elicit_fun(%Plug.Conn{} = conn, stream_fun) do
+  defp elicit_fun(%Plug.Conn{} = conn, stream_fun, tool_call_request) do
+    session_id = conn.private.phantom.session.id
+    tool_call_id = tool_call_request.id
+
     fn elicitation, timeout ->
-      {:ok, request} =
-        Request.build(%{
-          "id" => UUIDv7.generate(),
-          "jsonrpc" => "2.0",
-          "method" => "elicitation/create",
-          "params" => Phantom.Elicit.to_json(elicitation)
-        })
-
-      ref = make_ref()
-
-      Phantom.Tracker.track_request(self(), request.id, %{
-        type: :elicitation,
-        reply_ref: ref,
-        reply_pid: self()
-      })
-
-      if elicitation.mode == :url do
-        Phantom.Tracker.track_request(self(), elicitation.elicitation_id, %{type: :elicitation})
-      end
+      {request, ref} = Phantom.Elicit.prepare_request(session_id, tool_call_id, elicitation)
 
       state = %{conn: conn}
       stream_fun.(state, request.id, "message", Request.to_json(request))
 
-      receive do
-        {:phantom_elicitation_response, ^ref, response} ->
-          Phantom.Tracker.untrack_request(request.id)
-          {:ok, response}
-      after
-        timeout ->
-          Phantom.Tracker.untrack_request(request.id)
-          :timeout
-      end
+      await_elicitation_response(request.id, ref, timeout)
     end
   end
+
+  defp await_elicitation_response(request_id, ref, timeout) do
+    receive do
+      {:phantom_elicitation_response, ^ref, response} ->
+        Phantom.Tracker.untrack_request(request_id)
+        {:ok, response}
+    after
+      timeout ->
+        Phantom.Tracker.untrack_request(request_id)
+        :timeout
+    end
+  end
+
+  # Methods that dispatch to user-defined handlers and may have
+  # side effects (including elicitation). Other methods — tools/list,
+  # prompts/list, initialize, ping — are idempotent and safe to
+  # re-dispatch, so we don't dedupe them (retries on reconnect stay
+  # working).
+  @dedupable_methods ~w[tools/call prompts/get]
+
+  defp claim_in_flight(session_id, %Request{id: id, method: method})
+       when method in @dedupable_methods and not is_nil(id),
+       do: Phantom.Tracker.track_in_flight(session_id, id)
+
+  defp claim_in_flight(_session_id, _request), do: :ok
+
+  defp release_in_flight(session_id, %Request{id: id, method: method})
+       when method in @dedupable_methods and not is_nil(id),
+       do: Phantom.Tracker.untrack_in_flight(session_id, id)
+
+  defp release_in_flight(_session_id, _request), do: :ok
 
   defp inherit_session_meta(%Session{} = session) do
     case Phantom.Tracker.get_session_meta(session.id) do

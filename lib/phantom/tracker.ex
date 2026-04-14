@@ -64,6 +64,71 @@ defmodule Phantom.Tracker do
     def track_request(_pid, _request_id, _meta \\ %{}), do: {:error, :not_available}
   end
 
+  @doc """
+  Claim an in-flight JSON-RPC request for a session to prevent
+  double-dispatch when the same `tools/call` lands on two nodes
+  (e.g. proxy retry). Returns `:ok` if the claim is held by this
+  node alone, `:duplicate` if another node has already claimed it.
+
+  Stored on the `#{@requests}` topic alongside server-initiated
+  request tracking. The `{:in_flight, session_id, request_id}`
+  tuple key never collides with elicitation keys (binaries), so
+  both kinds of tracking share one replication stream.
+
+  The check is best-effort against Phoenix.Tracker replication
+  lag: two nodes racing can both see `:ok`. Callers should
+  treat this as a hint and combine with deterministic request
+  IDs for defence in depth.
+  """
+  if @available do
+    def track_in_flight(session_id, request_id) do
+      key = in_flight_key(session_id, request_id)
+
+      case Phoenix.Tracker.get_by_key(__MODULE__, @requests, key) do
+        [] ->
+          case Phoenix.Tracker.track(__MODULE__, self(), @requests, key, %{
+                 type: :in_flight,
+                 pid: self()
+               }) do
+            {:ok, _} -> :ok
+            _ -> :duplicate
+          end
+
+        _entries ->
+          :duplicate
+      end
+    rescue
+      _ -> :ok
+    end
+  else
+    def track_in_flight(_session_id, _request_id), do: :ok
+  end
+
+  @doc "Release an in-flight claim taken by `track_in_flight/2`."
+  if @available do
+    def untrack_in_flight(session_id, request_id) do
+      Phoenix.Tracker.untrack(
+        __MODULE__,
+        self(),
+        @requests,
+        in_flight_key(session_id, request_id)
+      )
+
+      :ok
+    rescue
+      _ -> :ok
+    end
+  else
+    def untrack_in_flight(_session_id, _request_id), do: :ok
+  end
+
+  # Tuple keys never collide with the binary/number keys that
+  # `track_request/3` uses for server-initiated requests, so
+  # both kinds of tracking can share the `#{@requests}` topic
+  # and its single replication stream.
+  defp in_flight_key(session_id, request_id),
+    do: {:in_flight, session_id, request_id}
+
   @doc "Track a session PID"
   if @available do
     require Logger
