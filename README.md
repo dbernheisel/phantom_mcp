@@ -14,7 +14,7 @@ This library provides a complete implementation of the [MCP server specification
 Add Phantom to your dependencies:
 
 ```elixir
-  {:phantom_mcp, "~> 0.4.3"},
+  {:phantom_mcp, "~> 0.4.4"},
 ```
 
 ## Stdio Transport (Local Clients)
