@@ -1,3 +1,8 @@
+## 0.4.4 (2026-04-13)
+
+- Defend from potential elicitation replication lag
+- Track Elicitations to ensure duplicate requests are not sent
+
 ## 0.4.3 (2026-04-03)
 
 - Fix invalid response when client request an invalid resource_uri
