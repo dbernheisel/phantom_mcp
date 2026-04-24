@@ -14,4 +14,21 @@ defmodule Test.Router do
       pubsub: Test.PubSub,
       validate_origin: false
   end
+
+  forward "/mcp-apps", Phantom.App.Preview,
+    router: Test.MCP.Router,
+    mcp_endpoint: "/mcp"
+
+  get "/*path", Test.FallbackPlug, :index
+end
+
+defmodule Test.FallbackPlug do
+  use Plug.Builder
+  import Plug.Conn
+
+  def init(_), do: []
+
+  def call(conn, _opts) do
+    conn |> send_resp(404, "Not found") |> halt()
+  end
 end

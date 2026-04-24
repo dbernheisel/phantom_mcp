@@ -27,7 +27,8 @@ defmodule Phantom.Session do
     client_capabilities: %{
       roots: false,
       sampling: false,
-      elicitation: false
+      elicitation: false,
+      ui: false
     },
     close_after_complete: true,
     requests: %{}
@@ -55,7 +56,8 @@ defmodule Phantom.Session do
           client_capabilities: %{
             elicitation: false | map(),
             sampling: false | map(),
-            roots: false | map()
+            roots: false | map(),
+            ui: false | map()
           },
           transport_pid: pid()
         }

@@ -5,6 +5,11 @@ set -e
 previous_version="${1}"
 release_version="${2}"
 
+# Build production assets (priv/static/preview.{js,css}) — these ship in
+# the hex tarball but are gitignored, so rebuild fresh from source.
+npm ci
+npm run build
+
 mix test
 
 sed -i "" "s/$previous_version/$release_version/" README.md

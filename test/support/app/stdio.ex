@@ -13,6 +13,7 @@ defmodule Test.Stdio do
     })
 
     Application.ensure_all_started(:telemetry)
+    Application.ensure_all_started(:plug)
 
     {:ok, _} =
       Supervisor.start_link(

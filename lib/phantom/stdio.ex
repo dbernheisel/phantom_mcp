@@ -107,8 +107,15 @@ defmodule Phantom.Stdio do
 
   <!-- tabs-open -->
 
-  ### Claude Desktop
+  ### Claude
 
+  **Claude Code**
+
+  ```bash
+  claude mcp add my_app -e PATH=/path/to/elixir/bin:/path/to/erlang/bin:/usr/local/bin:/usr/bin:/bin -- /path/to/my_app
+  ```
+
+  **Claude Desktop**
   Find your `claude_desktop_config.json`:
   - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
@@ -285,7 +292,7 @@ defmodule Phantom.Stdio do
           "params" => Phantom.Elicit.to_json(elicitation)
         })
 
-      IO.write(output, JSON.encode!(Phantom.Request.to_json(request)) <> "\n")
+      IO.write(output, [encode_ascii(Phantom.Request.to_json(request)), ?\n])
       await_elicitation(request.id, timeout)
     end
   end
@@ -316,15 +323,29 @@ defmodule Phantom.Stdio do
         state
 
       state, _id, _event, payload when is_map(payload) and map_size(payload) == 0 ->
-        IO.write(output, JSON.encode!(%{jsonrpc: "2.0", result: %{}}) <> "\n")
+        IO.write(output, [encode_ascii(%{jsonrpc: "2.0", result: %{}}), ?\n])
         state
 
       state, _id, _event, %{} = payload ->
-        IO.write(output, JSON.encode!(payload) <> "\n")
+        IO.write(output, [encode_ascii(payload), ?\n])
         state
 
       state, _id, _event, _payload ->
         state
     end
   end
+
+  # Encode JSON with non-ASCII characters escaped as \uXXXX sequences.
+  # Stdio clients (Claude Desktop, Codex) may not accept raw UTF-8 in
+  # JSON strings even though RFC 8259 permits it. Using
+  # :json.encode_binary_escape_all/1 ensures only ASCII bytes are emitted.
+  defp encode_ascii(data) do
+    JSON.encode_to_iodata!(data, &ascii_encoder/2)
+  end
+
+  defp ascii_encoder(str, _encoder) when is_binary(str),
+    do: :json.encode_binary_escape_all(str)
+
+  defp ascii_encoder(other, encoder),
+    do: JSON.Encoder.encode(other, encoder)
 end

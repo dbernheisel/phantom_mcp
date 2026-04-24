@@ -3,7 +3,6 @@ defmodule Phantom.MixProject do
 
   def project do
     [
-      aliases: aliases(),
       compilers: Mix.compilers(),
       app: :phantom_mcp,
       description: "Elixir MCP (Model Context Protocol) server library with Plug",
@@ -32,7 +31,9 @@ defmodule Phantom.MixProject do
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
-  defp elixirc_paths(:stdio), do: ["lib", "test/support/app/mcp", "test/support/app/stdio.ex"]
+
+  defp elixirc_paths(:stdio), do: ["lib", "test/support/app"]
+
   defp elixirc_paths(_), do: ["lib"]
 
   defp escript(:stdio), do: [main_module: Test.Stdio, app: nil]
@@ -42,15 +43,16 @@ defmodule Phantom.MixProject do
     [
       {:plug, "~> 1.0"},
       {:telemetry, "~> 1.0"},
-      {:phoenix_pubsub, "~> 2.0", optional: true, only: [:dev, :test, :prod]},
+      {:phoenix_pubsub, "~> 2.0", optional: true, only: [:dev, :test, :prod, :stdio]},
       {:uuidv7, "~> 1.0"},
       ## Test
-      {:phoenix, "~> 1.7", only: [:test]},
+      {:phoenix_live_view, "~> 1.0", only: [:dev, :test, :stdio]},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.31", only: :dev, warn_if_outdated: true, runtime: false},
-      {:tidewave, "~> 0.5", only: [:test], warn_if_outdated: true},
-      {:exsync, "~> 0.4", only: [:dev]},
-      {:bandit, "~> 1.0", only: [:test]}
+      {:tidewave, "~> 0.5", only: [:dev, :test], warn_if_outdated: true},
+      {:makeup_javascript, "~> 0.1", only: :dev},
+      {:phoenix_live_reload, "~> 1.5", only: [:dev, :test, :stdio]},
+      {:bandit, "~> 1.0", only: [:dev, :test]}
     ]
   end
 
@@ -100,15 +102,8 @@ defmodule Phantom.MixProject do
   defp docs do
     [
       main: "Phantom",
-      extras: ~w[CHANGELOG.md],
+      extras: ["guides/mcp_apps.md", "CHANGELOG.md"],
       before_closing_body_tag: %{html: @mermaidjs}
-    ]
-  end
-
-  defp aliases do
-    [
-      tidewave:
-        "run --no-halt -e 'Agent.start(fn -> Bandit.start_link(plug: Tidewave, port: 4000) end)'"
     ]
   end
 end

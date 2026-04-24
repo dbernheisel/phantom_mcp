@@ -27,4 +27,10 @@ phantom_mcp-*.tar
 /.claude/*.local.*
 .tool-versions
 phantom_mcp
-/bin/phantom-stdio
+
+# Node/JS build artifacts
+/node_modules/
+/test/support/app/priv/static/mcp_app.js
+/test/support/app/priv/static/mcp_preview.js
+/priv/static/preview.css
+/priv/static/preview.js

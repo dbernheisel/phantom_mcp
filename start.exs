@@ -1,4 +1,17 @@
 #!/usr/bin/env iex
+
+# epmd -daemon && iex --name primary@127.0.0.1 -S mix run start.exs
+
+# Bundle assets (initial build)
+{output, 0} = System.cmd("npm", ["run", "build"], stderr_to_stdout: true)
+IO.puts(output)
+{output, 0} = System.cmd("npm", ["run", "build:test"], stderr_to_stdout: true)
+IO.puts(output)
+
+# File watchers rebuild on change; output goes to stderr to avoid garbling
+spawn(fn -> System.cmd("npm", ["run", "watch"], into: IO.stream(:stderr, :line)) end)
+
+Application.put_env(:mime, :types, %{"text/event-stream" => ["sse"]})
 Application.put_env(:phoenix, :json_library, JSON)
 Application.put_env(:phoenix, :plug_init_mode, :runtime)
 Application.put_env(:phoenix, :serve_endpoints, true, persistent: true)
@@ -15,30 +28,25 @@ Application.put_env(:phantom_mcp, Test.Endpoint,
   ],
   pubsub_server: Test.PubSub,
   code_reloader: true,
-  http: [ip: {127, 0, 0, 1}, port: 4000],
+  reloadable_apps: [:phantom_mcp],
+  live_reload: [
+    patterns: [
+      ~r"lib/phantom/.*(ex)$",
+      ~r"priv/static/.*(js|css)$",
+      ~r"test/support/.*(ex)$",
+      ~r"test/support/app/priv/.*(js|css)$"
+    ]
+  ],
+  http: [ip: {127, 0, 0, 1}, port: 4001],
   server: true,
   secret_key_base: String.duplicate("a", 64)
 )
 
-Mix.install(
-  [
-    {:plug_cowboy, "~> 2.7"},
-    {:bandit, "~> 1.7"},
-    {:tidewave, "~> 0.1.9"},
-    {:phoenix, "~> 1.7"},
-    {:phantom_mcp, path: "."}
-  ],
-  config: [
-    mime: [
-      types: %{
-        "text/event-stream" => ["sse"]
-      }
-    ]
-  ]
-)
-
 Enum.each(
   ~w[
+  test/support/app/mcp/layouts.ex
+  test/support/app/mcp/sample_app.ex
+  test/support/app/mcp/minimal_app.ex
   test/support/app/mcp/router.ex
   test/support/app/router.ex
   test/support/app/endpoint.ex
@@ -227,6 +235,9 @@ defmodule PeerNode do
     cwd = File.cwd!()
 
     for file <- ~w[
+          test/support/app/mcp/layouts.ex
+          test/support/app/mcp/sample_app.ex
+          test/support/app/mcp/minimal_app.ex
           test/support/app/mcp/router.ex
           test/support/app/router.ex
           test/support/app/endpoint.ex
@@ -268,6 +279,7 @@ plug_opts = [router: Test.MCP.Router, pubsub: Test.PubSub, validate_origin: fals
     [
       {Phoenix.PubSub, name: Test.PubSub},
       {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Test.PubSub]},
+      Test.Endpoint,
       {Bandit,
        plug: {Phantom.Test.ClusterPlug, phantom_opts: plug_opts},
        port: 4002,
@@ -282,16 +294,18 @@ peer = PeerNode.spawn!(4003)
 
 {:ok, _lb} =
   Supervisor.start_link(
-    [{LoadBalancer, port: 4000, backends: [4002, 4003]}],
+    [{LoadBalancer, port: 4001, backends: [4002, 4000]}],
     strategy: :one_for_one,
     name: :lb_sup
   )
 
 IO.puts("""
 
-  Load Balancer:  http://localhost:4000/mcp (round-robin)
-  Primary node:   http://localhost:4002/mcp (#{node()})
-  Peer node:      http://localhost:4003/mcp (#{peer})
+  Primary node:   http://localhost:4000/mcp (#{node()})
+  Tidewave:       http://localhost:4000/tidewave/mcp
+  Load Balancer:  http://localhost:4001/mcp (round-robin)
+  App Preview:    http://localhost:4001/mcp-apps
+  Peer node:      http://localhost:4002/mcp (#{peer})
 """)
 
 IEx.Server.run(env: __ENV__, binding: binding(), register: false)

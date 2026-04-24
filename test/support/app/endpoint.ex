@@ -5,6 +5,12 @@ defmodule Test.Endpoint do
     plug Tidewave
   end
 
+  if code_reloading? do
+    socket "/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket
+    plug Phoenix.LiveReloader
+    plug Phoenix.CodeReloader
+  end
+
   plug Plug.Parsers,
     parsers: [{:json, length: 1_000_000}],
     pass: ["application/json"],
