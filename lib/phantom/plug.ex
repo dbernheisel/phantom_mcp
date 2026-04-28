@@ -278,17 +278,22 @@ defmodule Phantom.Plug do
 
   defp dispatch(%Plug.Conn{method: "GET"} = conn, opts) do
     if opts.pubsub do
-      conn = maybe_track_session_stream(conn)
-      session = conn.private.phantom.session
+      case maybe_track_session_stream(conn) do
+        %Plug.Conn{halted: true} = conn ->
+          conn
 
-      conn
-      |> put_resp_header("mcp-session-id", session.id)
-      |> put_resp_header("cache-control", "no-cache, no-transform")
-      |> put_resp_content_type("text/event-stream")
-      |> put_resp_header("connection", "keep-alive")
-      |> put_resp_header("x-accel-buffering", "no")
-      |> send_chunked(202)
-      |> stream_loop(opts)
+        conn ->
+          session = conn.private.phantom.session
+
+          conn
+          |> put_resp_header("mcp-session-id", session.id)
+          |> put_resp_header("cache-control", "no-cache, no-transform")
+          |> put_resp_content_type("text/event-stream")
+          |> put_resp_header("connection", "keep-alive")
+          |> put_resp_header("x-accel-buffering", "no")
+          |> send_chunked(202)
+          |> stream_loop(opts)
+      end
     else
       conn
       |> put_status(405)

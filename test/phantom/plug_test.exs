@@ -299,6 +299,28 @@ defmodule Phantom.PlugTest do
       assert_sse_connected()
       assert Phantom.Tracker.list_sessions() != []
     end
+
+    test "second GET on same session returns 409 without raising AlreadySentError" do
+      session_id = "019dd3d8-0000-0000-0000-000000000001"
+
+      :get
+      |> conn("/mcp")
+      |> put_req_header("accept", "text/event-stream")
+      |> call(session_id: session_id)
+
+      assert_sse_connected()
+
+      :get
+      |> conn("/mcp")
+      |> put_req_header("accept", "text/event-stream")
+      |> call(session_id: session_id)
+
+      assert_receive {:conn, conn}
+      assert conn.status == 409
+      error = JSON.decode!(conn.resp_body)
+      assert error["error"]["code"] == -32000
+      assert error["error"]["message"] == "Only one SSE stream is allowed per session"
+    end
   end
 
   test "handles prompt responses" do

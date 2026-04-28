@@ -1,3 +1,9 @@
+## Unreleased
+
+- Fix `Plug.Conn.AlreadySentError` when a second SSE GET arrives for an
+  existing session. The conflict response (`409 -32000`) is now returned
+  cleanly without attempting to write streaming headers on the sent conn.
+
 ## 0.4.3 (2026-04-03)
 
 - Fix invalid response when client request an invalid resource_uri
