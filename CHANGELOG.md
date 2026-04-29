@@ -1,4 +1,4 @@
-## Unreleased
+## 0.4.5 (2026-04-29)
 
 - Fix `Plug.Conn.AlreadySentError` when a second SSE GET arrives for an
   existing session. The conflict response (`409 -32000`) is now returned
