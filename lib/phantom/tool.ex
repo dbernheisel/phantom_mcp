@@ -49,6 +49,7 @@ defmodule Phantom.Tool do
     :input_schema,
     :annotations,
     :icons,
+    :ui,
     meta: %{}
   ]
 
@@ -62,7 +63,8 @@ defmodule Phantom.Tool do
           input_schema: JSONSchema.t() | nil,
           output_schema: JSONSchema.t() | nil,
           annotations: Annotation.t(),
-          icons: [Phantom.Icon.t()] | nil
+          icons: [Phantom.Icon.t()] | nil,
+          ui: Phantom.UI.t() | nil
         }
 
   @type json :: %{
@@ -168,6 +170,8 @@ defmodule Phantom.Tool do
     {annotation_attrs, attrs} =
       Map.split(attrs, ~w[title idempotent destructive read_only open_world]a)
 
+    {ui_attrs, attrs} = Map.pop(attrs, :ui)
+
     attrs =
       Map.put(attrs, :name, attrs[:name] || to_string(attrs[:function]))
 
@@ -178,12 +182,16 @@ defmodule Phantom.Tool do
       | annotations: Annotation.build(annotation_attrs),
         input_schema: JSONSchema.build(attrs[:input_schema]),
         output_schema: JSONSchema.build(attrs[:output_schema]),
-        icons: build_icons(attrs[:icons])
+        icons: build_icons(attrs[:icons]),
+        ui: build_ui(ui_attrs)
     }
   end
 
   defp build_icons(nil), do: nil
   defp build_icons(icons) when is_list(icons), do: Enum.map(icons, &Phantom.Icon.build/1)
+
+  defp build_ui(nil), do: nil
+  defp build_ui(attrs), do: Phantom.UI.build(attrs)
 
   @doc """
   Represent a Tool spec as json when listing the available tools to clients.
@@ -195,7 +203,8 @@ defmodule Phantom.Tool do
       inputSchema: JSONSchema.to_json(tool.input_schema),
       outputSchema: if(tool.output_schema, do: JSONSchema.to_json(tool.output_schema)),
       annotations: Annotation.to_json(tool.annotations),
-      icons: Phantom.Icon.to_json_list(tool.icons)
+      icons: Phantom.Icon.to_json_list(tool.icons),
+      _meta: Phantom.UI.to_tool_meta(tool.ui)
     })
   end
 

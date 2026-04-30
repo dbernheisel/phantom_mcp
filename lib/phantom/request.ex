@@ -195,8 +195,21 @@ defmodule Phantom.Request do
   end
 
   def resource_response({:reply, results, %Session{} = session}, _uri, _session) do
-    {:reply, Phantom.Resource.response(results), session}
+    response = Phantom.Resource.response(results)
+    {:reply, maybe_add_ui_meta(response, session.request), session}
   end
+
+  # Dynamic _meta from plug pipeline takes precedence
+  defp maybe_add_ui_meta(%{_meta: _} = response, _request), do: response
+
+  defp maybe_add_ui_meta(response, %{spec: %{meta: %{ui: %Phantom.UI{} = ui}}}) do
+    case Phantom.UI.to_resource_meta(ui) do
+      nil -> response
+      meta -> Map.put(response, :_meta, meta)
+    end
+  end
+
+  defp maybe_add_ui_meta(response, _), do: response
 
   @doc "Resource updated notification"
   def resource_updated(content) do

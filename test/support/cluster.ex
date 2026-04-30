@@ -52,12 +52,18 @@ defmodule Phantom.Test.Cluster do
     end
   end
 
+  # Dev/build tools that are loaded into code paths (via `runtime: false`
+  # deps) but should never be started on a remote test node — starting them
+  # either no-ops or emits noisy warnings (see dialyxir's start function).
+  @skip_apps ~w[dialyxir erlex ex_doc earmark_parser makeup makeup_elixir makeup_erlang makeup_javascript]a
+
   @dialyzer {:nowarn_function, ensure_applications_started: 1}
   defp ensure_applications_started(node) do
     rpc(node, Application, :ensure_all_started, [:mix])
     rpc(node, Mix, :env, [Mix.env()])
 
-    for {app_name, _, _} <- Application.loaded_applications() do
+    for {app_name, _, _} <- Application.loaded_applications(),
+        app_name not in @skip_apps do
       rpc(node, Application, :ensure_all_started, [app_name])
     end
   end

@@ -18,13 +18,19 @@ defmodule Phantom.ResourcePlug do
       | request: %{fake_conn.assigns.session.request | spec: fake_conn.assigns.resource_template}
     }
 
+    handler = fake_conn.assigns.resource_template.handler
+    function = fake_conn.assigns.resource_template.function
+
+    args =
+      if function_exported?(handler, function, 3) do
+        [fake_conn.path_params, session, fake_conn]
+      else
+        [fake_conn.path_params, session]
+      end
+
     result =
       try do
-        apply(
-          fake_conn.assigns.resource_template.handler,
-          fake_conn.assigns.resource_template.function,
-          [fake_conn.path_params, session]
-        )
+        apply(handler, function, args)
       rescue
         _e in FunctionClauseError ->
           {:error, Phantom.Request.resource_not_found(%{uri: fake_conn.assigns.uri}),

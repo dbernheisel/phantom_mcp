@@ -349,7 +349,10 @@ defmodule Phantom.Router do
         client_capabilities = %{
           roots: params["capabilities"]["roots"],
           sampling: params["capabilities"]["sampling"],
-          elicitation: params["capabilities"]["elicitation"]
+          elicitation: params["capabilities"]["elicitation"],
+          ui:
+            get_in(params, ["capabilities", "extensions", "io.modelcontextprotocol/ui"]) ||
+              false
         }
 
         session = %{
@@ -373,7 +376,8 @@ defmodule Phantom.Router do
                |> Phantom.Router.prompt_capability(__MODULE__, session)
                |> Phantom.Router.resource_capability(__MODULE__, session)
                |> Phantom.Router.completion_capability(__MODULE__, session)
-               |> Phantom.Router.logging_capability(__MODULE__, session),
+               |> Phantom.Router.logging_capability(__MODULE__, session)
+               |> Phantom.Router.ui_capability(__MODULE__, session),
              serverInfo: server_info,
              instructions: instructions
            }, session}
@@ -582,6 +586,7 @@ defmodule Phantom.Router do
   # tool/4: handler + opts + do block
   defmacro tool(name, handler, opts, [{:do, block}]) when is_list(opts) do
     {defs, fields} = JSONSchema.transform_block(block)
+    {opts, app_ast} = maybe_register_app(name, opts, __CALLER__)
     meta = %{line: __CALLER__.line, file: __CALLER__.file}
 
     quote line: meta.line, file: meta.file, generated: true do
@@ -603,6 +608,8 @@ defmodule Phantom.Router do
                          opts
                        )
                      )
+
+      unquote(app_ast)
     end
   end
 
@@ -611,6 +618,7 @@ defmodule Phantom.Router do
   defmacro tool(name, opts, [{:do, block}]) when is_list(opts) do
     {defs, fields} = JSONSchema.transform_block(block)
     handler = __CALLER__.module
+    {opts, app_ast} = maybe_register_app(name, opts, __CALLER__)
     meta = %{line: __CALLER__.line, file: __CALLER__.file}
 
     quote line: meta.line, file: meta.file, generated: true do
@@ -632,10 +640,13 @@ defmodule Phantom.Router do
                          opts
                        )
                      )
+
+      unquote(app_ast)
     end
   end
 
   defmacro tool(name, handler, opts) when is_list(opts) do
+    {opts, app_ast} = maybe_register_app(name, opts, __CALLER__)
     meta = %{line: __CALLER__.line, file: __CALLER__.file}
 
     quote line: meta.line, file: meta.file, generated: true do
@@ -653,6 +664,8 @@ defmodule Phantom.Router do
                          opts
                        )
                      )
+
+      unquote(app_ast)
     end
   end
 
@@ -676,6 +689,7 @@ defmodule Phantom.Router do
           raise "must provide a module or function handler"
       end
 
+    {opts, app_ast} = maybe_register_app(name, opts, __CALLER__)
     meta = %{line: __CALLER__.line, file: __CALLER__.file}
 
     quote line: meta.line, file: meta.file, generated: true do
@@ -693,6 +707,8 @@ defmodule Phantom.Router do
                          opts
                        )
                      )
+
+      unquote(app_ast)
     end
   end
 
@@ -726,6 +742,9 @@ defmodule Phantom.Router do
 
     scheme =
       case URI.new(pattern) do
+        {:ok, %{scheme: "ui"}} ->
+          raise "The ui:// scheme is reserved for MCP Apps"
+
         {:ok, %{scheme: scheme, path: path}} when is_binary(scheme) and is_binary(path) ->
           scheme
 
@@ -761,6 +780,45 @@ defmodule Phantom.Router do
   defmacro resource(pattern, handler) when is_atom(handler) do
     quote do
       resource(unquote(pattern), unquote(handler), [], [])
+    end
+  end
+
+  @doc false
+  defp maybe_register_app(name, opts, caller) do
+    {app_module, opts} = Keyword.pop(opts, :app)
+
+    if app_module do
+      app_module = Macro.expand(app_module, caller)
+      uri = "ui:///#{name}"
+
+      # Auto-set ui.resource_uri if not already provided
+      opts =
+        Keyword.update(opts, :ui, [resource_uri: uri], fn ui_opts ->
+          Keyword.put_new(ui_opts, :resource_uri, uri)
+        end)
+
+      resource_router = Module.concat([caller.module, ResourceRouter, "Ui"])
+      meta = %{line: caller.line, file: caller.file}
+
+      app_ast =
+        quote line: meta.line, file: meta.file, generated: true do
+          # description was already read by the tool macro into `description` var
+          @phantom_resource_templates Phantom.ResourceTemplate.build(
+                                        uri: unquote(uri),
+                                        router: unquote(resource_router),
+                                        handler: unquote(app_module),
+                                        function: :__phantom_app__,
+                                        name: to_string(unquote(name)),
+                                        description: description,
+                                        scheme: "ui",
+                                        mime_type: "text/html;profile=mcp-app",
+                                        meta: unquote(Macro.escape(meta))
+                                      )
+        end
+
+      {opts, app_ast}
+    else
+      {opts, nil}
     end
   end
 
@@ -1022,6 +1080,25 @@ defmodule Phantom.Router do
   end
 
   @doc false
+  def ui_capability(capabilities, router, session) do
+    resource_templates = Cache.list(session, router, :resource_templates)
+
+    if Enum.any?(resource_templates, &(&1.scheme == "ui")) do
+      extensions = Map.get(capabilities, :extensions, %{})
+
+      Map.put(
+        capabilities,
+        :extensions,
+        Map.put(extensions, "io.modelcontextprotocol/ui", %{
+          mimeTypes: ["text/html;profile=mcp-app"]
+        })
+      )
+    else
+      capabilities
+    end
+  end
+
+  @doc false
   def completion_capability(capabilities, router, session) do
     resource_templates = Cache.list(session, router, :resource_templates)
     prompts = Cache.list(session, router, :prompts)
@@ -1190,6 +1267,7 @@ defmodule Phantom.Router do
     {page, next_cursor} =
       session
       |> Cache.list(router, :tools)
+      |> Enum.filter(&Phantom.UI.model_visible?/1)
       |> paginate(cursor, &Tool.to_json/1)
 
     {:reply, Map.merge(%{tools: page}, next_cursor || %{}), session}

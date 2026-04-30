@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ESCRIPT="$PROJECT_DIR/phantom_mcp"
+cd "$PROJECT_DIR"
+MIX_ENV=stdio mise exec -- mix escript.build &>/dev/null </dev/null
+
+exec mise exec -- escript "$ESCRIPT" 2>/tmp/phantom-stdio.log

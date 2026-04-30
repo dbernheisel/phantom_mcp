@@ -57,8 +57,22 @@ jobs:
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
 
+      - name: Compile without optional dependencies
+        run: mix compile --force --warnings-as-errors --no-optional-deps
+
       - name: Check for compile-time dependency cycles
         run: mix xref graph --format cycles --label compile-connected --fail-above 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build preview assets
+        run: npm run build
 
       - name: Run tests
         run: epmd -daemon && mix test

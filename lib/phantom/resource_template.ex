@@ -122,14 +122,26 @@ defmodule Phantom.ResourceTemplate do
   Represent a ResourceTemplate spec as json when listing the available resources to clients.
   """
   def to_json(%__MODULE__{} = resource) do
-    remove_nils(%{
-      uriTemplate: resource.uri_template,
-      name: resource.name,
-      size: resource.size,
-      description: resource.description,
-      mimeType: resource.mime_type,
-      icons: Phantom.Icon.to_json_list(resource.icons)
-    })
+    base =
+      remove_nils(%{
+        uriTemplate: resource.uri_template,
+        name: resource.name,
+        size: resource.size,
+        description: resource.description,
+        mimeType: resource.mime_type,
+        icons: Phantom.Icon.to_json_list(resource.icons)
+      })
+
+    case resource.meta do
+      %{ui: %Phantom.UI{} = ui} ->
+        case Phantom.UI.to_resource_meta(ui) do
+          nil -> base
+          meta -> Map.put(base, :_meta, meta)
+        end
+
+      _ ->
+        base
+    end
   end
 
   defp to_uri_6570(str) do

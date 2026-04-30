@@ -29,6 +29,15 @@ defmodule Test.MCP.Router do
   require Phantom.Prompt, as: Prompt
   require Phantom.Resource, as: Resource
 
+  @description "A sample interactive MCP App exercising all CSP and permission options."
+  tool :sample_app, app: Test.MCP.SampleApp
+
+  @description "Minimal app with no plugs, no CSP, no mount override."
+  tool :minimal_app, app: Test.MCP.MinimalApp
+
+  def sample_app(_params, session), do: {:reply, Tool.text("Opened sample app"), session}
+  def minimal_app(_params, session), do: {:reply, Tool.text("Opened minimal app"), session}
+
   def connect(session, _conn) do
     {:ok, session}
   end
