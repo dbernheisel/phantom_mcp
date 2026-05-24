@@ -42,6 +42,48 @@ defmodule Phantom.RouterTest do
     assert_receive {:response, nil, "message", %{id: nil, result: nil, jsonrpc: "2.0"}}
   end
 
+  describe ":secret_key_base option" do
+    test "defaults to nil when not provided" do
+      defmodule Test.NoSecretRouter do
+        use Phantom.Router, name: "NoSecret", vsn: "1.0"
+      end
+
+      assert Test.NoSecretRouter.__phantom__(:info)[:secret_key_base] == nil
+    end
+
+    test "is captured and surfaced on __phantom__(:info)" do
+      defmodule Test.WithSecretRouter do
+        use Phantom.Router,
+          name: "WithSecret",
+          vsn: "1.0",
+          secret_key_base: "test-secret-key-base-of-sufficient-entropy-for-aes-256"
+      end
+
+      assert Test.WithSecretRouter.__phantom__(:info)[:secret_key_base] ==
+               "test-secret-key-base-of-sufficient-entropy-for-aes-256"
+    end
+  end
+
+  test "initialize accepts the 2026-07-28 stateless-core protocol version" do
+    :post
+    |> conn("/mcp", %{
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: %{
+        protocolVersion: "2026-07-28",
+        capabilities: %{},
+        clientInfo: %{name: "TestClient", version: "1.0.0"}
+      }
+    })
+    |> put_req_header("content-type", "application/json")
+    |> call()
+
+    assert_sse_connected()
+    assert_receive {:response, 1, "message", response}, 500
+    assert response[:result][:protocolVersion] == "2026-07-28"
+  end
+
   test "returns error for unknown method" do
     :post
     |> conn("/mcp", JSON.encode!(%{jsonrpc: "2.0", method: "unknown", id: 1}))

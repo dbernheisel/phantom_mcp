@@ -152,12 +152,36 @@ defmodule Phantom.Plug do
     config = Map.merge(opts, app_config)
 
     conn
-    |> put_private(:phantom, %{router: config.router, session: nil, requests: %{}})
+    |> put_private(:phantom, %{
+      router: config.router,
+      session: nil,
+      requests: %{},
+      transport: read_transport_headers(conn)
+    })
     |> validate_request(config)
     |> cors_preflight(config)
     |> cors_headers(config)
     |> connect(config)
     |> dispatch(config)
+  end
+
+  @doc """
+  Reads MCP `2026-07-28` transport-routing headers from a `Plug.Conn`.
+
+  These headers let L7 load balancers and gateways route on the protocol
+  version and operation without inspecting the JSON-RPC body. All three are
+  optional; missing values are returned as `nil`.
+
+  - `mcp-protocol-version` — the protocol version the client expects to use
+  - `mcp-method` — the JSON-RPC method on this request (e.g. `tools/call`)
+  - `mcp-name` — the operation target (e.g. tool or prompt name)
+  """
+  def read_transport_headers(%Plug.Conn{} = conn) do
+    %{
+      protocol_version: get_req_header(conn, "mcp-protocol-version") |> List.first(),
+      method: get_req_header(conn, "mcp-method") |> List.first(),
+      name: get_req_header(conn, "mcp-name") |> List.first()
+    }
   end
 
   defp connect(conn, opts) do

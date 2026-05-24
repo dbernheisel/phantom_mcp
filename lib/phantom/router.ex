@@ -117,7 +117,7 @@ defmodule Phantom.Router do
               | {:noreply, Session.t()}
               | {:error, any(), Session.t()}
 
-  @supported_protocol_versions ~w[2024-11-05 2025-03-26 2025-06-18 2025-11-25]
+  @supported_protocol_versions Phantom.ProtocolVersion.supported()
 
   @dialyzer {:nowarn_function, default_vsn: 1}
   defp default_vsn(nil) do
@@ -141,6 +141,7 @@ defmodule Phantom.Router do
     instructions = Keyword.get(opts, :instructions, "")
     icons = Keyword.get(opts, :icons, nil)
     website_url = Keyword.get(opts, :website_url, nil)
+    secret_key_base = Keyword.get(opts, :secret_key_base, nil)
 
     quote location: :keep, generated: true do
       @behaviour Phantom.Router
@@ -171,6 +172,7 @@ defmodule Phantom.Router do
       @instructions unquote(instructions)
       @icons unquote(icons)
       @website_url unquote(website_url)
+      @secret_key_base unquote(secret_key_base)
 
       Module.register_attribute(__MODULE__, :phantom_tools, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_prompts, accumulate: true)
@@ -954,7 +956,8 @@ defmodule Phantom.Router do
             version: @vsn,
             tools: @phantom_tools,
             resource_templates: @phantom_resource_templates,
-            prompts: @phantom_prompts
+            prompts: @phantom_prompts,
+            secret_key_base: @secret_key_base
           }
         end
       end,

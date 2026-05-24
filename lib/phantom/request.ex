@@ -1,6 +1,6 @@
 defmodule Phantom.Request do
   @moduledoc "Standard requests and responses for the MCP protocol"
-  defstruct [:id, :type, :method, :params, :response, :spec]
+  defstruct [:id, :type, :method, :params, :response, :spec, meta: %{}]
 
   @opaque t :: %__MODULE__{
             id: String.t(),
@@ -8,7 +8,8 @@ defmodule Phantom.Request do
             method: String.t(),
             params: map(),
             response: map(),
-            spec: Phantom.ResourceTemplate.t() | Phantom.Tool.t() | Phantom.Prompt.t()
+            spec: Phantom.ResourceTemplate.t() | Phantom.Tool.t() | Phantom.Prompt.t(),
+            meta: map()
           }
 
   @connection -32000
@@ -82,11 +83,14 @@ defmodule Phantom.Request do
 
   def build(%{"jsonrpc" => "2.0", "method" => method} = request)
       when is_binary(method) do
+    params = request["params"] || %{}
+
     {:ok,
      struct!(__MODULE__,
-       params: request["params"] || %{},
+       params: params,
        method: method,
-       id: request["id"]
+       id: request["id"],
+       meta: params["_meta"] || %{}
      )}
   end
 

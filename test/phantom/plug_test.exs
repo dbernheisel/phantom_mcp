@@ -29,6 +29,33 @@ defmodule Phantom.PlugTest do
     end
   end
 
+  describe "read_transport_headers/1" do
+    test "captures the three 2026-07-28 routing headers when present" do
+      conn =
+        :post
+        |> conn("/mcp", "")
+        |> put_req_header("mcp-protocol-version", "2026-07-28")
+        |> put_req_header("mcp-method", "tools/call")
+        |> put_req_header("mcp-name", "search")
+
+      assert Phantom.Plug.read_transport_headers(conn) == %{
+               protocol_version: "2026-07-28",
+               method: "tools/call",
+               name: "search"
+             }
+    end
+
+    test "returns nil for headers that are absent" do
+      conn = conn(:post, "/mcp", "")
+
+      assert Phantom.Plug.read_transport_headers(conn) == %{
+               protocol_version: nil,
+               method: nil,
+               name: nil
+             }
+    end
+  end
+
   describe "CORS preflight requests" do
     test "handles valid preflight request" do
       :options
