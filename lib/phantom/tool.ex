@@ -340,7 +340,33 @@ defmodule Phantom.Tool do
     }
   end
 
+  @doc """
+  Tool response indicating the server needs more input from the client before
+  it can complete this call (MCP `2026-07-28` stateless-core flow).
+
+  Returns a result map with the raw `requestState` term. The Plug dispatcher
+  encrypts that term with `Phantom.RequestState` before it leaves the server;
+  the client echoes the resulting opaque token back in `_meta.requestState`
+  on the follow-up `tools/call`, and Phantom restores it onto
+  `session.continuation` so the handler can resume.
+
+  Required options:
+
+  - `:input_requests` — list of input requests the client must satisfy
+  - `:request_state` — any term the handler needs to resume work
+
+  See `m:Phantom#module-defining-tools` for the full multi-round-trip pattern.
+  """
+  def input_required(opts) do
+    %{
+      resultType: "inputRequired",
+      inputRequests: Keyword.fetch!(opts, :input_requests),
+      requestState: Keyword.fetch!(opts, :request_state)
+    }
+  end
+
   @doc "Formats the response from an MCP Router to the MCP specification"
+  def response(%{resultType: "inputRequired"} = results), do: results
   def response(%{content: _} = results), do: results
 
   def response(results) do
