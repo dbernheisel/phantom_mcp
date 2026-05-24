@@ -12,19 +12,19 @@ defmodule Phantom.ToolTest do
                resultType: "inputRequired",
                inputRequests: ^input_requests,
                requestState: ^state
-             } = Tool.input_required(input_requests: input_requests, request_state: state)
+             } = Tool.input_required(input_requests: input_requests, state: state)
     end
 
     test "stores the request_state as a raw term (encryption happens at the Plug boundary)" do
       state = %{some: "data", nested: %{a: 1}}
 
       assert %{requestState: ^state} =
-               Tool.input_required(input_requests: [], request_state: state)
+               Tool.input_required(input_requests: [], state: state)
     end
 
     test "raises when :input_requests is missing" do
       assert_raise KeyError, fn ->
-        Tool.input_required(request_state: %{})
+        Tool.input_required(state: %{})
       end
     end
 
@@ -37,7 +37,7 @@ defmodule Phantom.ToolTest do
 
   describe "response/1 passes inputRequired through unchanged" do
     test "does not wrap an inputRequired result in :content" do
-      result = Tool.input_required(input_requests: [], request_state: %{a: 1})
+      result = Tool.input_required(input_requests: [], state: %{a: 1})
 
       assert Tool.response(result) == result
       refute Map.has_key?(Tool.response(result), :content)

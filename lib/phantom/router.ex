@@ -1233,8 +1233,22 @@ defmodule Phantom.Router do
   end
 
   def wrap(:tool, {:reply, result, %Session{} = session}, _session) do
-    {:reply, Tool.response(result), session}
+    {:reply, encode_request_state(Tool.response(result), session), session}
   end
+
+  defp encode_request_state(%{resultType: "inputRequired", requestState: raw} = result, session)
+       when not is_binary(raw) do
+    case session.router.__phantom__(:info)[:secret_key_base] do
+      nil ->
+        raise ArgumentError,
+              "Tool returned input_required but #{inspect(session.router)} has no :secret_key_base configured"
+
+      secret ->
+        %{result | requestState: Phantom.RequestState.encode(raw, secret)}
+    end
+  end
+
+  defp encode_request_state(result, _session), do: result
 
   defp paginate(entities, cursor, fun) do
     entities
@@ -1310,21 +1324,85 @@ defmodule Phantom.Router do
       tool ->
         params = Map.get(params, "arguments", %{})
 
-        case JSONSchema.maybe_validate(tool.input_schema, params) do
-          {:ok, params} ->
-            wrap(
-              :tool,
-              apply(
-                tool.handler,
-                tool.function,
-                [params, %{session | request: %{request | spec: tool}}]
-              ),
-              session
-            )
+        with {:ok, session} <- maybe_decode_state(router, session, request),
+             {:ok, params} <- JSONSchema.maybe_validate(tool.input_schema, params) do
+          run_tool(tool, params, session, request)
+        else
+          {:error, :invalid_request_state} ->
+            {:error, Request.invalid_params(%{requestState: "Invalid request state"}), session}
+
+          {:error, :expired_request_state} ->
+            {:error,
+             %{
+               code: -32001,
+               message: "Request state expired",
+               data: %{requestState: "expired"}
+             }, session}
 
           {:error, reasons} ->
             {:error, Request.invalid_params(%{validation_errors: reasons}), session}
         end
+    end
+  end
+
+  defp run_tool(tool, params, session, request) do
+    result =
+      apply(tool.handler, tool.function, [
+        params,
+        %{session | request: %{request | spec: tool}}
+      ])
+
+    case result do
+      {:input_required, elicit, state, _handler_session} ->
+        handle_input_required(elicit, state, tool, params, session, request)
+
+      other ->
+        wrap(:tool, other, session)
+    end
+  end
+
+  defp handle_input_required(elicit, state, tool, params, session, request) do
+    case Phantom.ProtocolVersion.mode(Map.get(request.meta || %{}, "protocolVersion")) do
+      :stateless_core ->
+        result =
+          Phantom.Tool.input_required(
+            input_requests: Phantom.Elicit.to_input_requests(elicit),
+            state: state
+          )
+
+        wrap(:tool, {:reply, result, session}, session)
+
+      _legacy ->
+        case Session.elicit(session, elicit) do
+          {:ok, response} ->
+            run_tool(
+              tool,
+              Map.merge(params, response),
+              %{session | state: state},
+              request
+            )
+
+          :not_supported ->
+            {:error, Request.invalid_params(%{elicit: "Client does not support elicitation"}),
+             session}
+
+          _ ->
+            {:error, Request.internal_error("Elicitation failed"), session}
+        end
+    end
+  end
+
+  defp maybe_decode_state(router, session, request) do
+    meta = request.meta || %{}
+
+    with token when is_binary(token) <- Map.get(meta, "requestState", :none),
+         secret when is_binary(secret) <- router.__phantom__(:info)[:secret_key_base],
+         {:ok, term} <- Phantom.RequestState.decode(token, secret) do
+      {:ok, %{session | state: term}}
+    else
+      :none -> {:ok, session}
+      {:error, :expired} -> {:error, :expired_request_state}
+      _ -> {:error, :invalid_request_state}
     end
   end
 
