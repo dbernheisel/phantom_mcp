@@ -348,12 +348,13 @@ defmodule Phantom.Tool do
   encrypts that term with `Phantom.RequestState` before it leaves the server;
   the client echoes the resulting opaque token back in `_meta.requestState`
   on the follow-up `tools/call`, and Phantom restores it onto
-  `session.continuation` so the handler can resume.
+  `session.state` so the handler can resume.
 
   Required options:
 
   - `:input_requests` — list of input requests the client must satisfy
-  - `:request_state` — any term the handler needs to resume work
+  - `:state` — any term the handler needs to resume work; arrives at
+    `session.state` on the follow-up call
 
   See `m:Phantom#module-defining-tools` for the full multi-round-trip pattern.
   """
@@ -361,7 +362,7 @@ defmodule Phantom.Tool do
     %{
       resultType: "inputRequired",
       inputRequests: Keyword.fetch!(opts, :input_requests),
-      requestState: Keyword.fetch!(opts, :request_state)
+      requestState: Keyword.fetch!(opts, :state)
     }
   end
 

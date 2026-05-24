@@ -12,6 +12,7 @@ defmodule Phantom.Session do
     :allowed_prompts,
     :allowed_resource_templates,
     :allowed_tools,
+    :state,
     :elicit,
     :id,
     :last_event_id,
@@ -38,6 +39,7 @@ defmodule Phantom.Session do
           allowed_prompts: [String.t()],
           allowed_resource_templates: [String.t()],
           allowed_tools: [String.t()],
+          state: term() | nil,
           elicit:
             (Phantom.Elicit.t(), timeout :: pos_integer() ->
                {:ok, map()} | :error | :timeout)
@@ -107,10 +109,25 @@ defmodule Phantom.Session do
   """
   @spec elicit(t, Phantom.Elicit.t(), keyword()) ::
           {:ok, response :: map()}
+          | {:input_required, Phantom.Elicit.t(), state :: term(), t}
           | :not_supported
           | :error
           | :timeout
   def elicit(session, elicitation, opts \\ []) do
+    case Keyword.fetch(opts, :state) do
+      {:ok, state} ->
+        # Yield to the dispatcher: under stateless core this becomes a
+        # Tool.input_required result; under legacy the dispatcher performs
+        # the SSE elicit round-trip and re-invokes the handler with
+        # `session.state` populated to the same value.
+        {:input_required, elicitation, state, session}
+
+      :error ->
+        do_elicit(session, elicitation, opts)
+    end
+  end
+
+  defp do_elicit(session, elicitation, opts) do
     timeout = Keyword.get(opts, :timeout, @elicitation_timeout)
 
     capabilities =
