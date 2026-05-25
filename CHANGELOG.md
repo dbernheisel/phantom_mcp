@@ -35,13 +35,37 @@
   WAFs, gateways) can route on without inspecting the JSON-RPC body.
   Phantom passes them through; no server-side configuration needed.
 
-### Upgrade guide
+### For existing users
 
-To support MCP `2026-07-28` clients:
+**If you only target legacy MCP clients (≤ 2025-11-25):** your existing
+code works unchanged. No changes required. The protocol-aware default for
+`Session.elicit/3` preserves the historical inline-blocking behavior on
+legacy.
 
-**1. Configure `:secret_key_base` on your router.** Phantom uses it to
-encrypt the multi-round-trip `requestState` blob via `Plug.Crypto`. Nodes
-serving the same router must share this value.
+```elixir
+# Existing handler — unchanged, still works.
+def my_tool(params, session) do
+  case Session.elicit(session, @elicit_name) do
+    {:ok, %{"action" => "accept", "content" => content}} ->
+      {:reply, Tool.text("Hello \#{content["name"]}"), session}
+
+    {:ok, _rejected} ->
+      {:reply, Tool.error("Rejected"), session}
+
+    :not_supported ->
+      {:reply, Tool.text("Hello stranger"), session}
+  end
+end
+```
+
+**If you want to also support modern MCP `2026-07-28` clients:**
+
+*Step 1.* Add `:secret_key_base` to your router. Phantom encrypts the
+multi-round-trip `requestState` blob with `Plug.Crypto`, and nodes serving
+the same router must share this value. Generate a strong key with
+`:crypto.strong_rand_bytes(64) |> Base.encode64()`. The router raises at
+compile time if the key is too short, and warns if it's missing while
+tools or prompts are defined.
 
 ```elixir
 use Phantom.Router,
@@ -50,33 +74,88 @@ use Phantom.Router,
   secret_key_base: Application.compile_env(:my_app, :secret_key_base)
 ```
 
-The key must be at least 64 bytes. Generate one with
-`:crypto.strong_rand_bytes(64) |> Base.encode64()`. The router raises at
-compile time if the key is too short, and emits a warning if the key is
-missing while tools or prompts are defined.
+*Step 2.* Pick a migration shape for your `Session.elicit/3` calls.
+Existing calls without `:await` work under legacy because legacy defaults
+to inline blocking, but the same call under `2026-07-28` would return the
+re-entry tagged tuple instead — which your existing `case {:ok, _}`
+clauses don't match.
 
-**2. Pass `await: true` to `Session.elicit/3` where you want inline blocking.**
-
-`Session.elicit/3` has protocol-aware defaults: under legacy MCP protocols
-no opts means inline blocking; under MCP `2026-07-28` no opts means the
-re-entry pattern (returns a tagged tuple). Existing legacy code that
-pattern-matches on `{:ok, response}` keeps working under legacy, but the
-same code under `2026-07-28` would receive `{:input_required, ...}` instead.
-
-For code that should work the same way on both protocols, pass `await: true`
-explicitly:
+The smallest change is to add `await: true` everywhere you currently call
+`Session.elicit/3` for blocking behavior:
 
 ```elixir
-# Existing code — works under legacy, falls through under 2026-07-28
+# Before: implicit inline blocking, legacy-only
 {:ok, response} = Session.elicit(session, elicit)
 
-# Explicit — same behavior on both protocols
+# After: explicit inline blocking, works on both protocols
 {:ok, response} = Session.elicit(session, elicit, await: true)
 ```
 
-Or migrate to the re-entry pattern with `state:` and a function-head clause
-that matches on `%Session{state: %{...}}` — that pattern is protocol-agnostic
-by construction.
+Under `2026-07-28`, `await: true` suspends the tool's Task and resumes it
+inline when the follow-up `tools/call` arrives (possibly on a different
+node). The handler reads the same.
+
+### Recommendation for new PhantomMCP users targeting modern MCP clients
+
+For greenfield code, use the **re-entry pattern** rather than `await: true`.
+Re-entry is the natural shape for stateless: the handler is invoked again
+with `session.state` populated, no suspended Task, no `Phantom.Tracker`
+required for cross-node routing.
+
+```elixir
+use Phantom.Router,
+  name: "MyApp",
+  vsn: "1.0",
+  secret_key_base: Application.compile_env(:my_app, :secret_key_base)
+
+tool :delete_file do
+  field :path, :string, required: true
+end
+
+# Resume clause — runs on the second invocation.
+def delete_file(
+      %{"confirm" => "yes"},
+      %Phantom.Session{state: %{step: :confirming, path: path}} = session
+    ) do
+  File.rm!(path)
+  {:reply, Tool.text("Deleted \#{path}"), session}
+end
+
+def delete_file(%{"confirm" => _}, session),
+  do: {:reply, Tool.text("Cancelled"), session}
+
+# First-call clause — ask the client.
+def delete_file(%{"path" => path}, session) do
+  Phantom.Session.elicit(
+    session,
+    Phantom.Elicit.form(%{
+      message: "Really delete \#{path}?",
+      requested_schema: [
+        %{name: "confirm", type: :enum, enum: ["yes", "no"], required: true}
+      ]
+    }),
+    state: %{step: :confirming, path: path}
+  )
+end
+```
+
+Why re-entry over inline `await: true`:
+
+- **Truly stateless on the wire** — `state` is encrypted into `requestState`
+  and travels with the client. Any node can serve any follow-up call.
+  Inline `await: true` keeps a Task suspended on the originating node and
+  uses `Phantom.Tracker` for cross-node delivery.
+- **No resource pinning** — re-entry has no in-memory state between
+  requests. Inline await holds an Erlang process per pending elicit (with
+  a 5-minute default timeout).
+- **Pattern-match clarity** — the resume clause is a function head, not a
+  `case` block buried in the middle of a function.
+- **Multi-step state machines** read naturally — each step is its own
+  re-entry clause matching on a different `step` atom.
+
+Reserve `await: true` for cases where the inline ergonomics are
+genuinely simpler (short interactions, no multi-step flow, no need for
+distribution beyond one node).
 
 ## 0.4.5 (2026-04-29)
 
