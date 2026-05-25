@@ -366,6 +366,22 @@ defmodule Phantom.Tool do
     }
   end
 
+  @doc """
+  Build an `inputRequired` result from an `Elicit` struct and an opaque
+  `requestState` term.
+
+  The `request_state` is passed through verbatim; the dispatcher encrypts
+  it with `Phantom.RequestState` before the response leaves the server.
+  """
+  @spec input_required(Phantom.Elicit.t(), term()) :: map()
+  def input_required(%Phantom.Elicit{} = elicit, request_state) do
+    %{
+      resultType: "inputRequired",
+      inputRequests: Phantom.Elicit.to_input_requests(elicit),
+      requestState: request_state
+    }
+  end
+
   @doc "Formats the response from an MCP Router to the MCP specification"
   def response(%{resultType: "inputRequired"} = results), do: results
   def response(%{content: _} = results), do: results
