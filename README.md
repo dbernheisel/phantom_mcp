@@ -715,6 +715,151 @@ For other tracers, the pattern is the same: attach to `[:phantom, :dispatch, :st
 and read `metadata.trace_context` — it's a map with `:traceparent`, `:tracestate`,
 and `:baggage` keys (only the ones present in the request are included).
 
+## Use with Load Balancers and Reverse Proxies
+
+Phantom is designed to run behind a load balancer. The shape of that
+deployment depends on which MCP protocol versions you serve:
+
+| Client protocol | Sticky session required? | What the LB needs to do |
+|---|---|---|
+| `≤ 2025-11-25` (legacy) | Yes, *or* run `Phantom.Tracker` for cross-node routing | Hash on `mcp-session-id` header, OR enable cross-node session replication via `Phantom.PubSub` |
+| `2026-07-28` (stateless core) | No | Plain round-robin |
+
+You can serve both from the same router — the LB just needs to handle the
+legacy case correctly.
+
+### Sticky sessions for legacy clients
+
+Route by the `mcp-session-id` request header. The header is present on
+every legacy POST after `initialize`, and on the persistent SSE GET stream.
+Nginx:
+
+```nginx
+upstream phantom_mcp {
+  hash $http_mcp_session_id consistent;
+  server app1.internal:4000;
+  server app2.internal:4000;
+}
+```
+
+HAProxy:
+
+```
+backend phantom_mcp
+  balance hdr(mcp-session-id)
+  server app1 app1.internal:4000 check
+  server app2 app2.internal:4000 check
+```
+
+**If you can't configure header-based hashing** (cloud LBs without L7
+hashing, for example), run `Phantom.Tracker` + `Phoenix.PubSub` in your
+release. Any node can then route session-bound traffic to the owning node
+internally. See the "Persistent Streams" section below.
+
+### Stateless clients need no LB configuration
+
+Under MCP `2026-07-28`, every request is self-contained. The encrypted
+`requestState` blob carries continuation state across requests; any node
+that shares `:secret_key_base` can serve any request. Use round-robin or
+least-connections; sticky routing is wasted complexity.
+
+### L7 routing with MCP `2026-07-28` headers
+
+The new protocol adds three optional request headers your LB can route on
+*without* parsing the JSON-RPC body:
+
+- `mcp-protocol-version` — `"2025-11-25"`, `"2026-07-28"`, etc.
+- `mcp-method` — `"tools/call"`, `"prompts/list"`, etc.
+- `mcp-name` — the tool or prompt name (e.g. `"search"`)
+
+Useful patterns:
+
+**Split legacy and stateless traffic onto separate pools.** Useful when
+you're running a stateful cluster (with `Phantom.Tracker`) for legacy
+clients and want stateless traffic to hit a separate, sticky-session-free
+pool:
+
+```nginx
+map $http_mcp_protocol_version $phantom_pool {
+  "2026-07-28" stateless_pool;
+  default      legacy_pool;
+}
+
+server {
+  location /mcp {
+    proxy_pass http://$phantom_pool;
+  }
+}
+```
+
+**Rate-limit per method.** Cap `tools/call` separately from `tools/list`:
+
+```nginx
+limit_req_zone $http_mcp_method zone=mcp_method:10m rate=100r/m;
+
+server {
+  location /mcp {
+    limit_req zone=mcp_method burst=20;
+    proxy_pass http://phantom_mcp;
+  }
+}
+```
+
+**Per-tool routing.** Send heavy tool calls to a dedicated worker pool:
+
+```nginx
+map $http_mcp_name $phantom_worker {
+  "heavy_analysis_tool" heavy_pool;
+  default               default_pool;
+}
+```
+
+Phantom doesn't read these headers server-side — they exist for the LB.
+
+### Response caching
+
+When a handler annotates its result with `Phantom.Request.with_cache/2`,
+the response gains top-level `ttlMs` and `cacheScope` fields modeled on
+HTTP `Cache-Control`. A reverse proxy can read these and cache
+accordingly. For Nginx with `proxy_cache`, you'd write a small Lua snippet
+(or use OpenResty) to read the JSON body's `result.ttlMs` and
+`result.cacheScope` and call `ngx.cache_control` accordingly.
+
+For simpler setups: just look at `Cache-Control: ...` headers your proxy
+emits. Phantom doesn't currently translate `ttlMs`/`cacheScope` into HTTP
+`Cache-Control` response headers automatically — they ride in the JSON
+result for MCP-aware clients. If you want HTTP-level caching, configure
+your LB to translate, or wrap `Phantom.Plug` in another Plug that mirrors
+the values into headers.
+
+| Annotation | Reverse proxy / CDN behavior |
+|---|---|
+| `cacheScope: "public", ttlMs: 60_000` | Cache and serve to any user for 60s |
+| `cacheScope: "private", ttlMs: 60_000` | Client-local cache only; shared caches must pass through |
+
+Watch out: marking a user-specific response `"public"` lets one user's
+result be served to another from a shared cache. Default to omitting the
+hints unless you're sure the result is repeatable for the user. See
+"Defining Resources" / `Phantom.Request.with_cache/2` for the API.
+
+### Origin validation behind a proxy
+
+By default `Phantom.Plug` validates the `Origin` header against the
+configured `:origins` allowlist. Behind a TLS-terminating proxy, the
+forwarded request still carries the original `Origin` — no extra config
+needed. If your proxy stripping `Origin` is a concern, configure
+`Plug.RewriteOn` or equivalent to restore it from `X-Forwarded-Host`
+before Phantom runs.
+
+### Health checks
+
+`Phantom.Plug` doesn't expose a dedicated health endpoint. Either:
+
+- Have your LB GET a separate Plug path (e.g. `/health`) defined in your
+  app's main router, *not* forwarded to `Phantom.Plug`.
+- Or send a JSON-RPC `ping` request to `/mcp` and check for `{"jsonrpc":
+  "2.0", "result": "pong"}` — Phantom handles `ping` natively.
+
 ## Persistent Streams (legacy protocols, ≤ 2025-11-25)
 
 > Under MCP `2026-07-28` (stateless core), persistent SSE streams and
