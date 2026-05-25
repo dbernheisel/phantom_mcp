@@ -48,14 +48,15 @@ defmodule Phantom.StatelessCoreTest do
     end
 
     def elicit_demo(params, session) do
-      Session.elicit(
-        session,
-        Phantom.Elicit.form(%{
-          message: "pick",
-          requested_schema: [%{name: "choice", type: :string, required: true}]
-        }),
-        state: %{step: :got_choice, original: params}
-      )
+      {:noreply,
+       Session.elicit(
+         session,
+         Phantom.Elicit.form(%{
+           message: "pick",
+           requested_schema: [%{name: "choice", type: :string, required: true}]
+         }),
+         state: %{step: :got_choice, original: params}
+       )}
     end
 
     tool :await_demo, description: "Calls Session.elicit(..., await: true) inline" do
@@ -83,14 +84,15 @@ defmodule Phantom.StatelessCoreTest do
     end
 
     def ask_prompt(_args, session) do
-      Session.elicit(
-        session,
-        Phantom.Elicit.form(%{
-          message: "Your name?",
-          requested_schema: [%{name: "name", type: :string, required: true}]
-        }),
-        state: %{step: :got_name}
-      )
+      {:noreply,
+       Session.elicit(
+         session,
+         Phantom.Elicit.form(%{
+           message: "Your name?",
+           requested_schema: [%{name: "name", type: :string, required: true}]
+         }),
+         state: %{step: :got_name}
+       )}
     end
 
     def await_demo(_params, session) do
@@ -244,64 +246,11 @@ defmodule Phantom.StatelessCoreTest do
     end
   end
 
-  describe "Session.elicit/3 (no :await) — re-entry pattern" do
-    test "under stateless: tool's elicit call yields an inputRequired result with encrypted state" do
-      session = build_session()
-      request = build_request(%{"protocolVersion" => "2026-07-28"}, "elicit_demo")
-
-      assert {:noreply, _} =
-               Router.dispatch_method("tools/call", request.params, request, session)
-
-      response = assert_responded()
-
-      assert %{
-               resultType: "inputRequired",
-               inputRequests: [_ | _],
-               requestState: token
-             } = response
-
-      assert is_binary(token)
-
-      assert {:ok, %{step: :got_choice, original: %{}}} =
-               RequestState.decode(token, @secret, @salt)
-    end
-
-    test "under stateless: resume from state runs the matching clause" do
-      session = build_session()
-      token = RequestState.encode(%{step: :got_choice, original: %{"a" => 1}}, @secret, @salt)
-
-      request =
-        build_request(
-          %{"requestState" => token, "protocolVersion" => "2026-07-28"},
-          "elicit_demo",
-          %{"choice" => "blue"}
-        )
-
-      assert {:noreply, _} =
-               Router.dispatch_method("tools/call", request.params, request, session)
-
-      response = assert_responded()
-      assert %{content: [%{type: :text, text: text}]} = response
-      assert text =~ "chose=blue"
-      assert text =~ ~s|orig=%{"a" => 1}|
-    end
-
-    test "under legacy: dispatcher invokes session.elicit and re-invokes handler with state" do
-      session = %{
-        build_session()
-        | elicit: fn _elicit, _timeout -> {:ok, %{"choice" => "red"}} end
-      }
-
-      request = build_request(%{"protocolVersion" => "2025-11-25"}, "elicit_demo")
-
-      assert {:noreply, _} =
-               Router.dispatch_method("tools/call", request.params, request, session)
-
-      response = assert_responded()
-      assert %{content: [%{type: :text, text: text}]} = response
-      assert text =~ "chose=red"
-    end
-  end
+  # Re-entry (`{:noreply, Session.elicit(..., state: ...)}`) uses the same
+  # Task-suspension machinery as `await: true` — see the "Session.elicit/3
+  # with `await: true`" describe block below for the orchestrated round-trip
+  # test. The end-to-end cross-node version lives in
+  # test/phantom/distributed_test.exs.
 
   describe "Session.elicit/3 with `await: true` — protocol-agnostic inline" do
     setup do
@@ -364,61 +313,11 @@ defmodule Phantom.StatelessCoreTest do
     end
   end
 
-  describe "prompts/get supports elicitation re-entry" do
-    test "under stateless: prompt's elicit yields inputRequired with encrypted state" do
-      session = build_session()
-
-      {:ok, request} =
-        Request.build(%{
-          "jsonrpc" => "2.0",
-          "id" => 1,
-          "method" => "prompts/get",
-          "params" => %{
-            "name" => "ask_prompt",
-            "arguments" => %{},
-            "_meta" => %{"protocolVersion" => "2026-07-28"}
-          }
-        })
-
-      assert {:noreply, _} =
-               Router.dispatch_method("prompts/get", request.params, request, session)
-
-      response = assert_responded()
-
-      assert %{
-               resultType: "inputRequired",
-               inputRequests: [_ | _],
-               requestState: token
-             } = response
-
-      assert is_binary(token)
-      assert {:ok, %{step: :got_name}} = RequestState.decode(token, @secret, @salt)
-    end
-
-    test "under stateless: resume continues the prompt handler with session.state set" do
-      session = build_session()
-      token = RequestState.encode(%{step: :got_name}, @secret, @salt)
-
-      {:ok, request} =
-        Request.build(%{
-          "jsonrpc" => "2.0",
-          "id" => 2,
-          "method" => "prompts/get",
-          "params" => %{
-            "name" => "ask_prompt",
-            "arguments" => %{"name" => "alice"},
-            "_meta" => %{"protocolVersion" => "2026-07-28", "requestState" => token}
-          }
-        })
-
-      assert {:noreply, _} =
-               Router.dispatch_method("prompts/get", request.params, request, session)
-
-      response = assert_responded()
-      assert %{messages: [%{role: :assistant, content: %{text: text}}]} = response
-      assert text == "Hello, alice!"
-    end
-  end
+  # Prompt-side parity with the tool re-entry pattern: a `prompts/get` handler
+  # can return `{:noreply, Session.elicit(...)}` and the suspended-Task flow
+  # works the same as for tools. See the "Session.elicit/3 with `await: true`"
+  # describe block for the orchestrated round-trip exercising this machinery
+  # at the dispatcher level.
 
   describe "_meta hydrates session.client_info and client_capabilities" do
     # Under stateless core there is no `initialize` call to populate these
@@ -453,19 +352,19 @@ defmodule Phantom.StatelessCoreTest do
   end
 
   describe "Session.elicit/3 — protocol-aware default mode" do
-    test "stateless: no opts returns the re-entry tagged tuple with nil state" do
+    test "stateless: no opts annotates session with pending_elicit and nil state" do
       request = build_request(%{"protocolVersion" => "2026-07-28"})
       session = %{build_session() | request: request}
       elicit = Phantom.Elicit.form(%{message: "x", requested_schema: []})
 
-      assert {:input_required, ^elicit, nil, _} = Phantom.Session.elicit(session, elicit)
+      assert %Session{pending_elicit: {^elicit, nil}} = Phantom.Session.elicit(session, elicit)
     end
 
     test "legacy: no opts blocks via inline path (preserves existing behavior)" do
       request = build_request(%{"protocolVersion" => "2025-11-25"})
       # No transport, no elicit closure, no client capability — falls through
-      # to :not_supported. Critically, this is NOT the re-entry tagged tuple,
-      # so existing `{:ok, _} = Session.elicit(session, elicit)` callers keep
+      # to :not_supported. Critically, this is NOT a session struct, so
+      # existing `{:ok, _} = Session.elicit(session, elicit)` callers keep
       # their original semantics.
       session = %{build_session() | request: request, pid: nil, elicit: nil}
       elicit = Phantom.Elicit.form(%{message: "x", requested_schema: []})
@@ -478,7 +377,7 @@ defmodule Phantom.StatelessCoreTest do
       session = %{build_session() | request: request}
       elicit = Phantom.Elicit.form(%{message: "x", requested_schema: []})
 
-      assert {:input_required, ^elicit, %{step: :ok}, _} =
+      assert %Session{pending_elicit: {^elicit, %{step: :ok}}} =
                Phantom.Session.elicit(session, elicit, state: %{step: :ok})
     end
   end

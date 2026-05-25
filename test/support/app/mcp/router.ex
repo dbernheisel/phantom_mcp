@@ -310,14 +310,15 @@ defmodule Test.MCP.Router do
   end
 
   def resume_tool(params, session) do
-    Session.elicit(
-      session,
-      Phantom.Elicit.build(%{
-        message: "Your name?",
-        requested_schema: [%{name: "name", type: :string, required: true}]
-      }),
-      state: %{step: :got_name, origin: params["origin"] || "unknown"}
-    )
+    {:noreply,
+     Session.elicit(
+       session,
+       Phantom.Elicit.build(%{
+         message: "Your name?",
+         requested_schema: [%{name: "name", type: :string, required: true}]
+       }),
+       state: %{step: :got_name, origin: params["origin"] || "unknown"}
+     )}
   end
 
   def await_tool(_params, session) do

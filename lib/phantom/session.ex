@@ -16,6 +16,7 @@ defmodule Phantom.Session do
     :elicit,
     :id,
     :last_event_id,
+    :pending_elicit,
     :pid,
     :pubsub,
     :request,
@@ -48,6 +49,7 @@ defmodule Phantom.Session do
           close_after_complete: boolean(),
           id: binary(),
           last_event_id: String.t() | nil,
+          pending_elicit: {Phantom.Elicit.t(), term()} | nil,
           pid: pid() | nil,
           pubsub: module(),
           request: Phantom.Request.t() | nil,
@@ -111,13 +113,17 @@ defmodule Phantom.Session do
     `inputRequired` result to the client, and resumes the Task inline when
     the follow-up `tools/call` arrives (possibly on another node).
 
-  - **Re-entry** (`:state` set, or default under stateless) — returns
-    `{:input_required, elicit, state, session}`, a tagged tuple the
-    dispatcher converts to an `inputRequired` result (stateless) or runs
-    through the SSE elicit round-trip + handler re-invocation (legacy).
-    The handler is *re-entered* with `session.state` populated to whatever
-    you passed as `:state` (default `nil`). Structure the handler with a
-    function-head clause that matches on `%Session{state: %{...}}`.
+  - **Re-entry** (`:state` set, or default under stateless) — returns the
+    `session` struct with the pending elicit attached. The handler wraps
+    it in the standard `{:noreply, session}` reply shape:
+
+        {:noreply, Session.elicit(session, elicit, state: %{step: :got_input})}
+
+    The dispatcher then converts to an `inputRequired` result (stateless)
+    or runs through the SSE elicit round-trip + handler re-invocation
+    (legacy). On resume, the handler is re-entered with `session.state`
+    populated to whatever you passed as `:state`. Structure the handler
+    with a function-head clause that matches on `%Session{state: %{...}}`.
 
   Protocol-aware defaults — when neither `:await` nor `:state` is set:
 
@@ -143,7 +149,7 @@ defmodule Phantom.Session do
       end
 
       def my_tool(params, session) do
-        Session.elicit(session, elicit, state: %{step: :got_choice})
+        {:noreply, Session.elicit(session, elicit, state: %{step: :got_choice})}
       end
 
   Options:
@@ -154,7 +160,7 @@ defmodule Phantom.Session do
   """
   @spec elicit(t, Phantom.Elicit.t(), keyword()) ::
           {:ok, response :: map()}
-          | {:input_required, Phantom.Elicit.t(), state :: term(), t}
+          | t
           | :not_supported
           | :error
           | :timeout
@@ -170,11 +176,11 @@ defmodule Phantom.Session do
 
       # Explicit :state — force re-entry on either protocol.
       Keyword.has_key?(opts, :state) ->
-        {:input_required, elicitation, opts[:state], session}
+        %{session | pending_elicit: {elicitation, opts[:state]}}
 
       # Protocol-aware default: stateless → re-entry, legacy → inline blocking.
       stateless?(session) ->
-        {:input_required, elicitation, nil, session}
+        %{session | pending_elicit: {elicitation, nil}}
 
       true ->
         do_elicit(session, elicitation, opts)
