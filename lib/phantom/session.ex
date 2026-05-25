@@ -204,11 +204,14 @@ defmodule Phantom.Session do
     end
   end
 
-  defp stateless?(%__MODULE__{request: %{meta: meta}}) when is_map(meta) do
-    Phantom.ProtocolVersion.mode(meta["protocolVersion"]) == :stateless_core
-  end
+  @doc """
+  Whether the session's current request is using the MCP `2026-07-28`
+  stateless-core protocol.
+  """
+  def stateless?(%__MODULE__{request: %{meta: meta}}) when is_map(meta),
+    do: meta["protocolVersion"] == "2026-07-28"
 
-  defp stateless?(_), do: false
+  def stateless?(_), do: false
 
   defp do_elicit(session, elicitation, opts) do
     timeout = Keyword.get(opts, :timeout, @elicitation_timeout)

@@ -56,11 +56,22 @@ defmodule Phantom.RouterTest do
         use Phantom.Router,
           name: "WithSecret",
           vsn: "1.0",
-          secret_key_base: "test-secret-key-base-of-sufficient-entropy-for-aes-256"
+          secret_key_base: "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption"
       end
 
       assert Test.WithSecretRouter.__phantom__(:info)[:secret_key_base] ==
-               "test-secret-key-base-of-sufficient-entropy-for-aes-256"
+               "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption"
+    end
+
+    test "raises at compile time when :secret_key_base is too short" do
+      assert_raise ArgumentError, ~r/64 bytes/, fn ->
+        defmodule Test.ShortSecretRouter do
+          use Phantom.Router,
+            name: "ShortSecret",
+            vsn: "1.0",
+            secret_key_base: "too-short"
+        end
+      end
     end
   end
 

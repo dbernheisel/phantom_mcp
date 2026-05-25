@@ -22,15 +22,57 @@
   a JSON-RPC error from an async task.
 - New: `Phantom.Router` accepts `:secret_key_base` for the encrypted
   `requestState` codec.
-- New: `Phantom.ProtocolVersion` (single source of truth for supported
-  versions + `mode/1`) and `Phantom.RequestState` (Plug.Crypto-backed
-  encode/decode of the continuation blob).
+- New: `Phantom.RequestState` (Plug.Crypto-backed encode/decode of the
+  continuation blob) and `Phantom.Session.stateless?/1` predicate.
 - New: `Phantom.Request.with_cache/2` annotates any result with `ttlMs` /
   `cacheScope`, and `Phantom.Request.trace_context/1` extracts W3C
   traceparent/tracestate/baggage from `_meta` and surfaces it on the
   `[:phantom, :dispatch]` telemetry span.
 - New: `Phantom.Plug.read_transport_headers/1` reads `mcp-protocol-version`,
   `mcp-method`, and `mcp-name` for L7 routing.
+
+### Upgrade guide
+
+To support MCP `2026-07-28` clients:
+
+**1. Configure `:secret_key_base` on your router.** Phantom uses it to
+encrypt the multi-round-trip `requestState` blob via `Plug.Crypto`. Nodes
+serving the same router must share this value.
+
+```elixir
+use Phantom.Router,
+  name: "MyApp",
+  vsn: "1.0",
+  secret_key_base: Application.compile_env(:my_app, :secret_key_base)
+```
+
+The key must be at least 64 bytes. Generate one with
+`:crypto.strong_rand_bytes(64) |> Base.encode64()`. The router raises at
+compile time if the key is too short, and emits a warning if the key is
+missing while tools or prompts are defined.
+
+**2. Pass `await: true` to `Session.elicit/3` where you want inline blocking.**
+
+`Session.elicit/3` has protocol-aware defaults: under legacy MCP protocols
+no opts means inline blocking; under MCP `2026-07-28` no opts means the
+re-entry pattern (returns a tagged tuple). Existing legacy code that
+pattern-matches on `{:ok, response}` keeps working under legacy, but the
+same code under `2026-07-28` would receive `{:input_required, ...}` instead.
+
+For code that should work the same way on both protocols, pass `await: true`
+explicitly:
+
+```elixir
+# Existing code — works under legacy, falls through under 2026-07-28
+{:ok, response} = Session.elicit(session, elicit)
+
+# Explicit — same behavior on both protocols
+{:ok, response} = Session.elicit(session, elicit, await: true)
+```
+
+Or migrate to the re-entry pattern with `state:` and a function-head clause
+that matches on `%Session{state: %{...}}` — that pattern is protocol-agnostic
+by construction.
 
 ## 0.4.5 (2026-04-29)
 
