@@ -98,35 +98,52 @@ defmodule Phantom.Session do
   end
 
   @doc """
-  Elicit input from the client, blocking until the response.
+  Elicit input from the client.
 
-  Returns `{:ok, response}` where `response` is the client's JSON map
-  (`"action"` and `"content"` keys), or `:not_supported` / `:timeout` /
-  `:error`.
+  Two call patterns selected by whether `:await` is set:
 
-  Two call patterns:
+  - **With `:await`** — inline blocking. Returns `{:ok, response}` where
+    `response` is the client's JSON map (`"action"` and `"content"` keys),
+    or `:not_supported` / `:timeout` / `:error`. Works on both protocols:
+    under legacy the call blocks via the open SSE stream; under MCP
+    `2026-07-28` Phantom suspends the tool's Task, returns an
+    `inputRequired` result to the client, and resumes the Task inline
+    when the follow-up `tools/call` arrives (possibly on another node).
 
-  - **Without `:await`** — uses the existing inline blocking path. Only
-    works under legacy MCP protocols (≤ 2025-11-25) or stdio. Raises under
-    MCP `2026-07-28` because no persistent stream exists to block on.
+  - **Without `:await`** — re-entry. Returns `{:input_required, elicit,
+    state, session}` — a tagged tuple the dispatcher converts to an
+    `inputRequired` result (stateless) or runs through the SSE elicit
+    round-trip + handler re-invocation (legacy). The handler is *re-
+    entered* with `session.state` populated to whatever you passed as
+    `:state` (default `nil`). Structure the handler with a function-head
+    clause that matches on `%Session{state: %{...}}` for the resume case.
 
-  - **With `:await`** — protocol-agnostic. Under legacy, behaves identically
-    to the existing path. Under MCP `2026-07-28`, the call suspends the
-    tool's Task and returns an `inputRequired` result to the client; when
-    the client re-issues the call (possibly on a different node), Phantom
-    delivers the response back to the suspended Task and execution
-    continues inline.
+  Pick based on style preference:
 
-  Use `:await` when you want inline ergonomics that work everywhere; use
-  `request_input/3` when you prefer the explicit re-entry pattern with
-  `session.state` matching in your handler's function head.
+      # Inline — the function continues after the response arrives
+      def my_tool(_params, session) do
+        {:ok, %{"choice" => c}} = Session.elicit(session, elicit, await: true)
+        {:reply, Tool.text("got \#{c}"), session}
+      end
+
+      # Re-entry — the handler is invoked again with session.state populated
+      def my_tool(%{"choice" => c}, %Session{state: %{step: :got_choice}} = session) do
+        {:reply, Tool.text("got \#{c}"), session}
+      end
+
+      def my_tool(params, session) do
+        Session.elicit(session, elicit, state: %{step: :got_choice})
+      end
 
   Options:
-    - `:await` — `true` to opt into protocol-agnostic inline behavior
-    - `:timeout` — max blocking time in ms (default: 5 minutes)
+    - `:await` — `true` for inline blocking (default: `false`)
+    - `:state` — value placed on `session.state` on re-entry; ignored when
+      `:await` is set
+    - `:timeout` — max blocking time in ms (`:await` only; default: 5 minutes)
   """
   @spec elicit(t, Phantom.Elicit.t(), keyword()) ::
           {:ok, response :: map()}
+          | {:input_required, Phantom.Elicit.t(), state :: term(), t}
           | :not_supported
           | :error
           | :timeout
@@ -135,21 +152,11 @@ defmodule Phantom.Session do
       Keyword.get(opts, :await, false) and stateless?(session) ->
         stateless_await(session, elicitation, opts)
 
-      stateless?(session) ->
-        raise ArgumentError, """
-        Phantom.Session.elicit/3 (without `await: true`) is not supported under
-        MCP 2026-07-28.
-
-        Use one of:
-
-          * `Phantom.Session.elicit(session, elicitation, await: true)` for
-            inline ergonomics that work on both protocols, or
-          * `Phantom.Session.request_input/3` for the explicit re-entry pattern
-            with `session.state` matching in your handler's function head.
-        """
+      Keyword.get(opts, :await, false) ->
+        do_elicit(session, elicitation, opts)
 
       true ->
-        do_elicit(session, elicitation, opts)
+        {:input_required, elicitation, Keyword.get(opts, :state), session}
     end
   end
 
@@ -181,42 +188,6 @@ defmodule Phantom.Session do
   end
 
   defp stateless?(_), do: false
-
-  @doc """
-  Request input from the client with explicit re-entry on continuation.
-
-  Returns `{:input_required, elicit, state, session}` — a tagged tuple the
-  dispatcher recognizes. Under MCP `2026-07-28` it becomes a
-  `Phantom.Tool.input_required/1` result with an encrypted `requestState`;
-  under legacy protocols the dispatcher performs the SSE `elicitation/create`
-  round-trip and re-invokes the handler. Either way the handler is
-  *re-entered* (not resumed in place) with `session.state` populated to the
-  value you passed.
-
-  Structure the handler with a function-head clause for the resume case:
-
-      def my_tool(%{"name" => name},
-                  %Session{state: %{step: :got_name, params: orig}} = session) do
-        do_work(orig, name, session)
-      end
-
-      def my_tool(params, session) do
-        Session.request_input(session,
-          Phantom.Elicit.form(%{message: "Your name?", requested_schema: [
-            %{name: "name", type: :string, required: true}
-          ]}),
-          state: %{step: :got_name, params: params})
-      end
-
-  Required options:
-    - `:state` — opaque term that arrives at `session.state` on resume
-  """
-  @spec request_input(t, Phantom.Elicit.t(), keyword()) ::
-          {:input_required, Phantom.Elicit.t(), state :: term(), t}
-  def request_input(session, elicitation, opts) do
-    state = Keyword.fetch!(opts, :state)
-    {:input_required, elicitation, state, session}
-  end
 
   defp do_elicit(session, elicitation, opts) do
     timeout = Keyword.get(opts, :timeout, @elicitation_timeout)
