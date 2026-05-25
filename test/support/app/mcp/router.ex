@@ -10,6 +10,7 @@ defmodule Test.MCP.Router do
     name: "Test",
     vsn: "1.0",
     instructions: @instructions,
+    secret_key_base: "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption",
     icons: [
       %{
         src: {Phoenix.VerifiedRoutes, :static_url, [Test.Endpoint, "/images/test-icon.png"]},
@@ -113,6 +114,7 @@ defmodule Test.MCP.Router do
   tool :audio_tool, description: "An audio tool"
   tool :with_error_tool, description: "A test tool with an error"
   tool :elicit_tool, description: "A tool that always needs info"
+  tool :resume_tool, description: "Calls Session.elicit/3 with state — protocol-agnostic"
   tool :async_elicit_tool, description: "A tool that elicits from a spawned Task"
   tool :url_elicit_tool, description: "A tool that requires URL elicitation"
   tool :elicitation_required_tool, description: "A tool that returns elicitation_required error"
@@ -298,6 +300,24 @@ defmodule Test.MCP.Router do
                    }
                  ]
                })
+  def resume_tool(
+        %{"name" => name},
+        %Session{state: %{step: :got_name, origin: origin}} = session
+      ) do
+    {:reply, Tool.text("resumed name=#{name} origin=#{origin}"), session}
+  end
+
+  def resume_tool(params, session) do
+    Session.elicit(
+      session,
+      Phantom.Elicit.build(%{
+        message: "Your name?",
+        requested_schema: [%{name: "name", type: :string, required: true}]
+      }),
+      state: %{step: :got_name, origin: params["origin"] || "unknown"}
+    )
+  end
+
   def elicit_tool(_params, session) do
     case Session.elicit(session, @elicit_name) do
       {:ok, %{"action" => "accept", "content" => content}} ->
