@@ -117,14 +117,11 @@ defmodule Phantom.Request do
     }
   end
 
-  @doc """
-  Extract the W3C Trace Context fields (per MCP `2026-07-28` `_meta`).
-
-  Returns a map with `:traceparent`, `:tracestate`, and `:baggage` keys when
-  present in the request's `_meta`. Telemetry consumers (OpenTelemetry et al.)
-  can pick this up off `metadata.trace_context` on `[:phantom, :dispatch]`
-  spans to continue an upstream trace through Phantom.
-  """
+  @doc false
+  # Used by Phantom.Router.dispatch_method to populate the `:trace_context`
+  # key on `[:phantom, :dispatch]` telemetry span metadata. Tracer libraries
+  # (OpenTelemetry et al.) attach to that event and read the field directly;
+  # devs shouldn't need to call this function.
   def trace_context(%__MODULE__{meta: meta}) when is_map(meta) do
     remove_nils(%{
       traceparent: meta["traceparent"],

@@ -25,9 +25,11 @@
 - New: `Phantom.RequestState` (Plug.Crypto-backed encode/decode of the
   continuation blob) and `Phantom.Session.stateless?/1` predicate.
 - New: `Phantom.Request.with_cache/2` annotates any result with `ttlMs` /
-  `cacheScope`, and `Phantom.Request.trace_context/1` extracts W3C
-  traceparent/tracestate/baggage from `_meta` and surfaces it on the
-  `[:phantom, :dispatch]` telemetry span.
+  `cacheScope`.
+- W3C trace context (`traceparent` / `tracestate` / `baggage`) from `_meta`
+  is automatically surfaced on the `[:phantom, :dispatch]` telemetry span
+  under `metadata.trace_context`. Wire your tracer to that event (see
+  "Distributed tracing" in the README).
 - New: `Phantom.Plug.read_transport_headers/1` reads `mcp-protocol-version`,
   `mcp-method`, and `mcp-name` for L7 routing.
 
