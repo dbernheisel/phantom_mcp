@@ -30,8 +30,10 @@
   is automatically surfaced on the `[:phantom, :dispatch]` telemetry span
   under `metadata.trace_context`. Wire your tracer to that event (see
   "Distributed tracing" in the README).
-- New: `Phantom.Plug.read_transport_headers/1` reads `mcp-protocol-version`,
-  `mcp-method`, and `mcp-name` for L7 routing.
+- MCP `2026-07-28` adds three optional headers — `mcp-protocol-version`,
+  `mcp-method`, `mcp-name` — that upstream infrastructure (load balancers,
+  WAFs, gateways) can route on without inspecting the JSON-RPC body.
+  Phantom passes them through; no server-side configuration needed.
 
 ### Upgrade guide
 
