@@ -104,14 +104,25 @@ defmodule Phantom.Session do
   (`"action"` and `"content"` keys), or `:not_supported` / `:timeout` /
   `:error`.
 
-  > #### Legacy protocols only {: .warning}
-  >
-  > Under MCP `2026-07-28` (stateless core) there is no persistent stream
-  > to block on; calling `elicit/3` on a stateless request raises. Use
-  > `request_input/3` for the explicit re-entry pattern, which works on
-  > both protocols.
+  Two call patterns:
+
+  - **Without `:await`** — uses the existing inline blocking path. Only
+    works under legacy MCP protocols (≤ 2025-11-25) or stdio. Raises under
+    MCP `2026-07-28` because no persistent stream exists to block on.
+
+  - **With `:await`** — protocol-agnostic. Under legacy, behaves identically
+    to the existing path. Under MCP `2026-07-28`, the call suspends the
+    tool's Task and returns an `inputRequired` result to the client; when
+    the client re-issues the call (possibly on a different node), Phantom
+    delivers the response back to the suspended Task and execution
+    continues inline.
+
+  Use `:await` when you want inline ergonomics that work everywhere; use
+  `request_input/3` when you prefer the explicit re-entry pattern with
+  `session.state` matching in your handler's function head.
 
   Options:
+    - `:await` — `true` to opt into protocol-agnostic inline behavior
     - `:timeout` — max blocking time in ms (default: 5 minutes)
   """
   @spec elicit(t, Phantom.Elicit.t(), keyword()) ::
@@ -120,19 +131,49 @@ defmodule Phantom.Session do
           | :error
           | :timeout
   def elicit(session, elicitation, opts \\ []) do
-    if stateless?(session) do
-      raise ArgumentError, """
-      Phantom.Session.elicit/3 is not supported under MCP 2026-07-28.
+    cond do
+      Keyword.get(opts, :await, false) and stateless?(session) ->
+        stateless_await(session, elicitation, opts)
 
-      Use Phantom.Session.request_input/3 with `state: ...` to participate
-      in the multi-round-trip flow. Structure your handler with a function-
-      head clause that pattern-matches on `%Phantom.Session{state: %{...}}`
-      for the resume case. See `m:Phantom.Session.request_input/3` for the
-      pattern.
-      """
+      stateless?(session) ->
+        raise ArgumentError, """
+        Phantom.Session.elicit/3 (without `await: true`) is not supported under
+        MCP 2026-07-28.
+
+        Use one of:
+
+          * `Phantom.Session.elicit(session, elicitation, await: true)` for
+            inline ergonomics that work on both protocols, or
+          * `Phantom.Session.request_input/3` for the explicit re-entry pattern
+            with `session.state` matching in your handler's function head.
+        """
+
+      true ->
+        do_elicit(session, elicitation, opts)
+    end
+  end
+
+  defp stateless_await(_session, elicitation, opts) do
+    timeout = Keyword.get(opts, :timeout, @elicitation_timeout)
+    ref_id = UUIDv7.generate()
+    adopter = Process.get(:phantom_adopter)
+    request_id = Process.get(:phantom_tool_request_id)
+
+    if is_nil(adopter) or is_nil(request_id) do
+      raise ArgumentError,
+            "Session.elicit/3 with `await: true` must be called from within a tool handler"
     end
 
-    do_elicit(session, elicitation, opts)
+    send(adopter, {:phantom_await_elicit, ref_id, elicitation, self(), request_id})
+
+    receive do
+      {:phantom_elicit_response, ^ref_id, response, new_adopter, new_request_id} ->
+        Process.put(:phantom_adopter, new_adopter)
+        Process.put(:phantom_tool_request_id, new_request_id)
+        response
+    after
+      timeout -> :timeout
+    end
   end
 
   defp stateless?(%__MODULE__{request: %{meta: meta}}) when is_map(meta) do
@@ -609,6 +650,39 @@ defmodule Phantom.Session do
         GenServer.reply(from, {:ok, response})
         state = forget_pending_elicit(state, request_id)
         {:noreply, state |> set_activity() |> schedule_inactivity()}
+    end
+  end
+
+  def handle_info(
+        {:phantom_await_elicit, ref_id, elicitation, task_pid, request_id},
+        state
+      ) do
+    secret = state.session.router.__phantom__(:info)[:secret_key_base]
+
+    if is_nil(secret) do
+      __MODULE__.respond_error(
+        self(),
+        request_id,
+        Request.internal_error("Stateless await requires :secret_key_base on the router")
+      )
+
+      {:noreply, state}
+    else
+      state_blob = Phantom.RequestState.encode({:__phantom_await__, ref_id}, secret)
+
+      Phantom.Tracker.track_request(task_pid, ref_id, %{
+        type: :pending_task,
+        pid: task_pid
+      })
+
+      result = %{
+        resultType: "inputRequired",
+        inputRequests: Phantom.Elicit.to_input_requests(elicitation),
+        requestState: state_blob
+      }
+
+      __MODULE__.respond(self(), request_id, result)
+      {:noreply, state |> set_activity() |> schedule_inactivity()}
     end
   end
 

@@ -1342,12 +1342,20 @@ defmodule Phantom.Router do
         {:error, Request.invalid_params(), session}
 
       tool ->
-        params = Map.get(params, "arguments", %{})
+        args = Map.get(params, "arguments", %{})
 
-        with {:ok, session} <- maybe_decode_state(router, session, request),
-             {:ok, params} <- JSONSchema.maybe_validate(tool.input_schema, params) do
-          run_tool(tool, params, session, request)
-        else
+        case maybe_decode_state(router, session, request) do
+          {:ok, session} ->
+            with {:ok, validated} <- JSONSchema.maybe_validate(tool.input_schema, args) do
+              run_tool(tool, validated, session, request)
+            else
+              {:error, reasons} ->
+                {:error, Request.invalid_params(%{validation_errors: reasons}), session}
+            end
+
+          {:adopt_task, ref_id, session} ->
+            adopt_pending_task(ref_id, args, session, request)
+
           {:error, :invalid_request_state} ->
             {:error, Request.invalid_params(%{requestState: "Invalid request state"}), session}
 
@@ -1358,10 +1366,22 @@ defmodule Phantom.Router do
                message: "Request state expired",
                data: %{requestState: "expired"}
              }, session}
-
-          {:error, reasons} ->
-            {:error, Request.invalid_params(%{validation_errors: reasons}), session}
         end
+    end
+  end
+
+  defp adopt_pending_task(ref_id, response_args, session, request) do
+    case Phantom.Tracker.get_request(ref_id) do
+      nil ->
+        {:error, Request.invalid_params(%{requestState: "Task not found or expired"}), session}
+
+      task_pid ->
+        send(
+          task_pid,
+          {:phantom_elicit_response, ref_id, {:ok, response_args}, session.pid, request.id}
+        )
+
+        {:noreply, session}
     end
   end
 
@@ -1371,9 +1391,12 @@ defmodule Phantom.Router do
     task_session = %{session | request: %{request | spec: tool}}
 
     spawn(fn ->
+      Process.put(:phantom_adopter, parent_pid)
+      Process.put(:phantom_tool_request_id, request_id)
+
       try do
         handler_result = apply(tool.handler, tool.function, [params, task_session])
-        finalize_tool_result(handler_result, tool, params, parent_pid, request_id, task_session)
+        finalize_tool_result(handler_result, tool, params, task_session)
       rescue
         exception ->
           :telemetry.execute([:phantom, :dispatch, :exception], %{}, %{
@@ -1387,8 +1410,8 @@ defmodule Phantom.Router do
           })
 
           Session.respond_error(
-            parent_pid,
-            request_id,
+            Process.get(:phantom_adopter),
+            Process.get(:phantom_tool_request_id),
             Request.internal_error(Exception.message(exception))
           )
       end
@@ -1397,25 +1420,15 @@ defmodule Phantom.Router do
     {:noreply, session}
   end
 
-  defp finalize_tool_result(
-         {:reply, result, %Session{}},
-         _tool,
-         _params,
-         parent_pid,
-         request_id,
-         session
-       ) do
-    Session.respond(parent_pid, request_id, encode_request_state(Tool.response(result), session))
+  defp finalize_tool_result({:reply, result, %Session{}}, _tool, _params, session) do
+    Session.respond(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      encode_request_state(Tool.response(result), session)
+    )
   end
 
-  defp finalize_tool_result(
-         {:input_required, elicit, state, _},
-         tool,
-         params,
-         parent_pid,
-         request_id,
-         session
-       ) do
+  defp finalize_tool_result({:input_required, elicit, state, _}, tool, params, session) do
     request = session.request
 
     case Phantom.ProtocolVersion.mode(Map.get(request.meta || %{}, "protocolVersion")) do
@@ -1434,7 +1447,11 @@ defmodule Phantom.Router do
                   "Tool returned input_required but #{inspect(session.router)} has no :secret_key_base configured"
           end
 
-        Session.respond(parent_pid, request_id, result)
+        Session.respond(
+          Process.get(:phantom_adopter),
+          Process.get(:phantom_tool_request_id),
+          result
+        )
 
       _legacy ->
         # Prefer the closure when available — under Task-mode the cross-process
@@ -1453,70 +1470,52 @@ defmodule Phantom.Router do
             new_session = %{session | state: state}
             new_params = Map.merge(params, response)
             handler_result = apply(tool.handler, tool.function, [new_params, new_session])
-
-            finalize_tool_result(
-              handler_result,
-              tool,
-              new_params,
-              parent_pid,
-              request_id,
-              new_session
-            )
+            finalize_tool_result(handler_result, tool, new_params, new_session)
 
           :not_supported ->
             Session.respond_error(
-              parent_pid,
-              request_id,
+              Process.get(:phantom_adopter),
+              Process.get(:phantom_tool_request_id),
               Request.invalid_params(%{elicit: "Client does not support elicitation"})
             )
 
           _ ->
             Session.respond_error(
-              parent_pid,
-              request_id,
+              Process.get(:phantom_adopter),
+              Process.get(:phantom_tool_request_id),
               Request.internal_error("Elicitation failed")
             )
         end
     end
   end
 
-  defp finalize_tool_result(
-         {:error, error, %Session{}},
-         _tool,
-         _params,
-         parent_pid,
-         request_id,
-         _session
-       ) do
-    Session.respond_error(parent_pid, request_id, error)
+  defp finalize_tool_result({:error, error, %Session{}}, _tool, _params, _session) do
+    Session.respond_error(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      error
+    )
   end
 
-  defp finalize_tool_result(
-         {:noreply, %Session{}},
-         _tool,
-         _params,
-         _parent_pid,
-         _request_id,
-         _session
-       ) do
+  defp finalize_tool_result({:noreply, %Session{}}, _tool, _params, _session) do
     :ok
   end
 
-  defp finalize_tool_result(
-         {:elicitation_required, elicitations},
-         _tool,
-         _params,
-         parent_pid,
-         request_id,
-         _session
-       )
+  defp finalize_tool_result({:elicitation_required, elicitations}, _tool, _params, _session)
        when is_list(elicitations) do
-    Session.respond_error(parent_pid, request_id, Request.url_elicitation_required(elicitations))
+    Session.respond_error(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      Request.url_elicitation_required(elicitations)
+    )
   end
 
-  defp finalize_tool_result(other, _tool, _params, parent_pid, request_id, _session) do
-    # Fallback: treat any other return as a Tool response payload
-    Session.respond(parent_pid, request_id, Tool.response(other))
+  defp finalize_tool_result(other, _tool, _params, _session) do
+    Session.respond(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      Tool.response(other)
+    )
   end
 
   defp maybe_decode_state(router, session, request) do
@@ -1525,7 +1524,13 @@ defmodule Phantom.Router do
     with token when is_binary(token) <- Map.get(meta, "requestState", :none),
          secret when is_binary(secret) <- router.__phantom__(:info)[:secret_key_base],
          {:ok, term} <- Phantom.RequestState.decode(token, secret) do
-      {:ok, %{session | state: term}}
+      case term do
+        {:__phantom_await__, ref_id} ->
+          {:adopt_task, ref_id, session}
+
+        _ ->
+          {:ok, %{session | state: term}}
+      end
     else
       :none -> {:ok, session}
       {:error, :expired} -> {:error, :expired_request_state}

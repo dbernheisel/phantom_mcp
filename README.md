@@ -507,14 +507,14 @@ Phantom.Tracker.notify_resource_updated(uri)
 
 Two helpers, picked by how the dev wants to structure the handler.
 
-### Inline blocking — `Session.elicit/3` (legacy protocols only)
+### Inline blocking — `Session.elicit/3`
 
-Existing pattern. The tool function "awaits" the response in place and
-continues:
+Inline pattern. The tool function "awaits" the response in place and
+continues. Pass `await: true` for protocol-agnostic behavior:
 
 ```elixir
 def my_tool(params, session) do
-  case Phantom.Session.elicit(session, @elicit_name) do
+  case Phantom.Session.elicit(session, @elicit_name, await: true) do
     {:ok, %{"action" => "accept", "content" => content}} ->
       {:reply, Tool.text("Hello \#{content["name"]}"), session}
 
@@ -527,9 +527,13 @@ def my_tool(params, session) do
 end
 ```
 
-This requires an open SSE round-trip and **does not work under MCP
-`2026-07-28`** — calling `elicit/3` on a stateless request raises. Code
-that needs to support stateless clients should use the helper below.
+Without `await: true`, this only works under legacy MCP protocols
+(≤ 2025-11-25) or stdio; under MCP `2026-07-28` the call raises. With
+`await: true`, Phantom suspends the tool's Task on stateless requests,
+returns `inputRequired` to the client, and resumes the Task inline when
+the follow-up `tools/call` arrives — possibly on a different node.
+Requires `Phantom.PubSub` + `Phantom.Tracker` (the existing cross-node
+infrastructure) for stateless adoption.
 
 ### Protocol-agnostic re-entry — `Session.request_input/3`
 

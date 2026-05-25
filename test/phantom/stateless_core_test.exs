@@ -51,6 +51,26 @@ defmodule Phantom.StatelessCoreTest do
         state: %{step: :got_choice, original: params}
       )
     end
+
+    tool :await_demo, description: "Calls Session.elicit(..., await: true) inline" do
+    end
+
+    def await_demo(_params, session) do
+      case Session.elicit(
+             session,
+             Phantom.Elicit.form(%{
+               message: "pick",
+               requested_schema: [%{name: "color", type: :string, required: true}]
+             }),
+             await: true
+           ) do
+        {:ok, %{"color" => color}} ->
+          {:reply, T.text("got color=#{color}"), session}
+
+        other ->
+          {:reply, T.error("await failed: #{inspect(other)}"), session}
+      end
+    end
   end
 
   setup do
@@ -240,6 +260,67 @@ defmodule Phantom.StatelessCoreTest do
       response = assert_responded()
       assert %{content: [%{type: :text, text: text}]} = response
       assert text =~ "chose=red"
+    end
+  end
+
+  describe "Session.elicit/3 with `await: true` — protocol-agnostic inline" do
+    setup do
+      start_supervised({Phoenix.PubSub, name: Test.StatelessAwait.PubSub})
+
+      start_supervised(
+        {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Test.StatelessAwait.PubSub]}
+      )
+
+      :ok
+    end
+
+    test "stateless: tool's inline elicit yields inputRequired; follow-up resumes the same task" do
+      session = build_session()
+      request = build_request(%{"protocolVersion" => "2026-07-28"}, "await_demo")
+      original_request_id = request.id
+
+      # First call — the Task spawns and the handler calls Session.elicit(await: true).
+      # That sends {:phantom_await_elicit, ...} to the test pid (session.pid).
+      # We have to handle it like the session GenServer would.
+      assert {:noreply, _} =
+               Router.dispatch_method("tools/call", request.params, request, session)
+
+      assert_receive {:phantom_await_elicit, ref_id, elicit, task_pid, ^original_request_id},
+                     1_000
+
+      # Verify the elicit struct made it through.
+      assert %Phantom.Elicit{message: "pick"} = elicit
+
+      # The session GenServer would register the task in Tracker. Do it manually here.
+      Phantom.Tracker.track_request(task_pid, ref_id, %{type: :pending_task, pid: task_pid})
+
+      # Simulate the follow-up: a NEW request arrives carrying the encrypted ref_id.
+      token = RequestState.encode({:__phantom_await__, ref_id}, @secret)
+      follow_session = build_session()
+
+      follow_request =
+        build_request(
+          %{"requestState" => token, "protocolVersion" => "2026-07-28"},
+          "await_demo",
+          %{"color" => "blue"}
+        )
+
+      # Dispatch should adopt the suspended task and return {:noreply}.
+      assert {:noreply, _} =
+               Router.dispatch_method(
+                 "tools/call",
+                 follow_request.params,
+                 follow_request,
+                 follow_session
+               )
+
+      # The task is now resumed. It returns Tool.text("got color=blue") and
+      # casts Session.respond to the new adopter (our test pid).
+      response = assert_responded(2_000)
+      assert %{content: [%{type: :text, text: "got color=blue"}]} = response
+
+      # Verify the original request id was preserved at await-yield time.
+      assert original_request_id == request.id
     end
   end
 
