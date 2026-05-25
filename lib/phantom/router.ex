@@ -131,7 +131,13 @@ defmodule Phantom.Router do
               | {:noreply, Session.t()}
               | {:error, any(), Session.t()}
 
-  @supported_protocol_versions Phantom.ProtocolVersion.supported()
+  @supported_protocol_versions ~w[
+    2024-11-05
+    2025-03-26
+    2025-06-18
+    2025-11-25
+    2026-07-28
+  ]
 
   @dialyzer {:nowarn_function, default_vsn: 1}
   defp default_vsn(nil) do
@@ -964,6 +970,58 @@ defmodule Phantom.Router do
     Cache.validate!(info.prompts)
     Cache.validate!(info.tools)
     Cache.validate!(info.resource_templates)
+    validate_secret_key_base!(mod, info)
+  end
+
+  defp validate_secret_key_base!(mod, info) do
+    has_handlers? = info.tools != [] or info.prompts != []
+    secret = info.secret_key_base
+
+    cond do
+      is_binary(secret) and byte_size(secret) < 64 ->
+        raise ArgumentError, """
+        #{inspect(mod)}: :secret_key_base must be at least 64 bytes (got \
+        #{byte_size(secret)}).
+
+        Used by Phantom.RequestState to encrypt the multi-round-trip
+        requestState blob under MCP 2026-07-28. A short key degrades the
+        security guarantee — the blob carries continuation state and live
+        Task references; an attacker who guesses the key could forge resume
+        requests.
+
+        Generate a strong key with `:crypto.strong_rand_bytes(64) |> Base.encode64()`.
+        """
+
+      is_nil(secret) and has_handlers? and not test_env?() ->
+        IO.warn("""
+        #{inspect(mod)} has tools or prompts but no :secret_key_base configured.
+
+        Tools/prompts that elicit input from the client will work under legacy
+        MCP protocols (≤ 2025-11-25) but fail under MCP 2026-07-28 (stateless
+        core), because Phantom needs a key to encrypt the requestState
+        continuation blob.
+
+        To support modern clients:
+
+            use Phantom.Router,
+              ...,
+              secret_key_base: Application.compile_env(:my_app, :secret_key_base)
+
+        The key must be at least 64 bytes. Generate one with:
+
+            :crypto.strong_rand_bytes(64) |> Base.encode64()
+        """)
+
+      true ->
+        :ok
+    end
+  end
+
+  # Mix.env() is reliable at compile time; the verify hook only runs there.
+  defp test_env? do
+    Mix.env() == :test
+  rescue
+    _ -> false
   end
 
   defmacro __before_compile__(env) do
@@ -1431,39 +1489,10 @@ defmodule Phantom.Router do
   end
 
   defp finalize_result(kind, {:input_required, elicit, state, _}, spec, params, session) do
-    request = session.request
-
-    case Phantom.ProtocolVersion.mode(Map.get(request.meta || %{}, "protocolVersion")) do
-      :stateless_core ->
-        respond_to_caller(encode_request_state(Tool.input_required(elicit, state), session))
-
-      _legacy ->
-        # Prefer the closure when available — under Task-mode the cross-process
-        # path would do GenServer.call to session.pid, but the closure (set by
-        # Phantom.Plug for the in-flight request) routes the elicit through the
-        # same SSE infrastructure without that indirection.
-        elicit_response =
-          if is_function(session.elicit) do
-            session.elicit.(elicit, :timer.minutes(5))
-          else
-            Session.elicit(session, elicit, await: true)
-          end
-
-        case elicit_response do
-          {:ok, response} ->
-            new_session = %{session | state: state}
-            new_params = Map.merge(params, response)
-            handler_result = apply(spec.handler, spec.function, [new_params, new_session])
-            finalize_result(kind, handler_result, spec, new_params, new_session)
-
-          :not_supported ->
-            respond_error_to_caller(
-              Request.invalid_params(%{elicit: "Client does not support elicitation"})
-            )
-
-          _ ->
-            respond_error_to_caller(Request.internal_error("Elicitation failed"))
-        end
+    if Session.stateless?(session) do
+      respond_to_caller(encode_request_state(Tool.input_required(elicit, state), session))
+    else
+      finalize_legacy_input_required(kind, elicit, state, spec, params, session)
     end
   end
 
@@ -1482,6 +1511,35 @@ defmodule Phantom.Router do
 
   defp finalize_result(kind, other, _spec, _params, session) do
     respond_to_caller(format_response(kind, other, session))
+  end
+
+  defp finalize_legacy_input_required(kind, elicit, state, spec, params, session) do
+    # Prefer the closure when available — under Task-mode the cross-process
+    # path would do GenServer.call to session.pid, but the closure (set by
+    # Phantom.Plug for the in-flight request) routes the elicit through the
+    # same SSE infrastructure without that indirection.
+    elicit_response =
+      if is_function(session.elicit) do
+        session.elicit.(elicit, :timer.minutes(5))
+      else
+        Session.elicit(session, elicit, await: true)
+      end
+
+    case elicit_response do
+      {:ok, response} ->
+        new_session = %{session | state: state}
+        new_params = Map.merge(params, response)
+        handler_result = apply(spec.handler, spec.function, [new_params, new_session])
+        finalize_result(kind, handler_result, spec, new_params, new_session)
+
+      :not_supported ->
+        respond_error_to_caller(
+          Request.invalid_params(%{elicit: "Client does not support elicitation"})
+        )
+
+      _ ->
+        respond_error_to_caller(Request.internal_error("Elicitation failed"))
+    end
   end
 
   defp format_response(:tool, result, _session), do: Tool.response(result)
