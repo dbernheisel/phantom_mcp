@@ -361,6 +361,30 @@ defmodule Phantom.Session do
     )
   end
 
+  @doc """
+  Send a JSON-RPC error response for a pending request.
+
+  Used by async tool handlers (running in a Task) to finalize a request
+  with a protocol-level error rather than a Tool.error result.
+  """
+  @spec respond_error(pid() | t(), Request.t() | String.t() | integer(), map()) :: :ok
+  def respond_error(%__MODULE__{pid: pid}, request_id, error),
+    do: respond_error(pid, request_id, error)
+
+  def respond_error(pid, %Request{id: id}, error), do: respond_error(pid, id, error)
+
+  def respond_error(pid, request_id, error) when is_pid(pid) do
+    GenServer.cast(
+      pid,
+      {:respond, request_id,
+       %{
+         id: request_id,
+         jsonrpc: "2.0",
+         error: error
+       }}
+    )
+  end
+
   @doc "Send a notification to the client"
   @spec notify(t | pid(), payload :: any()) :: :ok
   def notify(%__MODULE__{pid: pid}, payload), do: notify(pid, payload)

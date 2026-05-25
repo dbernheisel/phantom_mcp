@@ -495,7 +495,11 @@ defmodule Phantom.StdioTest do
     end
 
     test "emits exception event on tool crash" do
-      ref = :telemetry_test.attach_event_handlers(self(), [[:phantom, :stdio, :exception]])
+      # Tool handlers run in their own Task under always-Task-mode, so the
+      # exception is surfaced via the generic `[:phantom, :dispatch, :exception]`
+      # event rather than a transport-specific one.
+      ref = :telemetry_test.attach_event_handlers(self(), [[:phantom, :dispatch, :exception]])
+
       ctx = start_stdio()
 
       send_request(ctx, %{
@@ -505,11 +509,10 @@ defmodule Phantom.StdioTest do
         params: %{name: "explode_tool", arguments: %{}}
       })
 
-      assert_receive {[:phantom, :stdio, :exception], ^ref, %{},
+      assert_receive {[:phantom, :dispatch, :exception], ^ref, %{},
                       %{
                         session: _,
-                        router: Test.MCP.Router,
-                        exception: %RuntimeError{},
+                        reason: %RuntimeError{},
                         stacktrace: _,
                         request: _
                       }}

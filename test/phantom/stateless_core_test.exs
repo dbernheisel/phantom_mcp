@@ -78,13 +78,23 @@ defmodule Phantom.StatelessCoreTest do
     request
   end
 
+  # Under always-Task-mode, tools dispatch asynchronously: run_tool returns
+  # {:noreply, session} and the eventual result arrives as a Session.respond
+  # GenServer cast on the test pid (session.pid = self()).
+  defp assert_responded(timeout \\ 1_000) do
+    assert_receive {:"$gen_cast", {:respond, _request_id, %{result: result}}}, timeout
+    result
+  end
+
   describe "encode-on-outbound" do
     test "input_required result has requestState encrypted as an opaque binary" do
       session = build_session()
       request = build_request()
 
-      assert {:reply, response, _session} =
+      assert {:noreply, _} =
                Router.dispatch_method("tools/call", request.params, request, session)
+
+      response = assert_responded()
 
       assert %{
                resultType: "inputRequired",
@@ -93,10 +103,8 @@ defmodule Phantom.StatelessCoreTest do
              } = response
 
       assert is_binary(token)
-      # The raw term was a map; ensure it's not leaked through.
       refute is_map(token)
 
-      # Should round-trip back to the original raw state through RequestState.
       assert {:ok, %{step: :ready, seed: "default"}} =
                RequestState.decode(token, @secret)
     end
@@ -108,16 +116,17 @@ defmodule Phantom.StatelessCoreTest do
       token = RequestState.encode(%{step: :ready, seed: "echo"}, @secret)
       request = build_request(%{"requestState" => token})
 
-      assert {:reply, response, _session} =
+      assert {:noreply, _} =
                Router.dispatch_method("tools/call", request.params, request, session)
 
-      assert response == %{content: [%{type: :text, text: "resumed with seed=echo"}]}
+      assert assert_responded() == %{content: [%{type: :text, text: "resumed with seed=echo"}]}
     end
 
     test "an invalid requestState returns invalid_params" do
       session = build_session()
       request = build_request(%{"requestState" => "not-a-real-token"})
 
+      # State decode happens before the Task spawn, so this comes back inline.
       assert {:error, %{code: -32602} = error, _session} =
                Router.dispatch_method("tools/call", request.params, request, session)
 
@@ -127,14 +136,15 @@ defmodule Phantom.StatelessCoreTest do
     test "an expired requestState returns a distinct error code" do
       session = build_session()
       token = RequestState.encode(%{step: :ready, seed: "x"}, @secret)
-      # sleep past max_age:1
       Process.sleep(1_100)
       request = build_request(%{"requestState" => token})
 
-      # The test router doesn't customize max_age, so this will be valid under
+      # The test router doesn't customize max_age, so this stays valid under
       # the default 24h ttl — assert the success path until we expose max_age.
-      assert {:reply, _response, _session} =
+      assert {:noreply, _} =
                Router.dispatch_method("tools/call", request.params, request, session)
+
+      assert_responded()
     end
   end
 
@@ -181,8 +191,10 @@ defmodule Phantom.StatelessCoreTest do
       session = build_session()
       request = build_request(%{"protocolVersion" => "2026-07-28"}, "elicit_demo")
 
-      assert {:reply, response, _} =
+      assert {:noreply, _} =
                Router.dispatch_method("tools/call", request.params, request, session)
+
+      response = assert_responded()
 
       assert %{
                resultType: "inputRequired",
@@ -205,9 +217,10 @@ defmodule Phantom.StatelessCoreTest do
           %{"choice" => "blue"}
         )
 
-      assert {:reply, response, _} =
+      assert {:noreply, _} =
                Router.dispatch_method("tools/call", request.params, request, session)
 
+      response = assert_responded()
       assert %{content: [%{type: :text, text: text}]} = response
       assert text =~ "chose=blue"
       assert text =~ ~s|orig=%{"a" => 1}|
@@ -221,9 +234,10 @@ defmodule Phantom.StatelessCoreTest do
 
       request = build_request(%{"protocolVersion" => "2025-11-25"}, "elicit_demo")
 
-      assert {:reply, response, _} =
+      assert {:noreply, _} =
                Router.dispatch_method("tools/call", request.params, request, session)
 
+      response = assert_responded()
       assert %{content: [%{type: :text, text: text}]} = response
       assert text =~ "chose=red"
     end
