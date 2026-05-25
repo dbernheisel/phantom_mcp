@@ -65,4 +65,79 @@ defmodule Phantom.RequestTest do
                })
     end
   end
+
+  describe "trace_context/1" do
+    test "extracts the three W3C fields when present" do
+      {:ok, request} =
+        Request.build(%{
+          "jsonrpc" => "2.0",
+          "id" => 1,
+          "method" => "ping",
+          "params" => %{
+            "_meta" => %{
+              "traceparent" => "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+              "tracestate" => "rojo=00f067aa0ba902b7",
+              "baggage" => "userId=alice"
+            }
+          }
+        })
+
+      assert Request.trace_context(request) == %{
+               traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+               tracestate: "rojo=00f067aa0ba902b7",
+               baggage: "userId=alice"
+             }
+    end
+
+    test "omits keys that aren't set" do
+      {:ok, request} =
+        Request.build(%{
+          "jsonrpc" => "2.0",
+          "id" => 1,
+          "method" => "ping",
+          "params" => %{"_meta" => %{"traceparent" => "x"}}
+        })
+
+      assert Request.trace_context(request) == %{traceparent: "x"}
+    end
+
+    test "returns an empty map when no _meta is present" do
+      {:ok, request} = Request.build(%{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
+      assert Request.trace_context(request) == %{}
+    end
+  end
+
+  describe "with_cache/2" do
+    test "adds ttlMs" do
+      assert %{ttlMs: 60_000} = Request.with_cache(%{content: []}, ttl_ms: 60_000)
+    end
+
+    test "encodes scope as a JSON string" do
+      assert %{cacheScope: "public"} = Request.with_cache(%{}, scope: :public)
+      assert %{cacheScope: "private"} = Request.with_cache(%{}, scope: :private)
+    end
+
+    test "accepts both options at once" do
+      assert %{ttlMs: 30_000, cacheScope: "public"} =
+               Request.with_cache(%{content: []}, ttl_ms: 30_000, scope: :public)
+    end
+
+    test "omits keys when their options are absent" do
+      result = Request.with_cache(%{content: []}, [])
+      refute Map.has_key?(result, :ttlMs)
+      refute Map.has_key?(result, :cacheScope)
+    end
+
+    test "preserves all existing keys on the result" do
+      result =
+        Request.with_cache(
+          %{content: [%{type: :text, text: "x"}], structuredContent: %{a: 1}},
+          ttl_ms: 10
+        )
+
+      assert result.content == [%{type: :text, text: "x"}]
+      assert result.structuredContent == %{a: 1}
+      assert result.ttlMs == 10
+    end
+  end
 end

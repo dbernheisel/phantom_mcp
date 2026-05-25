@@ -117,6 +117,58 @@ defmodule Phantom.Request do
     }
   end
 
+  @doc """
+  Extract the W3C Trace Context fields (per MCP `2026-07-28` `_meta`).
+
+  Returns a map with `:traceparent`, `:tracestate`, and `:baggage` keys when
+  present in the request's `_meta`. Telemetry consumers (OpenTelemetry et al.)
+  can pick this up off `metadata.trace_context` on `[:phantom, :dispatch]`
+  spans to continue an upstream trace through Phantom.
+  """
+  def trace_context(%__MODULE__{meta: meta}) when is_map(meta) do
+    remove_nils(%{
+      traceparent: meta["traceparent"],
+      tracestate: meta["tracestate"],
+      baggage: meta["baggage"]
+    })
+  end
+
+  def trace_context(_), do: %{}
+
+  @doc """
+  Annotate a JSON-RPC result with MCP `2026-07-28` cache hints.
+
+  These are *advisory* — the server doesn't cache; the hints tell the client
+  (and any intermediate CDN / gateway) how to treat the result. Modeled on
+  HTTP `Cache-Control`.
+
+  Options:
+
+  - `:ttl_ms` — how long the client may consider the result fresh, in milliseconds
+    (becomes top-level `ttlMs` on the result)
+  - `:scope` — `:public` (shareable across users) or `:private` (per-session);
+    becomes top-level `cacheScope`
+
+  Works on any result map — `tools/call`, `resources/read`, `prompts/get`,
+  list responses, completions:
+
+      Tool.text("...") |> Request.with_cache(ttl_ms: 60_000, scope: :public)
+
+      Resource.list(links, nil) |> Request.with_cache(ttl_ms: 300_000, scope: :public)
+  """
+  def with_cache(%{} = result, opts) do
+    result
+    |> put_if_set(:ttlMs, Keyword.get(opts, :ttl_ms))
+    |> put_if_set(:cacheScope, encode_scope(Keyword.get(opts, :scope)))
+  end
+
+  defp put_if_set(map, _key, nil), do: map
+  defp put_if_set(map, key, value), do: Map.put(map, key, value)
+
+  defp encode_scope(nil), do: nil
+  defp encode_scope(:public), do: "public"
+  defp encode_scope(:private), do: "private"
+
   @doc "Ping request"
   def ping() do
     %{jsonrpc: "2.0", method: "ping", id: UUIDv7.generate()}

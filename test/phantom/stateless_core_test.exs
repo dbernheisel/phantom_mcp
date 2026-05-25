@@ -138,6 +138,44 @@ defmodule Phantom.StatelessCoreTest do
     end
   end
 
+  describe "trace context propagation" do
+    test "[:phantom, :dispatch] span metadata includes trace_context from _meta" do
+      handler_id = "trace-ctx-test-#{System.unique_integer()}"
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:phantom, :dispatch, :start],
+        fn _event, _measurements, metadata, _ ->
+          send(test_pid, {:span_metadata, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      session = build_session()
+
+      request =
+        build_request(
+          %{
+            "traceparent" => "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            "tracestate" => "rojo=00f067aa0ba902b7"
+          },
+          "resume_demo"
+        )
+
+      Router.dispatch_method(["tools/call", request.params, request, session])
+
+      assert_receive {:span_metadata, %{trace_context: trace_context}}
+
+      assert trace_context == %{
+               traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+               tracestate: "rojo=00f067aa0ba902b7"
+             }
+    end
+  end
+
   describe "Session.elicit/3 with :state — protocol-agnostic" do
     test "under stateless: tool's elicit call yields an inputRequired result with encrypted state" do
       session = build_session()
