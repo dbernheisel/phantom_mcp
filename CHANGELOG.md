@@ -1,13 +1,21 @@
 ## Unreleased
 
-- Initial support for MCP 2026-07-28 stateless core. Tools can return
-  `Phantom.Tool.input_required/1` or call `Phantom.Session.request_input/3`
-  with `state: ...` to participate in the new multi-round-trip flow. The
-  dispatcher encrypts the `requestState` blob on the way out and restores
-  it onto `session.state` on the next call, so any node can serve the
-  continuation without sticky sessions. `Phantom.Session.elicit/3` (inline
-  blocking) continues to work under legacy protocols and raises under
-  2026-07-28 with guidance pointing at `request_input/3`.
+- Initial support for MCP 2026-07-28 stateless core. Three patterns for
+  eliciting input from the client, all working on both protocols:
+    - `Phantom.Session.elicit(session, elicit, await: true)` — protocol-
+      agnostic inline blocking. The tool's Task suspends on stateless
+      requests; the client re-issues the call (possibly on a different
+      node) and Phantom delivers the response back inline.
+    - `Phantom.Session.request_input/3` — explicit re-entry. Returns a
+      tagged tuple the dispatcher converts to `inputRequired` (stateless)
+      or an SSE elicit round-trip (legacy). The handler is re-entered
+      with `session.state` populated.
+    - `Phantom.Tool.input_required/1` — lower-level result builder.
+- Tools/call now always dispatches in a spawned Task. Tool crashes are
+  isolated to the Task (the HTTP/session process keeps serving) and
+  surface via the `[:phantom, :dispatch, :exception]` telemetry event.
+- New: `Phantom.Session.respond_error/3` finalizes a pending request with
+  a JSON-RPC error from an async task.
 - New: `Phantom.Router` accepts `:secret_key_base` for the encrypted
   `requestState` codec.
 - New: `Phantom.ProtocolVersion` (single source of truth for supported
