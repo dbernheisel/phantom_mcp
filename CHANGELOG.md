@@ -1,11 +1,13 @@
 ## Unreleased
 
 - Initial support for MCP 2026-07-28 stateless core. Tools can return
-  `Phantom.Tool.input_required/1` (or call `Session.elicit(session, elicit,
-  state: ...)`) to participate in the new multi-round-trip flow. The
+  `Phantom.Tool.input_required/1` or call `Phantom.Session.request_input/3`
+  with `state: ...` to participate in the new multi-round-trip flow. The
   dispatcher encrypts the `requestState` blob on the way out and restores
   it onto `session.state` on the next call, so any node can serve the
-  continuation without sticky sessions.
+  continuation without sticky sessions. `Phantom.Session.elicit/3` (inline
+  blocking) continues to work under legacy protocols and raises under
+  2026-07-28 with guidance pointing at `request_input/3`.
 - New: `Phantom.Router` accepts `:secret_key_base` for the encrypted
   `requestState` codec.
 - New: `Phantom.ProtocolVersion` (single source of truth for supported

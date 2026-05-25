@@ -98,46 +98,83 @@ defmodule Phantom.Session do
   end
 
   @doc """
-  Elicit input from the client.
+  Elicit input from the client, blocking until the response.
 
-  Two call patterns, selected by whether `:state` is passed:
+  Returns `{:ok, response}` where `response` is the client's JSON map
+  (`"action"` and `"content"` keys), or `:not_supported` / `:timeout` /
+  `:error`.
 
-  - **Without `:state`** — blocks until the client responds via the SSE
-    `elicitation/create` round-trip. Returns `{:ok, response}` where
-    response is the client's JSON map (`"action"` and `"content"` keys).
-    Only works under MCP `≤ 2025-11-25` or stdio.
-
-  - **With `:state`** — returns `{:input_required, elicit, state, session}`
-    without blocking. The dispatcher converts this to a `Tool.input_required`
-    result under MCP `2026-07-28`, or performs the SSE round-trip and
-    re-invokes the handler with `session.state` populated under legacy
-    protocols. The handler is *re-entered* on resume rather than continuing
-    in place, so structure it with a function-head clause that matches on
-    `%Session{state: %{...}}` for the resume case.
+  > #### Legacy protocols only {: .warning}
+  >
+  > Under MCP `2026-07-28` (stateless core) there is no persistent stream
+  > to block on; calling `elicit/3` on a stateless request raises. Use
+  > `request_input/3` for the explicit re-entry pattern, which works on
+  > both protocols.
 
   Options:
-    - `:state` — opaque term carried across the round-trip. On resume it
-      arrives at `session.state` so the handler can pattern-match.
-    - `:timeout` - max blocking time in ms (legacy path only; default: 5 minutes)
+    - `:timeout` — max blocking time in ms (default: 5 minutes)
   """
   @spec elicit(t, Phantom.Elicit.t(), keyword()) ::
           {:ok, response :: map()}
-          | {:input_required, Phantom.Elicit.t(), state :: term(), t}
           | :not_supported
           | :error
           | :timeout
   def elicit(session, elicitation, opts \\ []) do
-    case Keyword.fetch(opts, :state) do
-      {:ok, state} ->
-        # Yield to the dispatcher: under stateless core this becomes a
-        # Tool.input_required result; under legacy the dispatcher performs
-        # the SSE elicit round-trip and re-invokes the handler with
-        # `session.state` populated to the same value.
-        {:input_required, elicitation, state, session}
+    if stateless?(session) do
+      raise ArgumentError, """
+      Phantom.Session.elicit/3 is not supported under MCP 2026-07-28.
 
-      :error ->
-        do_elicit(session, elicitation, opts)
+      Use Phantom.Session.request_input/3 with `state: ...` to participate
+      in the multi-round-trip flow. Structure your handler with a function-
+      head clause that pattern-matches on `%Phantom.Session{state: %{...}}`
+      for the resume case. See `m:Phantom.Session.request_input/3` for the
+      pattern.
+      """
     end
+
+    do_elicit(session, elicitation, opts)
+  end
+
+  defp stateless?(%__MODULE__{request: %{meta: meta}}) when is_map(meta) do
+    Phantom.ProtocolVersion.mode(meta["protocolVersion"]) == :stateless_core
+  end
+
+  defp stateless?(_), do: false
+
+  @doc """
+  Request input from the client with explicit re-entry on continuation.
+
+  Returns `{:input_required, elicit, state, session}` — a tagged tuple the
+  dispatcher recognizes. Under MCP `2026-07-28` it becomes a
+  `Phantom.Tool.input_required/1` result with an encrypted `requestState`;
+  under legacy protocols the dispatcher performs the SSE `elicitation/create`
+  round-trip and re-invokes the handler. Either way the handler is
+  *re-entered* (not resumed in place) with `session.state` populated to the
+  value you passed.
+
+  Structure the handler with a function-head clause for the resume case:
+
+      def my_tool(%{"name" => name},
+                  %Session{state: %{step: :got_name, params: orig}} = session) do
+        do_work(orig, name, session)
+      end
+
+      def my_tool(params, session) do
+        Session.request_input(session,
+          Phantom.Elicit.form(%{message: "Your name?", requested_schema: [
+            %{name: "name", type: :string, required: true}
+          ]}),
+          state: %{step: :got_name, params: params})
+      end
+
+  Required options:
+    - `:state` — opaque term that arrives at `session.state` on resume
+  """
+  @spec request_input(t, Phantom.Elicit.t(), keyword()) ::
+          {:input_required, Phantom.Elicit.t(), state :: term(), t}
+  def request_input(session, elicitation, opts) do
+    state = Keyword.fetch!(opts, :state)
+    {:input_required, elicitation, state, session}
   end
 
   defp do_elicit(session, elicitation, opts) do

@@ -308,7 +308,7 @@ defmodule Test.MCP.Router do
   end
 
   def resume_tool(params, session) do
-    Session.elicit(
+    Session.request_input(
       session,
       Phantom.Elicit.build(%{
         message: "Your name?",
