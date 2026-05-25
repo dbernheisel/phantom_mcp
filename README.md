@@ -682,6 +682,39 @@ There are several optional callbacks to help you hook into the lifecycle of the 
 
 For Telemetry, please see `m:Phantom.Plug#module-telemetry` and `m:Phantom.Router#module-telemetry` for emitted telemetry hooks.
 
+## Distributed tracing
+
+Under MCP `2026-07-28`, clients carry W3C Trace Context — `traceparent`,
+`tracestate`, and `baggage` — in the request's `_meta`. Phantom automatically
+extracts these and surfaces them on the `[:phantom, :dispatch]` telemetry
+span under `metadata.trace_context`. Wire your tracer to the event.
+
+Example with OpenTelemetry:
+
+```elixir
+# In your application's start callback:
+:telemetry.attach(
+  "phantom-otel-dispatch",
+  [:phantom, :dispatch, :start],
+  &MyApp.Telemetry.handle_dispatch/4,
+  nil
+)
+
+defmodule MyApp.Telemetry do
+  def handle_dispatch(_event, _measurements, %{method: method, trace_context: ctx}, _config) do
+    # Extract the upstream W3C trace context into OpenTelemetry's process state
+    :otel_propagator_text_map.extract(Enum.map(ctx, fn {k, v} -> {Atom.to_string(k), v} end))
+
+    # Start a child span for this dispatch
+    OpenTelemetry.Tracer.start_span("mcp:#{method}")
+  end
+end
+```
+
+For other tracers, the pattern is the same: attach to `[:phantom, :dispatch, :start]`
+and read `metadata.trace_context` — it's a map with `:traceparent`, `:tracestate`,
+and `:baggage` keys (only the ones present in the request are included).
+
 ## Persistent Streams (legacy protocols, ≤ 2025-11-25)
 
 > Under MCP `2026-07-28` (stateless core), persistent SSE streams and
