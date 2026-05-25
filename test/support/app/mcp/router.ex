@@ -337,7 +337,7 @@ defmodule Test.MCP.Router do
   end
 
   def elicit_tool(_params, session) do
-    case Session.elicit(session, @elicit_name, await: true) do
+    case Session.elicit(session, @elicit_name) do
       {:ok, %{"action" => "accept", "content" => content}} ->
         {:reply, Tool.text(%{hello: "my name is #{content["name"]}"}), session}
 
@@ -362,7 +362,7 @@ defmodule Test.MCP.Router do
     # closed by the time the Task invokes it.
     Task.start(fn ->
       reply =
-        case Session.elicit(session, @elicit_name, await: true) do
+        case Session.elicit(session, @elicit_name) do
           {:ok, %{"action" => "accept", "content" => content}} ->
             Tool.text(%{hello: "async my name is #{content["name"]}"})
 
@@ -386,9 +386,7 @@ defmodule Test.MCP.Router do
   end
 
   def url_elicit_tool(_params, session) do
-    case Session.elicit_url(session, "https://example.com/auth", "Please authenticate",
-           await: true
-         ) do
+    case Session.elicit_url(session, "https://example.com/auth", "Please authenticate") do
       {:ok, %{"action" => "accept", "content" => content}} ->
         {:reply, Tool.text(%{authenticated: true, token: content["token"]}), session}
 

@@ -1,21 +1,20 @@
 ## Unreleased
 
 - Initial support for MCP 2026-07-28 stateless core. `Phantom.Session.elicit/3`
-  now has two call patterns, both working on both protocols:
-    - **With `await: true`** — inline blocking. The handler continues
-      after the response arrives. Under stateless, the tool's Task is
-      suspended and resumed inline when the follow-up `tools/call`
-      arrives, possibly on a different node.
-    - **Without `:await`** — re-entry. Returns `{:input_required, elicit,
-      state, session}`; the dispatcher converts that to `inputRequired`
-      (stateless) or an SSE elicit round-trip (legacy). The handler is
-      re-entered with `session.state` populated to whatever you passed
-      as `:state`.
+  has two call patterns with protocol-aware defaults:
+    - **Inline blocking** (`await: true`, or default under legacy) — the
+      handler continues after the response arrives. Under stateless, the
+      tool's Task is suspended and resumed inline when the follow-up
+      `tools/call` arrives, possibly on a different node.
+    - **Re-entry** (`:state` set, or default under stateless) — returns
+      `{:input_required, elicit, state, session}`; the dispatcher converts
+      that to `inputRequired` (stateless) or an SSE elicit round-trip
+      (legacy). The handler is re-entered with `session.state` populated to
+      whatever you passed as `:state`.
   - `Phantom.Tool.input_required/1` is the lower-level result builder.
-- **Breaking change**: `Phantom.Session.elicit/3` without `:await` now
-  returns the re-entry tagged tuple rather than blocking inline. Existing
-  legacy callers that expected `{:ok, response}` need to pass
-  `await: true`.
+  - Existing legacy code that called `Session.elicit/3` without opts
+    continues to work unchanged — the default under legacy is still inline
+    blocking.
 - Tools/call now always dispatches in a spawned Task. Tool crashes are
   isolated to the Task (the HTTP/session process keeps serving) and
   surface via the `[:phantom, :dispatch, :exception]` telemetry event.

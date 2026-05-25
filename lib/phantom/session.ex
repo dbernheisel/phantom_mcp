@@ -100,23 +100,34 @@ defmodule Phantom.Session do
   @doc """
   Elicit input from the client.
 
-  Two call patterns selected by whether `:await` is set:
+  Two call patterns, with protocol-aware defaults that preserve historical
+  behavior:
 
-  - **With `:await`** — inline blocking. Returns `{:ok, response}` where
-    `response` is the client's JSON map (`"action"` and `"content"` keys),
-    or `:not_supported` / `:timeout` / `:error`. Works on both protocols:
-    under legacy the call blocks via the open SSE stream; under MCP
-    `2026-07-28` Phantom suspends the tool's Task, returns an
-    `inputRequired` result to the client, and resumes the Task inline
-    when the follow-up `tools/call` arrives (possibly on another node).
+  - **Inline blocking** (`:await` true, or default under legacy) — returns
+    `{:ok, response}` where `response` is the client's JSON map (`"action"`
+    and `"content"` keys), or `:not_supported` / `:timeout` / `:error`.
+    Under legacy MCP protocols the call blocks via the open SSE stream;
+    under MCP `2026-07-28` Phantom suspends the tool's Task, returns an
+    `inputRequired` result to the client, and resumes the Task inline when
+    the follow-up `tools/call` arrives (possibly on another node).
 
-  - **Without `:await`** — re-entry. Returns `{:input_required, elicit,
-    state, session}` — a tagged tuple the dispatcher converts to an
-    `inputRequired` result (stateless) or runs through the SSE elicit
-    round-trip + handler re-invocation (legacy). The handler is *re-
-    entered* with `session.state` populated to whatever you passed as
-    `:state` (default `nil`). Structure the handler with a function-head
-    clause that matches on `%Session{state: %{...}}` for the resume case.
+  - **Re-entry** (`:state` set, or default under stateless) — returns
+    `{:input_required, elicit, state, session}`, a tagged tuple the
+    dispatcher converts to an `inputRequired` result (stateless) or runs
+    through the SSE elicit round-trip + handler re-invocation (legacy).
+    The handler is *re-entered* with `session.state` populated to whatever
+    you passed as `:state` (default `nil`). Structure the handler with a
+    function-head clause that matches on `%Session{state: %{...}}`.
+
+  Protocol-aware defaults — when neither `:await` nor `:state` is set:
+
+  - Under legacy protocols (`≤ 2025-11-25`) the call defaults to inline
+    blocking. Existing legacy code that pattern-matches `{:ok, response}`
+    against `Session.elicit(session, elicit)` continues to work unchanged.
+  - Under MCP `2026-07-28` (stateless core) the call defaults to re-entry
+    with `state: nil`. Inline blocking under stateless requires explicit
+    `await: true` because it can't be the default — code that relied on the
+    implicit blocking under legacy would otherwise silently change semantics.
 
   Pick based on style preference:
 
@@ -136,10 +147,10 @@ defmodule Phantom.Session do
       end
 
   Options:
-    - `:await` — `true` for inline blocking (default: `false`)
-    - `:state` — value placed on `session.state` on re-entry; ignored when
-      `:await` is set
-    - `:timeout` — max blocking time in ms (`:await` only; default: 5 minutes)
+    - `:await` — `true` to force inline blocking regardless of protocol
+    - `:state` — value placed on `session.state` on re-entry; forces re-entry
+      mode regardless of protocol
+    - `:timeout` — max blocking time in ms (`:await` mode only; default: 5 minutes)
   """
   @spec elicit(t, Phantom.Elicit.t(), keyword()) ::
           {:ok, response :: map()}
@@ -149,14 +160,24 @@ defmodule Phantom.Session do
           | :timeout
   def elicit(session, elicitation, opts \\ []) do
     cond do
-      Keyword.get(opts, :await, false) and stateless?(session) ->
-        stateless_await(session, elicitation, opts)
-
+      # Explicit :await — force inline blocking on either protocol.
       Keyword.get(opts, :await, false) ->
-        do_elicit(session, elicitation, opts)
+        if stateless?(session) do
+          stateless_await(session, elicitation, opts)
+        else
+          do_elicit(session, elicitation, opts)
+        end
+
+      # Explicit :state — force re-entry on either protocol.
+      Keyword.has_key?(opts, :state) ->
+        {:input_required, elicitation, opts[:state], session}
+
+      # Protocol-aware default: stateless → re-entry, legacy → inline blocking.
+      stateless?(session) ->
+        {:input_required, elicitation, nil, session}
 
       true ->
-        {:input_required, elicitation, Keyword.get(opts, :state), session}
+        do_elicit(session, elicitation, opts)
     end
   end
 

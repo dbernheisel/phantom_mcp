@@ -448,12 +448,34 @@ defmodule Phantom.StatelessCoreTest do
     end
   end
 
-  describe "Session.elicit/3 (no opts) — defaults to re-entry with nil state" do
-    test "returns the tagged tuple with state: nil on both protocols" do
-      session = build_session()
+  describe "Session.elicit/3 — protocol-aware default mode" do
+    test "stateless: no opts returns the re-entry tagged tuple with nil state" do
+      request = build_request(%{"protocolVersion" => "2026-07-28"})
+      session = %{build_session() | request: request}
       elicit = Phantom.Elicit.form(%{message: "x", requested_schema: []})
 
-      assert {:input_required, ^elicit, nil, ^session} = Phantom.Session.elicit(session, elicit)
+      assert {:input_required, ^elicit, nil, _} = Phantom.Session.elicit(session, elicit)
+    end
+
+    test "legacy: no opts blocks via inline path (preserves existing behavior)" do
+      request = build_request(%{"protocolVersion" => "2025-11-25"})
+      # No transport, no elicit closure, no client capability — falls through
+      # to :not_supported. Critically, this is NOT the re-entry tagged tuple,
+      # so existing `{:ok, _} = Session.elicit(session, elicit)` callers keep
+      # their original semantics.
+      session = %{build_session() | request: request, pid: nil, elicit: nil}
+      elicit = Phantom.Elicit.form(%{message: "x", requested_schema: []})
+
+      assert :not_supported = Phantom.Session.elicit(session, elicit)
+    end
+
+    test "explicit :state forces re-entry on legacy" do
+      request = build_request(%{"protocolVersion" => "2025-11-25"})
+      session = %{build_session() | request: request}
+      elicit = Phantom.Elicit.form(%{message: "x", requested_schema: []})
+
+      assert {:input_required, ^elicit, %{step: :ok}, _} =
+               Phantom.Session.elicit(session, elicit, state: %{step: :ok})
     end
   end
 end
