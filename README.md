@@ -772,48 +772,6 @@ The new protocol adds three optional request headers your LB can route on
 - `mcp-method` — `"tools/call"`, `"prompts/list"`, etc.
 - `mcp-name` — the tool or prompt name (e.g. `"search"`)
 
-Useful patterns:
-
-**Split legacy and stateless traffic onto separate pools.** Useful when
-you're running a stateful cluster (with `Phantom.Tracker`) for legacy
-clients and want stateless traffic to hit a separate, sticky-session-free
-pool:
-
-```nginx
-map $http_mcp_protocol_version $phantom_pool {
-  "2026-07-28" stateless_pool;
-  default      legacy_pool;
-}
-
-server {
-  location /mcp {
-    proxy_pass http://$phantom_pool;
-  }
-}
-```
-
-**Rate-limit per method.** Cap `tools/call` separately from `tools/list`:
-
-```nginx
-limit_req_zone $http_mcp_method zone=mcp_method:10m rate=100r/m;
-
-server {
-  location /mcp {
-    limit_req zone=mcp_method burst=20;
-    proxy_pass http://phantom_mcp;
-  }
-}
-```
-
-**Per-tool routing.** Send heavy tool calls to a dedicated worker pool:
-
-```nginx
-map $http_mcp_name $phantom_worker {
-  "heavy_analysis_tool" heavy_pool;
-  default               default_pool;
-}
-```
-
 Phantom doesn't read these headers server-side — they exist for the LB.
 
 ### Response caching
