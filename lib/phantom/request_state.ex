@@ -16,15 +16,22 @@ defmodule Phantom.RequestState do
 
   ## Configuration
 
-  Encoding requires a `secret_key_base` — a high-entropy binary, typically
-  the same one your Phoenix endpoint uses. Pass it to `use Phantom.Router`:
+  Encoding requires two values, both set on the router:
 
-      use Phantom.Router,
-        name: "MyApp",
-        secret_key_base: Application.compile_env(:my_app, :secret_key_base)
+  - `:secret_key_base` — a high-entropy binary of at least 64 bytes (typically
+    the same one your Phoenix endpoint uses).
+  - `:request_state_salt` — a string used as the HKDF salt to derive a key
+    specifically for `requestState` blobs. Doesn't need to be secret, but
+    must be stable; rotating it invalidates all in-flight blobs.
+
+  ```elixir
+  use Phantom.Router,
+    name: "MyApp",
+    secret_key_base: Application.compile_env(:my_app, :secret_key_base),
+    request_state_salt: "myapp request_state v1"
+  ```
   """
 
-  @salt "phantom_request_state"
   # 24 hours
   @default_max_age 86_400
 
@@ -32,11 +39,12 @@ defmodule Phantom.RequestState do
   Encrypts and signs `term` so it can travel through the client as a
   `requestState` value.
 
-  `secret_key_base` must be a binary of at least 64 bytes.
+  - `secret_key_base` must be a binary of at least 64 bytes.
+  - `salt` is a stable string the router carries (see module doc).
   """
-  def encode(term, secret_key_base)
-      when is_binary(secret_key_base) and byte_size(secret_key_base) >= 64 do
-    Plug.Crypto.encrypt(secret_key_base, @salt, term)
+  def encode(term, secret_key_base, salt)
+      when is_binary(secret_key_base) and byte_size(secret_key_base) >= 64 and is_binary(salt) do
+    Plug.Crypto.encrypt(secret_key_base, salt, term)
   end
 
   @doc """
@@ -47,10 +55,11 @@ defmodule Phantom.RequestState do
   `{:error, :invalid}` if the token has been tampered with, signed with a
   different secret, or is otherwise unparseable.
   """
-  def decode(token, secret_key_base, opts \\ []) when is_binary(token) do
+  def decode(token, secret_key_base, salt, opts \\ [])
+      when is_binary(token) and is_binary(salt) do
     max_age = Keyword.get(opts, :max_age, @default_max_age)
 
-    case Plug.Crypto.decrypt(secret_key_base, @salt, token, max_age: max_age) do
+    case Plug.Crypto.decrypt(secret_key_base, salt, token, max_age: max_age) do
       {:ok, term} -> {:ok, term}
       {:error, :expired} -> {:error, :expired}
       {:error, _} -> {:error, :invalid}

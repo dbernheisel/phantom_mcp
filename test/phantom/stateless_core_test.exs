@@ -10,12 +10,14 @@ defmodule Phantom.StatelessCoreTest do
   alias Phantom.Session
 
   @secret "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption"
+  @salt "phantom test salt"
 
   defmodule Router do
     use Phantom.Router,
       name: "StatelessTest",
       vsn: "1.0",
-      secret_key_base: "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption"
+      secret_key_base: "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption",
+      request_state_salt: "phantom test salt"
 
     require Phantom.Tool, as: T
 
@@ -162,14 +164,14 @@ defmodule Phantom.StatelessCoreTest do
       refute is_map(token)
 
       assert {:ok, %{step: :ready, seed: "default"}} =
-               RequestState.decode(token, @secret)
+               RequestState.decode(token, @secret, @salt)
     end
   end
 
   describe "decode-on-inbound" do
     test "a valid requestState in _meta populates session.state and resumes" do
       session = build_session()
-      token = RequestState.encode(%{step: :ready, seed: "echo"}, @secret)
+      token = RequestState.encode(%{step: :ready, seed: "echo"}, @secret, @salt)
       request = build_request(%{"requestState" => token})
 
       assert {:noreply, _} =
@@ -191,7 +193,7 @@ defmodule Phantom.StatelessCoreTest do
 
     test "an expired requestState returns a distinct error code" do
       session = build_session()
-      token = RequestState.encode(%{step: :ready, seed: "x"}, @secret)
+      token = RequestState.encode(%{step: :ready, seed: "x"}, @secret, @salt)
       Process.sleep(1_100)
       request = build_request(%{"requestState" => token})
 
@@ -259,12 +261,14 @@ defmodule Phantom.StatelessCoreTest do
              } = response
 
       assert is_binary(token)
-      assert {:ok, %{step: :got_choice, original: %{}}} = RequestState.decode(token, @secret)
+
+      assert {:ok, %{step: :got_choice, original: %{}}} =
+               RequestState.decode(token, @secret, @salt)
     end
 
     test "under stateless: resume from state runs the matching clause" do
       session = build_session()
-      token = RequestState.encode(%{step: :got_choice, original: %{"a" => 1}}, @secret)
+      token = RequestState.encode(%{step: :got_choice, original: %{"a" => 1}}, @secret, @salt)
 
       request =
         build_request(
@@ -331,7 +335,7 @@ defmodule Phantom.StatelessCoreTest do
       Phantom.Tracker.track_request(task_pid, ref_id, %{type: :pending_task, pid: task_pid})
 
       # Simulate the follow-up: a NEW request arrives carrying the encrypted ref_id.
-      token = RequestState.encode({:__phantom_await__, ref_id}, @secret)
+      token = RequestState.encode({:__phantom_await__, ref_id}, @secret, @salt)
       follow_session = build_session()
 
       follow_request =
@@ -388,12 +392,12 @@ defmodule Phantom.StatelessCoreTest do
              } = response
 
       assert is_binary(token)
-      assert {:ok, %{step: :got_name}} = RequestState.decode(token, @secret)
+      assert {:ok, %{step: :got_name}} = RequestState.decode(token, @secret, @salt)
     end
 
     test "under stateless: resume continues the prompt handler with session.state set" do
       session = build_session()
-      token = RequestState.encode(%{step: :got_name}, @secret)
+      token = RequestState.encode(%{step: :got_name}, @secret, @salt)
 
       {:ok, request} =
         Request.build(%{

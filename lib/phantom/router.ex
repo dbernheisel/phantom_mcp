@@ -162,6 +162,7 @@ defmodule Phantom.Router do
     icons = Keyword.get(opts, :icons, nil)
     website_url = Keyword.get(opts, :website_url, nil)
     secret_key_base = Keyword.get(opts, :secret_key_base, nil)
+    request_state_salt = Keyword.get(opts, :request_state_salt, nil)
 
     quote location: :keep, generated: true do
       @behaviour Phantom.Router
@@ -193,6 +194,7 @@ defmodule Phantom.Router do
       @icons unquote(icons)
       @website_url unquote(website_url)
       @secret_key_base unquote(secret_key_base)
+      @request_state_salt unquote(request_state_salt)
 
       Module.register_attribute(__MODULE__, :phantom_tools, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_prompts, accumulate: true)
@@ -976,6 +978,7 @@ defmodule Phantom.Router do
   defp validate_secret_key_base!(mod, info) do
     has_handlers? = info.tools != [] or info.prompts != []
     secret = info.secret_key_base
+    salt = info.request_state_salt
 
     cond do
       is_binary(secret) and byte_size(secret) < 64 ->
@@ -992,24 +995,49 @@ defmodule Phantom.Router do
         Generate a strong key with `:crypto.strong_rand_bytes(64) |> Base.encode64()`.
         """
 
+      is_binary(secret) and is_nil(salt) ->
+        raise ArgumentError, """
+        #{inspect(mod)}: :secret_key_base is configured but :request_state_salt is not.
+
+        Both must be set together. The salt is the HKDF salt used to derive a
+        key specifically for requestState blobs; it doesn't have to be secret
+        but it must be stable. Rotating it invalidates all in-flight blobs.
+
+            use Phantom.Router,
+              ...,
+              secret_key_base: ...,
+              request_state_salt: "myapp request_state v1"
+        """
+
+      is_nil(secret) and is_binary(salt) ->
+        raise ArgumentError, """
+        #{inspect(mod)}: :request_state_salt is configured but :secret_key_base is not.
+
+        Both must be set together.
+        """
+
       is_nil(secret) and has_handlers? and not test_env?() ->
         IO.warn("""
-        #{inspect(mod)} has tools or prompts but no :secret_key_base configured.
+        #{inspect(mod)} has tools or prompts but no :secret_key_base /
+        :request_state_salt configured.
 
         Tools/prompts that elicit input from the client will work under legacy
         MCP protocols (≤ 2025-11-25) but fail under MCP 2026-07-28 (stateless
-        core), because Phantom needs a key to encrypt the requestState
+        core), because Phantom needs both values to encrypt the requestState
         continuation blob.
 
         To support modern clients:
 
             use Phantom.Router,
               ...,
-              secret_key_base: Application.compile_env(:my_app, :secret_key_base)
+              secret_key_base: Application.compile_env(:my_app, :secret_key_base),
+              request_state_salt: "myapp request_state v1"
 
         The key must be at least 64 bytes. Generate one with:
 
             :crypto.strong_rand_bytes(64) |> Base.encode64()
+
+        The salt is a stable string of your choosing — see `Phantom.RequestState`.
         """)
 
       true ->
@@ -1035,7 +1063,8 @@ defmodule Phantom.Router do
             tools: @phantom_tools,
             resource_templates: @phantom_resource_templates,
             prompts: @phantom_prompts,
-            secret_key_base: @secret_key_base
+            secret_key_base: @secret_key_base,
+            request_state_salt: @request_state_salt
           }
         end
       end,
@@ -1316,13 +1345,15 @@ defmodule Phantom.Router do
 
   defp encode_request_state(%{resultType: "inputRequired", requestState: raw} = result, session)
        when not is_binary(raw) do
-    case session.router.__phantom__(:info)[:secret_key_base] do
-      nil ->
-        raise ArgumentError,
-              "Tool returned input_required but #{inspect(session.router)} has no :secret_key_base configured"
+    info = session.router.__phantom__(:info)
 
-      secret ->
-        %{result | requestState: Phantom.RequestState.encode(raw, secret)}
+    case {info[:secret_key_base], info[:request_state_salt]} do
+      {secret, salt} when is_binary(secret) and is_binary(salt) ->
+        %{result | requestState: Phantom.RequestState.encode(raw, secret, salt)}
+
+      _ ->
+        raise ArgumentError,
+              "Tool returned input_required but #{inspect(session.router)} has no :secret_key_base / :request_state_salt configured"
     end
   end
 
@@ -1568,10 +1599,12 @@ defmodule Phantom.Router do
 
   defp maybe_decode_state(router, session, request) do
     meta = request.meta || %{}
+    info = router.__phantom__(:info)
 
     with token when is_binary(token) <- Map.get(meta, "requestState", :none),
-         secret when is_binary(secret) <- router.__phantom__(:info)[:secret_key_base],
-         {:ok, term} <- Phantom.RequestState.decode(token, secret) do
+         secret when is_binary(secret) <- info[:secret_key_base],
+         salt when is_binary(salt) <- info[:request_state_salt],
+         {:ok, term} <- Phantom.RequestState.decode(token, secret, salt) do
       case term do
         {:__phantom_await__, ref_id} ->
           {:adopt_task, ref_id, session}

@@ -652,31 +652,35 @@ defmodule Phantom.Session do
         {:phantom_await_elicit, ref_id, elicitation, task_pid, request_id},
         state
       ) do
-    secret = state.session.router.__phantom__(:info)[:secret_key_base]
+    info = state.session.router.__phantom__(:info)
 
-    if is_nil(secret) do
-      __MODULE__.respond_error(
-        self(),
-        request_id,
-        Request.internal_error("Stateless await requires :secret_key_base on the router")
-      )
+    case {info[:secret_key_base], info[:request_state_salt]} do
+      {secret, salt} when is_binary(secret) and is_binary(salt) ->
+        state_blob = Phantom.RequestState.encode({:__phantom_await__, ref_id}, secret, salt)
 
-      {:noreply, state}
-    else
-      state_blob = Phantom.RequestState.encode({:__phantom_await__, ref_id}, secret)
+        Phantom.Tracker.track_request(task_pid, ref_id, %{
+          type: :pending_task,
+          pid: task_pid
+        })
 
-      Phantom.Tracker.track_request(task_pid, ref_id, %{
-        type: :pending_task,
-        pid: task_pid
-      })
+        __MODULE__.respond(
+          self(),
+          request_id,
+          Phantom.Tool.input_required(elicitation, state_blob)
+        )
 
-      __MODULE__.respond(
-        self(),
-        request_id,
-        Phantom.Tool.input_required(elicitation, state_blob)
-      )
+        {:noreply, state |> set_activity() |> schedule_inactivity()}
 
-      {:noreply, state |> set_activity() |> schedule_inactivity()}
+      _ ->
+        __MODULE__.respond_error(
+          self(),
+          request_id,
+          Request.internal_error(
+            "Stateless await requires :secret_key_base and :request_state_salt on the router"
+          )
+        )
+
+        {:noreply, state}
     end
   end
 

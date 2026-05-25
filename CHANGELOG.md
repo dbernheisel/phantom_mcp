@@ -20,8 +20,9 @@
   surface via the `[:phantom, :dispatch, :exception]` telemetry event.
 - New: `Phantom.Session.respond_error/3` finalizes a pending request with
   a JSON-RPC error from an async task.
-- New: `Phantom.Router` accepts `:secret_key_base` for the encrypted
-  `requestState` codec.
+- New: `Phantom.Router` accepts `:secret_key_base` and `:request_state_salt`
+  for the encrypted `requestState` codec. Both required when supporting
+  MCP `2026-07-28`.
 - New: `Phantom.RequestState` (Plug.Crypto-backed encode/decode of the
   continuation blob) and `Phantom.Session.stateless?/1` predicate.
 - New: `Phantom.Request.with_cache/2` annotates any result with `ttlMs` /
@@ -60,19 +61,27 @@ end
 
 **If you want to also support modern MCP `2026-07-28` clients:**
 
-*Step 1.* Add `:secret_key_base` to your router. Phantom encrypts the
-multi-round-trip `requestState` blob with `Plug.Crypto`, and nodes serving
-the same router must share this value. Generate a strong key with
-`:crypto.strong_rand_bytes(64) |> Base.encode64()`. The router raises at
-compile time if the key is too short, and warns if it's missing while
-tools or prompts are defined.
+*Step 1.* Add `:secret_key_base` and `:request_state_salt` to your router.
+Phantom encrypts the multi-round-trip `requestState` blob with `Plug.Crypto`;
+nodes serving the same router must share both values.
 
 ```elixir
 use Phantom.Router,
   name: "MyApp",
   vsn: "1.0",
-  secret_key_base: Application.compile_env(:my_app, :secret_key_base)
+  secret_key_base: Application.compile_env(:my_app, :secret_key_base),
+  request_state_salt: "myapp request_state v1"
 ```
+
+- `:secret_key_base` is a high-entropy binary ≥ 64 bytes. Generate one with
+  `:crypto.strong_rand_bytes(64) |> Base.encode64()`.
+- `:request_state_salt` is a stable string of your choosing — it's the HKDF
+  salt used to derive a key specifically for requestState blobs. Doesn't
+  need to be secret, but rotating it invalidates all in-flight blobs.
+
+The router raises at compile time if the key is too short, if one is set
+without the other, and warns if both are missing while tools or prompts
+are defined.
 
 *Step 2.* Pick a migration shape for your `Session.elicit/3` calls.
 Existing calls without `:await` work under legacy because legacy defaults
