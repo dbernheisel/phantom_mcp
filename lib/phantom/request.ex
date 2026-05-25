@@ -154,13 +154,14 @@ defmodule Phantom.Request do
       Resource.list(links, nil) |> Request.with_cache(ttl_ms: 300_000, scope: :public)
   """
   def with_cache(%{} = result, opts) do
-    result
-    |> put_if_set(:ttlMs, Keyword.get(opts, :ttl_ms))
-    |> put_if_set(:cacheScope, encode_scope(Keyword.get(opts, :scope)))
+    Map.merge(
+      result,
+      remove_nils(%{
+        ttlMs: Keyword.get(opts, :ttl_ms),
+        cacheScope: encode_scope(Keyword.get(opts, :scope))
+      })
+    )
   end
-
-  defp put_if_set(map, _key, nil), do: map
-  defp put_if_set(map, key, value), do: Map.put(map, key, value)
 
   defp encode_scope(nil), do: nil
   defp encode_scope(:public), do: "public"
