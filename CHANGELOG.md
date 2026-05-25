@@ -1,16 +1,21 @@
 ## Unreleased
 
-- Initial support for MCP 2026-07-28 stateless core. Three patterns for
-  eliciting input from the client, all working on both protocols:
-    - `Phantom.Session.elicit(session, elicit, await: true)` — protocol-
-      agnostic inline blocking. The tool's Task suspends on stateless
-      requests; the client re-issues the call (possibly on a different
-      node) and Phantom delivers the response back inline.
-    - `Phantom.Session.request_input/3` — explicit re-entry. Returns a
-      tagged tuple the dispatcher converts to `inputRequired` (stateless)
-      or an SSE elicit round-trip (legacy). The handler is re-entered
-      with `session.state` populated.
-    - `Phantom.Tool.input_required/1` — lower-level result builder.
+- Initial support for MCP 2026-07-28 stateless core. `Phantom.Session.elicit/3`
+  now has two call patterns, both working on both protocols:
+    - **With `await: true`** — inline blocking. The handler continues
+      after the response arrives. Under stateless, the tool's Task is
+      suspended and resumed inline when the follow-up `tools/call`
+      arrives, possibly on a different node.
+    - **Without `:await`** — re-entry. Returns `{:input_required, elicit,
+      state, session}`; the dispatcher converts that to `inputRequired`
+      (stateless) or an SSE elicit round-trip (legacy). The handler is
+      re-entered with `session.state` populated to whatever you passed
+      as `:state`.
+  - `Phantom.Tool.input_required/1` is the lower-level result builder.
+- **Breaking change**: `Phantom.Session.elicit/3` without `:await` now
+  returns the re-entry tagged tuple rather than blocking inline. Existing
+  legacy callers that expected `{:ok, response}` need to pass
+  `await: true`.
 - Tools/call now always dispatches in a spawned Task. Tool crashes are
   isolated to the Task (the HTTP/session process keeps serving) and
   surface via the `[:phantom, :dispatch, :exception]` telemetry event.

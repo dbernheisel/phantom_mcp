@@ -50,7 +50,7 @@ defmodule Phantom.Elicit do
       })
 
       def my_tool(params, session) do
-        case Phantom.Session.elicit(session, @elicit_name) do
+        case Phantom.Session.elicit(session, @elicit_name, await: true) do
           {:ok, %{"action" => "accept", "content" => content}} ->
             {:reply, Tool.text("Hello \#{content["name"]}"), session}
 
@@ -75,12 +75,11 @@ defmodule Phantom.Elicit do
 
   All property types accept `:name`, `:required`, `:title`, and `:description`.
 
-  ### Protocol-agnostic form elicitation
+  ### Re-entry form elicitation
 
-  Under MCP `2026-07-28` the SSE-based `elicitation/create` round-trip
-  doesn't exist; the server instead returns an `inputRequired` result with
-  an encrypted `requestState` blob. To write a handler that works under
-  both protocols, use `Phantom.Session.request_input/3`:
+  As an alternative to inline blocking with `await: true`, call
+  `Phantom.Session.elicit/3` without `:await` and pass `:state`. The
+  handler is *re-entered* on continuation with `session.state` populated:
 
       def my_tool(%{"name" => name},
                   %Session{state: %{step: :got_name, params: orig}} = session) do
@@ -88,16 +87,13 @@ defmodule Phantom.Elicit do
       end
 
       def my_tool(params, session) do
-        Session.request_input(session, @elicit_name, state: %{step: :got_name, params: params})
+        Session.elicit(session, @elicit_name, state: %{step: :got_name, params: params})
       end
 
-  The dispatcher takes care of the legacy SSE round-trip *or* the encrypted
-  `requestState` response per the client's protocol version. The handler
-  is re-entered (not resumed in place) on continuation, so structure your
-  function clauses to pattern-match `%Session{state: ...}` for the resume
-  case. `Phantom.Session.elicit/3` (the inline blocking form above) only
-  works under legacy protocols; it raises under MCP `2026-07-28`. See
-  `Phantom.Tool.input_required/1` for the lower-level result builder.
+  The dispatcher converts the call to an `inputRequired` result under
+  stateless or to an SSE elicit round-trip + handler re-invocation under
+  legacy. See `Phantom.Tool.input_required/1` for the lower-level result
+  builder.
 
   ## URL mode
 
@@ -150,7 +146,7 @@ defmodule Phantom.Elicit do
           elicitation_id: elicitation_id
         })
 
-        case Phantom.Session.elicit(session, elicitation) do
+        case Phantom.Session.elicit(session, elicitation, await: true) do
           {:ok, %{"action" => "accept", "content" => content}} ->
             {:reply, Tool.text("Authenticated"), session}
 

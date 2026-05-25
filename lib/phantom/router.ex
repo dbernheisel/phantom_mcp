@@ -1462,7 +1462,7 @@ defmodule Phantom.Router do
           if is_function(session.elicit) do
             session.elicit.(elicit, :timer.minutes(5))
           else
-            Session.elicit(session, elicit)
+            Session.elicit(session, elicit, await: true)
           end
 
         case elicit_response do

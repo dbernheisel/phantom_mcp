@@ -31,7 +31,7 @@ defmodule Phantom.StatelessCoreTest do
        ), session}
     end
 
-    tool :elicit_demo, description: "Calls Session.request_input/3 — protocol-agnostic" do
+    tool :elicit_demo, description: "Calls Session.elicit/3 (no await) — re-entry pattern" do
     end
 
     def elicit_demo(
@@ -42,7 +42,7 @@ defmodule Phantom.StatelessCoreTest do
     end
 
     def elicit_demo(params, session) do
-      Session.request_input(
+      Session.elicit(
         session,
         Phantom.Elicit.form(%{
           message: "pick",
@@ -206,7 +206,7 @@ defmodule Phantom.StatelessCoreTest do
     end
   end
 
-  describe "Session.request_input/3 — protocol-agnostic" do
+  describe "Session.elicit/3 (no :await) — re-entry pattern" do
     test "under stateless: tool's elicit call yields an inputRequired result with encrypted state" do
       session = build_session()
       request = build_request(%{"protocolVersion" => "2026-07-28"}, "elicit_demo")
@@ -324,28 +324,12 @@ defmodule Phantom.StatelessCoreTest do
     end
   end
 
-  describe "Session.elicit/3 — inline blocking (legacy only)" do
-    test "raises under MCP 2026-07-28 with guidance to use request_input/3" do
-      request = build_request(%{"protocolVersion" => "2026-07-28"})
-      session = %{build_session() | request: request}
+  describe "Session.elicit/3 (no opts) — defaults to re-entry with nil state" do
+    test "returns the tagged tuple with state: nil on both protocols" do
+      session = build_session()
+      elicit = Phantom.Elicit.form(%{message: "x", requested_schema: []})
 
-      assert_raise ArgumentError, ~r/request_input/, fn ->
-        Phantom.Session.elicit(
-          session,
-          Phantom.Elicit.form(%{message: "x", requested_schema: []})
-        )
-      end
-    end
-
-    test "does not raise under legacy protocol versions" do
-      request = build_request(%{"protocolVersion" => "2025-11-25"})
-      # No transport, no elicit closure — fall through to :error rather than raise
-      session = %{build_session() | request: request, pid: nil, elicit: nil}
-
-      assert Phantom.Session.elicit(
-               session,
-               Phantom.Elicit.form(%{message: "x", requested_schema: []})
-             ) == :not_supported
+      assert {:input_required, ^elicit, nil, ^session} = Phantom.Session.elicit(session, elicit)
     end
   end
 end

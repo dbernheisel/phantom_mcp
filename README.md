@@ -507,10 +507,10 @@ Phantom.Tracker.notify_resource_updated(uri)
 
 Two helpers, picked by how the dev wants to structure the handler.
 
-### Inline blocking — `Session.elicit/3`
+### Inline blocking — `Session.elicit/3` with `await: true`
 
-Inline pattern. The tool function "awaits" the response in place and
-continues. Pass `await: true` for protocol-agnostic behavior:
+The tool function "awaits" the response in place and continues inline.
+Same source on both protocols:
 
 ```elixir
 def my_tool(params, session) do
@@ -527,18 +527,18 @@ def my_tool(params, session) do
 end
 ```
 
-Without `await: true`, this only works under legacy MCP protocols
-(≤ 2025-11-25) or stdio; under MCP `2026-07-28` the call raises. With
-`await: true`, Phantom suspends the tool's Task on stateless requests,
-returns `inputRequired` to the client, and resumes the Task inline when
-the follow-up `tools/call` arrives — possibly on a different node.
-Requires `Phantom.PubSub` + `Phantom.Tracker` (the existing cross-node
-infrastructure) for stateless adoption.
+Under legacy protocols and stdio, the call blocks via the open SSE stream.
+Under MCP `2026-07-28`, Phantom suspends the tool's Task, returns
+`inputRequired` to the client, and resumes the Task inline when the
+follow-up `tools/call` arrives — possibly on a different node. The
+stateless adoption uses `Phantom.PubSub` + `Phantom.Tracker` (the
+existing cross-node infrastructure).
 
-### Protocol-agnostic re-entry — `Session.request_input/3`
+### Re-entry — `Session.elicit/3` (no `:await`)
 
-The handler is *re-entered* on continuation with `session.state` populated.
-Same source under both protocols:
+Call `Session.elicit/3` without `:await` (and pass `:state`) to get the
+re-entry pattern: the handler is invoked again with `session.state`
+populated on continuation. Same source under both protocols:
 
 ```elixir
 use Phantom.Router,
@@ -564,7 +564,7 @@ def delete_file(%{"confirm" => _}, session),
 
 # First-call clause — ask the user
 def delete_file(%{"path" => path}, session) do
-  Phantom.Session.request_input(
+  Phantom.Session.elicit(
     session,
     Phantom.Elicit.form(%{
       message: "Really delete #{path}?",
@@ -577,15 +577,16 @@ def delete_file(%{"path" => path}, session) do
 end
 ```
 
-Under `2026-07-28` `request_input/3` returns an `inputRequired` result with
-an encrypted `requestState` blob; any node can serve the follow-up. Under
+Under `2026-07-28` the call returns an `inputRequired` result with an
+encrypted `requestState` blob; any node can serve the follow-up. Under
 legacy protocols Phantom performs the SSE `elicitation/create` round-trip
 and re-invokes the handler — same handler code, no `if protocol_version`
 check.
 
-The `:secret_key_base` is required for `2026-07-28` because Phantom encrypts
-the `requestState` blob with `Plug.Crypto` (no Phoenix dependency). Each
-node serving the same router must share it; clients can hop nodes freely.
+The `:secret_key_base` is required for `2026-07-28` because Phantom
+encrypts the `requestState` blob with `Plug.Crypto` (no Phoenix
+dependency). Each node serving the same router must share it; clients
+can hop nodes freely.
 
 ## What PhantomMCP supports
 
