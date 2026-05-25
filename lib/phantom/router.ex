@@ -1347,7 +1347,7 @@ defmodule Phantom.Router do
         case maybe_decode_state(router, session, request) do
           {:ok, session} ->
             with {:ok, validated} <- JSONSchema.maybe_validate(tool.input_schema, args) do
-              run_tool(tool, validated, session, request)
+              run_handler(:tool, tool, validated, session, request)
             else
               {:error, reasons} ->
                 {:error, Request.invalid_params(%{validation_errors: reasons}), session}
@@ -1388,73 +1388,54 @@ defmodule Phantom.Router do
     end
   end
 
-  defp run_tool(tool, params, session, request) do
+  defp run_handler(kind, spec, params, session, request) do
     request_id = request.id
     parent_pid = session.pid
-    task_session = %{session | request: %{request | spec: tool}}
+    task_session = %{session | request: %{request | spec: spec}}
 
     spawn(fn ->
+      # `:phantom_adopter` and `:phantom_tool_request_id` are read by
+      # `finalize_result/5` and updated by `Phantom.Session` when a
+      # stateless-core `Session.elicit(await: true)` resumes the task on a
+      # new node with a new adopter pid + request id.
       Process.put(:phantom_adopter, parent_pid)
       Process.put(:phantom_tool_request_id, request_id)
 
       try do
-        handler_result = apply(tool.handler, tool.function, [params, task_session])
-        finalize_tool_result(handler_result, tool, params, task_session)
+        handler_result = apply(spec.handler, spec.function, [params, task_session])
+        finalize_result(kind, handler_result, spec, params, task_session)
       rescue
         exception ->
           :telemetry.execute([:phantom, :dispatch, :exception], %{}, %{
             kind: :error,
             reason: exception,
             stacktrace: __STACKTRACE__,
-            method: "tools/call",
+            method: telemetry_method(kind),
             params: params,
             request: request,
             session: task_session
           })
 
-          Session.respond_error(
-            Process.get(:phantom_adopter),
-            Process.get(:phantom_tool_request_id),
-            Request.internal_error(Exception.message(exception))
-          )
+          respond_error_to_caller(Request.internal_error(Exception.message(exception)))
       end
     end)
 
     {:noreply, session}
   end
 
-  defp finalize_tool_result({:reply, result, %Session{}}, _tool, _params, session) do
-    Session.respond(
-      Process.get(:phantom_adopter),
-      Process.get(:phantom_tool_request_id),
-      encode_request_state(Tool.response(result), session)
-    )
+  defp telemetry_method(:tool), do: "tools/call"
+  defp telemetry_method(:prompt), do: "prompts/get"
+
+  defp finalize_result(kind, {:reply, result, %Session{}}, _spec, _params, session) do
+    respond_to_caller(encode_request_state(format_response(kind, result, session), session))
   end
 
-  defp finalize_tool_result({:input_required, elicit, state, _}, tool, params, session) do
+  defp finalize_result(kind, {:input_required, elicit, state, _}, spec, params, session) do
     request = session.request
 
     case Phantom.ProtocolVersion.mode(Map.get(request.meta || %{}, "protocolVersion")) do
       :stateless_core ->
-        secret = session.router.__phantom__(:info)[:secret_key_base]
-
-        result =
-          if is_binary(secret) do
-            %{
-              resultType: "inputRequired",
-              inputRequests: Phantom.Elicit.to_input_requests(elicit),
-              requestState: Phantom.RequestState.encode(state, secret)
-            }
-          else
-            raise ArgumentError,
-                  "Tool returned input_required but #{inspect(session.router)} has no :secret_key_base configured"
-          end
-
-        Session.respond(
-          Process.get(:phantom_adopter),
-          Process.get(:phantom_tool_request_id),
-          result
-        )
+        respond_to_caller(encode_request_state(Tool.input_required(elicit, state), session))
 
       _legacy ->
         # Prefer the closure when available — under Task-mode the cross-process
@@ -1472,52 +1453,58 @@ defmodule Phantom.Router do
           {:ok, response} ->
             new_session = %{session | state: state}
             new_params = Map.merge(params, response)
-            handler_result = apply(tool.handler, tool.function, [new_params, new_session])
-            finalize_tool_result(handler_result, tool, new_params, new_session)
+            handler_result = apply(spec.handler, spec.function, [new_params, new_session])
+            finalize_result(kind, handler_result, spec, new_params, new_session)
 
           :not_supported ->
-            Session.respond_error(
-              Process.get(:phantom_adopter),
-              Process.get(:phantom_tool_request_id),
+            respond_error_to_caller(
               Request.invalid_params(%{elicit: "Client does not support elicitation"})
             )
 
           _ ->
-            Session.respond_error(
-              Process.get(:phantom_adopter),
-              Process.get(:phantom_tool_request_id),
-              Request.internal_error("Elicitation failed")
-            )
+            respond_error_to_caller(Request.internal_error("Elicitation failed"))
         end
     end
   end
 
-  defp finalize_tool_result({:error, error, %Session{}}, _tool, _params, _session) do
+  defp finalize_result(_kind, {:error, error, %Session{}}, _spec, _params, _session) do
+    respond_error_to_caller(error)
+  end
+
+  defp finalize_result(_kind, {:noreply, %Session{}}, _spec, _params, _session) do
+    :ok
+  end
+
+  defp finalize_result(_kind, {:elicitation_required, elicitations}, _spec, _params, _session)
+       when is_list(elicitations) do
+    respond_error_to_caller(Request.url_elicitation_required(elicitations))
+  end
+
+  defp finalize_result(kind, other, _spec, _params, session) do
+    respond_to_caller(format_response(kind, other, session))
+  end
+
+  defp format_response(:tool, result, _session), do: Tool.response(result)
+
+  defp format_response(:prompt, result, session),
+    do: Prompt.response(result, session.request.spec)
+
+  # `:phantom_adopter` / `:phantom_tool_request_id` are set in `run_handler/5`
+  # and updated by `Phantom.Session.stateless_await/3` after a cross-node
+  # resume so subsequent responses route to the new caller.
+  defp respond_to_caller(payload) do
+    Session.respond(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      payload
+    )
+  end
+
+  defp respond_error_to_caller(error) do
     Session.respond_error(
       Process.get(:phantom_adopter),
       Process.get(:phantom_tool_request_id),
       error
-    )
-  end
-
-  defp finalize_tool_result({:noreply, %Session{}}, _tool, _params, _session) do
-    :ok
-  end
-
-  defp finalize_tool_result({:elicitation_required, elicitations}, _tool, _params, _session)
-       when is_list(elicitations) do
-    Session.respond_error(
-      Process.get(:phantom_adopter),
-      Process.get(:phantom_tool_request_id),
-      Request.url_elicitation_required(elicitations)
-    )
-  end
-
-  defp finalize_tool_result(other, _tool, _params, _session) do
-    Session.respond(
-      Process.get(:phantom_adopter),
-      Process.get(:phantom_tool_request_id),
-      Tool.response(other)
     )
   end
 
@@ -1557,7 +1544,7 @@ defmodule Phantom.Router do
 
         case maybe_decode_state(router, session, request) do
           {:ok, session} ->
-            run_prompt(prompt, args, session, request)
+            run_handler(:prompt, prompt, args, session, request)
 
           {:adopt_task, ref_id, session} ->
             adopt_pending_task(ref_id, args, session, request)
@@ -1574,126 +1561,6 @@ defmodule Phantom.Router do
              }, session}
         end
     end
-  end
-
-  defp run_prompt(prompt, params, session, request) do
-    request_id = request.id
-    parent_pid = session.pid
-    prompt_session = %{session | request: %{request | spec: prompt}}
-
-    spawn(fn ->
-      Process.put(:phantom_adopter, parent_pid)
-      Process.put(:phantom_tool_request_id, request_id)
-
-      try do
-        handler_result = apply(prompt.handler, prompt.function, [params, prompt_session])
-        finalize_prompt_result(handler_result, prompt, params, prompt_session)
-      rescue
-        exception ->
-          :telemetry.execute([:phantom, :dispatch, :exception], %{}, %{
-            kind: :error,
-            reason: exception,
-            stacktrace: __STACKTRACE__,
-            method: "prompts/get",
-            params: params,
-            request: request,
-            session: prompt_session
-          })
-
-          Session.respond_error(
-            Process.get(:phantom_adopter),
-            Process.get(:phantom_tool_request_id),
-            Request.internal_error(Exception.message(exception))
-          )
-      end
-    end)
-
-    {:noreply, session}
-  end
-
-  defp finalize_prompt_result({:reply, result, %Session{}}, _prompt, _params, session) do
-    Session.respond(
-      Process.get(:phantom_adopter),
-      Process.get(:phantom_tool_request_id),
-      encode_request_state(Prompt.response(result, session.request.spec), session)
-    )
-  end
-
-  defp finalize_prompt_result({:input_required, elicit, state, _}, prompt, params, session) do
-    request = session.request
-
-    case Phantom.ProtocolVersion.mode(Map.get(request.meta || %{}, "protocolVersion")) do
-      :stateless_core ->
-        secret = session.router.__phantom__(:info)[:secret_key_base]
-
-        result =
-          if is_binary(secret) do
-            %{
-              resultType: "inputRequired",
-              inputRequests: Phantom.Elicit.to_input_requests(elicit),
-              requestState: Phantom.RequestState.encode(state, secret)
-            }
-          else
-            raise ArgumentError,
-                  "Prompt returned input_required but #{inspect(session.router)} has no :secret_key_base configured"
-          end
-
-        Session.respond(
-          Process.get(:phantom_adopter),
-          Process.get(:phantom_tool_request_id),
-          result
-        )
-
-      _legacy ->
-        elicit_response =
-          if is_function(session.elicit) do
-            session.elicit.(elicit, :timer.minutes(5))
-          else
-            Session.elicit(session, elicit, await: true)
-          end
-
-        case elicit_response do
-          {:ok, response} ->
-            new_session = %{session | state: state}
-            new_params = Map.merge(params, response)
-            handler_result = apply(prompt.handler, prompt.function, [new_params, new_session])
-            finalize_prompt_result(handler_result, prompt, new_params, new_session)
-
-          :not_supported ->
-            Session.respond_error(
-              Process.get(:phantom_adopter),
-              Process.get(:phantom_tool_request_id),
-              Request.invalid_params(%{elicit: "Client does not support elicitation"})
-            )
-
-          _ ->
-            Session.respond_error(
-              Process.get(:phantom_adopter),
-              Process.get(:phantom_tool_request_id),
-              Request.internal_error("Elicitation failed")
-            )
-        end
-    end
-  end
-
-  defp finalize_prompt_result({:error, error, %Session{}}, _prompt, _params, _session) do
-    Session.respond_error(
-      Process.get(:phantom_adopter),
-      Process.get(:phantom_tool_request_id),
-      error
-    )
-  end
-
-  defp finalize_prompt_result({:noreply, %Session{}}, _prompt, _params, _session) do
-    :ok
-  end
-
-  defp finalize_prompt_result(other, _prompt, _params, session) do
-    Session.respond(
-      Process.get(:phantom_adopter),
-      Process.get(:phantom_tool_request_id),
-      Prompt.response(other, session.request.spec)
-    )
   end
 
   @doc false

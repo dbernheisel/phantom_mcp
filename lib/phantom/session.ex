@@ -646,13 +646,12 @@ defmodule Phantom.Session do
         pid: task_pid
       })
 
-      result = %{
-        resultType: "inputRequired",
-        inputRequests: Phantom.Elicit.to_input_requests(elicitation),
-        requestState: state_blob
-      }
+      __MODULE__.respond(
+        self(),
+        request_id,
+        Phantom.Tool.input_required(elicitation, state_blob)
+      )
 
-      __MODULE__.respond(self(), request_id, result)
       {:noreply, state |> set_activity() |> schedule_inactivity()}
     end
   end

@@ -34,7 +34,8 @@ defmodule Phantom.RequestState do
 
   `secret_key_base` must be a binary of at least 64 bytes.
   """
-  def encode(term, secret_key_base) when is_binary(secret_key_base) do
+  def encode(term, secret_key_base)
+      when is_binary(secret_key_base) and byte_size(secret_key_base) >= 64 do
     Plug.Crypto.encrypt(secret_key_base, @salt, term)
   end
 
