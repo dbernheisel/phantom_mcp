@@ -1555,15 +1555,145 @@ defmodule Phantom.Router do
       prompt ->
         args = Map.get(params, "arguments", %{})
 
-        wrap(
-          :prompt,
-          apply(prompt.handler, prompt.function, [
-            args,
-            %{session | request: %{request | spec: prompt}}
-          ]),
-          session
-        )
+        case maybe_decode_state(router, session, request) do
+          {:ok, session} ->
+            run_prompt(prompt, args, session, request)
+
+          {:adopt_task, ref_id, session} ->
+            adopt_pending_task(ref_id, args, session, request)
+
+          {:error, :invalid_request_state} ->
+            {:error, Request.invalid_params(%{requestState: "Invalid request state"}), session}
+
+          {:error, :expired_request_state} ->
+            {:error,
+             %{
+               code: -32001,
+               message: "Request state expired",
+               data: %{requestState: "expired"}
+             }, session}
+        end
     end
+  end
+
+  defp run_prompt(prompt, params, session, request) do
+    request_id = request.id
+    parent_pid = session.pid
+    prompt_session = %{session | request: %{request | spec: prompt}}
+
+    spawn(fn ->
+      Process.put(:phantom_adopter, parent_pid)
+      Process.put(:phantom_tool_request_id, request_id)
+
+      try do
+        handler_result = apply(prompt.handler, prompt.function, [params, prompt_session])
+        finalize_prompt_result(handler_result, prompt, params, prompt_session)
+      rescue
+        exception ->
+          :telemetry.execute([:phantom, :dispatch, :exception], %{}, %{
+            kind: :error,
+            reason: exception,
+            stacktrace: __STACKTRACE__,
+            method: "prompts/get",
+            params: params,
+            request: request,
+            session: prompt_session
+          })
+
+          Session.respond_error(
+            Process.get(:phantom_adopter),
+            Process.get(:phantom_tool_request_id),
+            Request.internal_error(Exception.message(exception))
+          )
+      end
+    end)
+
+    {:noreply, session}
+  end
+
+  defp finalize_prompt_result({:reply, result, %Session{}}, _prompt, _params, session) do
+    Session.respond(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      encode_request_state(Prompt.response(result, session.request.spec), session)
+    )
+  end
+
+  defp finalize_prompt_result({:input_required, elicit, state, _}, prompt, params, session) do
+    request = session.request
+
+    case Phantom.ProtocolVersion.mode(Map.get(request.meta || %{}, "protocolVersion")) do
+      :stateless_core ->
+        secret = session.router.__phantom__(:info)[:secret_key_base]
+
+        result =
+          if is_binary(secret) do
+            %{
+              resultType: "inputRequired",
+              inputRequests: Phantom.Elicit.to_input_requests(elicit),
+              requestState: Phantom.RequestState.encode(state, secret)
+            }
+          else
+            raise ArgumentError,
+                  "Prompt returned input_required but #{inspect(session.router)} has no :secret_key_base configured"
+          end
+
+        Session.respond(
+          Process.get(:phantom_adopter),
+          Process.get(:phantom_tool_request_id),
+          result
+        )
+
+      _legacy ->
+        elicit_response =
+          if is_function(session.elicit) do
+            session.elicit.(elicit, :timer.minutes(5))
+          else
+            Session.elicit(session, elicit, await: true)
+          end
+
+        case elicit_response do
+          {:ok, response} ->
+            new_session = %{session | state: state}
+            new_params = Map.merge(params, response)
+            handler_result = apply(prompt.handler, prompt.function, [new_params, new_session])
+            finalize_prompt_result(handler_result, prompt, new_params, new_session)
+
+          :not_supported ->
+            Session.respond_error(
+              Process.get(:phantom_adopter),
+              Process.get(:phantom_tool_request_id),
+              Request.invalid_params(%{elicit: "Client does not support elicitation"})
+            )
+
+          _ ->
+            Session.respond_error(
+              Process.get(:phantom_adopter),
+              Process.get(:phantom_tool_request_id),
+              Request.internal_error("Elicitation failed")
+            )
+        end
+    end
+  end
+
+  defp finalize_prompt_result({:error, error, %Session{}}, _prompt, _params, _session) do
+    Session.respond_error(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      error
+    )
+  end
+
+  defp finalize_prompt_result({:noreply, %Session{}}, _prompt, _params, _session) do
+    :ok
+  end
+
+  defp finalize_prompt_result(other, _prompt, _params, session) do
+    Session.respond(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      Prompt.response(other, session.request.spec)
+    )
   end
 
   @doc false

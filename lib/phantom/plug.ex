@@ -441,10 +441,39 @@ defmodule Phantom.Plug do
     state = maybe_track_response(state, request)
     state = put_in(state.conn, maybe_track_session_stream(state.conn))
 
-    put_in(state.session, %{
+    session =
       state.conn.private.phantom.session
-      | elicit: elicit_fun(state.conn, state.stream_fun, request)
-    })
+      |> hydrate_from_meta(request)
+      |> Map.put(:elicit, elicit_fun(state.conn, state.stream_fun, request))
+
+    put_in(state.session, session)
+  end
+
+  # Under MCP 2026-07-28 every request is self-contained; the `_meta`
+  # carries what `initialize` used to set on the session. Under legacy the
+  # session has already been hydrated from Tracker meta (see
+  # `inherit_session_meta/1`), so `_meta.clientInfo` and
+  # `_meta.capabilities` will be absent and this is a no-op.
+  defp hydrate_from_meta(session, %Phantom.Request{meta: meta}) when is_map(meta) do
+    session
+    |> maybe_put(:client_info, meta["clientInfo"])
+    |> maybe_put(:client_capabilities, normalize_client_capabilities(meta["capabilities"]))
+  end
+
+  defp hydrate_from_meta(session, _), do: session
+
+  defp maybe_put(struct, _key, nil), do: struct
+  defp maybe_put(struct, key, value), do: Map.put(struct, key, value)
+
+  defp normalize_client_capabilities(nil), do: nil
+
+  defp normalize_client_capabilities(caps) when is_map(caps) do
+    %{
+      roots: caps["roots"],
+      sampling: caps["sampling"],
+      elicitation: caps["elicitation"],
+      ui: get_in(caps, ["extensions", "io.modelcontextprotocol/ui"]) || false
+    }
   end
 
   defp dispatch_or_reject(state, request, exceptions) do

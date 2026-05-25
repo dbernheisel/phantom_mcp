@@ -1,6 +1,10 @@
 defmodule Phantom.StatelessCoreTest do
   use ExUnit.Case, async: true
 
+  import Phantom.TestDispatcher
+  import Plug.Conn
+  import Plug.Test
+
   alias Phantom.Request
   alias Phantom.RequestState
   alias Phantom.Session
@@ -53,6 +57,38 @@ defmodule Phantom.StatelessCoreTest do
     end
 
     tool :await_demo, description: "Calls Session.elicit(..., await: true) inline" do
+    end
+
+    tool :who_am_i, description: "Returns session.client_info for inspection" do
+    end
+
+    def who_am_i(_params, session) do
+      info = session.client_info || %{}
+      caps = session.client_capabilities || %{}
+
+      {:reply, T.text("client=#{info["name"]} elicitation=#{inspect(caps[:elicitation])}"),
+       session}
+    end
+
+    require Phantom.Prompt, as: P
+
+    @description "Prompt that elicits and resumes via session.state"
+    prompt :ask_prompt, arguments: []
+
+    def ask_prompt(_args, %Session{state: %{step: :got_name}} = session) do
+      name = get_in(session.request.params, ["arguments", "name"]) || "stranger"
+      {:reply, P.response(assistant: P.text("Hello, #{name}!")), session}
+    end
+
+    def ask_prompt(_args, session) do
+      Session.elicit(
+        session,
+        Phantom.Elicit.form(%{
+          message: "Your name?",
+          requested_schema: [%{name: "name", type: :string, required: true}]
+        }),
+        state: %{step: :got_name}
+      )
     end
 
     def await_demo(_params, session) do
@@ -321,6 +357,94 @@ defmodule Phantom.StatelessCoreTest do
 
       # Verify the original request id was preserved at await-yield time.
       assert original_request_id == request.id
+    end
+  end
+
+  describe "prompts/get supports elicitation re-entry" do
+    test "under stateless: prompt's elicit yields inputRequired with encrypted state" do
+      session = build_session()
+
+      {:ok, request} =
+        Request.build(%{
+          "jsonrpc" => "2.0",
+          "id" => 1,
+          "method" => "prompts/get",
+          "params" => %{
+            "name" => "ask_prompt",
+            "arguments" => %{},
+            "_meta" => %{"protocolVersion" => "2026-07-28"}
+          }
+        })
+
+      assert {:noreply, _} =
+               Router.dispatch_method("prompts/get", request.params, request, session)
+
+      response = assert_responded()
+
+      assert %{
+               resultType: "inputRequired",
+               inputRequests: [_ | _],
+               requestState: token
+             } = response
+
+      assert is_binary(token)
+      assert {:ok, %{step: :got_name}} = RequestState.decode(token, @secret)
+    end
+
+    test "under stateless: resume continues the prompt handler with session.state set" do
+      session = build_session()
+      token = RequestState.encode(%{step: :got_name}, @secret)
+
+      {:ok, request} =
+        Request.build(%{
+          "jsonrpc" => "2.0",
+          "id" => 2,
+          "method" => "prompts/get",
+          "params" => %{
+            "name" => "ask_prompt",
+            "arguments" => %{"name" => "alice"},
+            "_meta" => %{"protocolVersion" => "2026-07-28", "requestState" => token}
+          }
+        })
+
+      assert {:noreply, _} =
+               Router.dispatch_method("prompts/get", request.params, request, session)
+
+      response = assert_responded()
+      assert %{messages: [%{role: :assistant, content: %{text: text}}]} = response
+      assert text == "Hello, alice!"
+    end
+  end
+
+  describe "_meta hydrates session.client_info and client_capabilities" do
+    # Under stateless core there is no `initialize` call to populate these
+    # on the session. The request's `_meta` carries them on every call, so
+    # devs reading `session.client_info` or `session.client_capabilities`
+    # see the same shape they would on a legacy session.
+    test "session.client_info and client_capabilities populate from _meta" do
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/call",
+        params: %{
+          "name" => "who_am_i",
+          "arguments" => %{},
+          "_meta" => %{
+            "protocolVersion" => "2026-07-28",
+            "clientInfo" => %{"name" => "TestClient", "version" => "1.0.0"},
+            "capabilities" => %{"elicitation" => %{}}
+          }
+        }
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(router: Router)
+
+      assert_receive {:response, 7, "message", payload}, 1_000
+
+      text = get_in(payload, [:result, :content, Access.at(0), :text])
+      assert text =~ "client=TestClient"
+      assert text =~ "elicitation=%{}"
     end
   end
 
