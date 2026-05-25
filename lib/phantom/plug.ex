@@ -12,10 +12,18 @@ defmodule Phantom.Plug do
 
   This module provides a complete MCP server implementation with:
   - JSON-RPC 2.0 message handling
-  - Server-Sent Events (SSE) streaming
+  - Server-Sent Events (SSE) streaming (legacy protocols)
+  - Stateless transactional request/response (MCP `2026-07-28`)
   - CORS handling and security features
   - Session management integration
   - Origin validation
+
+  Legacy clients (`≤ 2025-11-25`) carry an `mcp-session-id` header and may
+  hold a persistent `GET` SSE stream for server-initiated traffic. Stateless
+  core clients (`2026-07-28`) send no session header — every `POST` is
+  self-contained and any node behind a round-robin load balancer can serve
+  the call. Both modes run from the same router; the protocol version on
+  each request determines the dispatch path.
 
   <!-- tabs-open -->
 

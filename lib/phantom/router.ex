@@ -5,13 +5,27 @@ defmodule Phantom.Router do
 
   See `Phantom` for usage examples.
 
+  ## Options
+
+  - `:name` — server name advertised to the client
+  - `:vsn` — server version string (defaults to the OTP app version)
+  - `:instructions` — server instructions, typically the moduledoc
+  - `:icons`, `:website_url` — server metadata
+  - `:secret_key_base` — required to support MCP `2026-07-28`. Used by
+    `Phantom.RequestState` to encrypt the multi-round-trip `requestState`
+    blob; nodes serving the same router must share this value.
+
   ## Telemetry
 
   Telemetry is provided with these events:
 
-  - `[:phantom, :dispatch, :start]` with meta: `~w[method params request session]a`
-  - `[:phantom, :dispatch, :stop]` with meta: `~w[method params request result session]a`
+  - `[:phantom, :dispatch, :start]` with meta: `~w[method params request session trace_context]a`
+  - `[:phantom, :dispatch, :stop]` with meta: `~w[method params request result session trace_context]a`
   - `[:phantom, :dispatch, :exception]` with meta: `~w[method kind reason stacktrace params request session]a`
+
+  The `:trace_context` value is `Phantom.Request.trace_context/1` applied to
+  the incoming request — a map of W3C `traceparent`, `tracestate`, and
+  `baggage` when the client provided them in `_meta`.
   """
 
   import Plug.Router.Utils, only: [build_path_match: 1]
