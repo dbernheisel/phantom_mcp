@@ -1371,11 +1371,14 @@ defmodule Phantom.Router do
   end
 
   defp adopt_pending_task(ref_id, response_args, session, request) do
-    case Phantom.Tracker.get_request(ref_id) do
+    # Phoenix.Tracker is CRDT-replicated and can lag behind by up to
+    # broadcast_period (default 1.5s) after registration on another node.
+    # Retry briefly before declaring the task missing.
+    case await_request_meta(ref_id) do
       nil ->
         {:error, Request.invalid_params(%{requestState: "Task not found or expired"}), session}
 
-      task_pid ->
+      %{pid: task_pid} ->
         send(
           task_pid,
           {:phantom_elicit_response, ref_id, {:ok, response_args}, session.pid, request.id}
