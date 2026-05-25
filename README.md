@@ -543,7 +543,8 @@ populated on continuation. Same source under both protocols:
 ```elixir
 use Phantom.Router,
   name: "MyApp",
-  secret_key_base: Application.compile_env(:my_app, :secret_key_base)
+  secret_key_base: Application.compile_env(:my_app, :secret_key_base),
+  request_state_salt: "myapp request_state v1"
 
 @description "Delete a file after confirming with the user"
 tool :delete_file do
@@ -583,10 +584,11 @@ legacy protocols Phantom performs the SSE `elicitation/create` round-trip
 and re-invokes the handler — same handler code, no `if protocol_version`
 check.
 
-The `:secret_key_base` is required for `2026-07-28` because Phantom
-encrypts the `requestState` blob with `Plug.Crypto` (no Phoenix
-dependency). Each node serving the same router must share it; clients
-can hop nodes freely.
+`:secret_key_base` and `:request_state_salt` are both required for
+`2026-07-28` — Phantom encrypts the `requestState` blob with `Plug.Crypto`
+(no Phoenix dependency) using the salt to derive a domain-specific key.
+Each node serving the same router must share both values; clients can hop
+nodes freely.
 
 ## What PhantomMCP supports
 
@@ -760,7 +762,7 @@ internally. See the "Persistent Streams" section below.
 
 Under MCP `2026-07-28`, every request is self-contained. The encrypted
 `requestState` blob carries continuation state across requests; any node
-that shares `:secret_key_base` can serve any request. Use round-robin or
+that shares `:secret_key_base` and `:request_state_salt` can serve any request. Use round-robin or
 least-connections; sticky routing is wasted complexity.
 
 ### L7 routing with MCP `2026-07-28` headers

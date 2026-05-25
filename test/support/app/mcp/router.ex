@@ -11,6 +11,7 @@ defmodule Test.MCP.Router do
     vsn: "1.0",
     instructions: @instructions,
     secret_key_base: "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption",
+    request_state_salt: "phantom test salt",
     icons: [
       %{
         src: {Phoenix.VerifiedRoutes, :static_url, [Test.Endpoint, "/images/test-icon.png"]},

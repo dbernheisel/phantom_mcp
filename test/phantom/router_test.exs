@@ -56,11 +56,17 @@ defmodule Phantom.RouterTest do
         use Phantom.Router,
           name: "WithSecret",
           vsn: "1.0",
-          secret_key_base: "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption"
+          secret_key_base:
+            "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption",
+          request_state_salt: "test salt"
       end
 
-      assert Test.WithSecretRouter.__phantom__(:info)[:secret_key_base] ==
+      info = Test.WithSecretRouter.__phantom__(:info)
+
+      assert info[:secret_key_base] ==
                "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption"
+
+      assert info[:request_state_salt] == "test salt"
     end
 
     test "raises at compile time when :secret_key_base is too short" do
@@ -69,7 +75,20 @@ defmodule Phantom.RouterTest do
           use Phantom.Router,
             name: "ShortSecret",
             vsn: "1.0",
-            secret_key_base: "too-short"
+            secret_key_base: "too-short",
+            request_state_salt: "test salt"
+        end
+      end
+    end
+
+    test "raises when :secret_key_base is set without :request_state_salt" do
+      assert_raise ArgumentError, ~r/request_state_salt/, fn ->
+        defmodule Test.MissingSaltRouter do
+          use Phantom.Router,
+            name: "MissingSalt",
+            vsn: "1.0",
+            secret_key_base:
+              "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption"
         end
       end
     end
