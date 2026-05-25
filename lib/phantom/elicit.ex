@@ -87,7 +87,8 @@ defmodule Phantom.Elicit do
       end
 
       def my_tool(params, session) do
-        Session.elicit(session, @elicit_name, state: %{step: :got_name, params: params})
+        {:noreply,
+         Session.elicit(session, @elicit_name, state: %{step: :got_name, params: params})}
       end
 
   The dispatcher converts the call to an `inputRequired` result under

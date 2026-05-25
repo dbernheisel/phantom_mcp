@@ -565,16 +565,17 @@ def delete_file(%{"confirm" => _}, session),
 
 # First-call clause — ask the user
 def delete_file(%{"path" => path}, session) do
-  Phantom.Session.elicit(
-    session,
-    Phantom.Elicit.form(%{
-      message: "Really delete #{path}?",
-      requested_schema: [
-        %{name: "confirm", type: :enum, enum: ["yes", "no"], required: true}
-      ]
-    }),
-    state: %{step: :confirming, path: path}
-  )
+  {:noreply,
+   Phantom.Session.elicit(
+     session,
+     Phantom.Elicit.form(%{
+       message: "Really delete #{path}?",
+       requested_schema: [
+         %{name: "confirm", type: :enum, enum: ["yes", "no"], required: true}
+       ]
+     }),
+     state: %{step: :confirming, path: path}
+   )}
 end
 ```
 

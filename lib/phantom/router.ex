@@ -1492,7 +1492,7 @@ defmodule Phantom.Router do
 
       try do
         handler_result = apply(spec.handler, spec.function, [params, task_session])
-        finalize_result(kind, handler_result, spec, params, task_session)
+        process_handler_result(kind, handler_result, spec, params, task_session)
       rescue
         exception ->
           :telemetry.execute([:phantom, :dispatch, :exception], %{}, %{
@@ -1515,16 +1515,46 @@ defmodule Phantom.Router do
   defp telemetry_method(:tool), do: "tools/call"
   defp telemetry_method(:prompt), do: "prompts/get"
 
-  defp finalize_result(kind, {:reply, result, %Session{}}, _spec, _params, session) do
-    respond_to_caller(encode_request_state(format_response(kind, result, session), session))
+  # When the handler returns {:noreply, %Session{pending_elicit: {elicit, state}}},
+  # the Task stays alive: we await the client's response via Session.elicit(await: true)
+  # and re-apply the handler with `session.state` set and the response merged into
+  # params. Under MCP 2026-07-28 this routes through Phantom.Tracker so a follow-up
+  # request on any node can wake the suspended Task.
+  defp process_handler_result(
+         kind,
+         {:noreply, %Session{pending_elicit: {elicit, state}} = session},
+         spec,
+         params,
+         _session
+       ) do
+    session = %{session | pending_elicit: nil}
+
+    case Session.elicit(session, elicit, await: true) do
+      {:ok, response} ->
+        new_session = %{session | state: state}
+        new_params = Map.merge(params, response)
+        handler_result = apply(spec.handler, spec.function, [new_params, new_session])
+        process_handler_result(kind, handler_result, spec, new_params, new_session)
+
+      :not_supported ->
+        respond_error_to_caller(
+          Request.invalid_params(%{elicit: "Client does not support elicitation"})
+        )
+
+      :timeout ->
+        respond_error_to_caller(Request.internal_error("Elicitation timed out"))
+
+      _ ->
+        respond_error_to_caller(Request.internal_error("Elicitation failed"))
+    end
   end
 
-  defp finalize_result(kind, {:input_required, elicit, state, _}, spec, params, session) do
-    if Session.stateless?(session) do
-      respond_to_caller(encode_request_state(Tool.input_required(elicit, state), session))
-    else
-      finalize_legacy_input_required(kind, elicit, state, spec, params, session)
-    end
+  defp process_handler_result(kind, result, spec, params, session) do
+    finalize_result(kind, result, spec, params, session)
+  end
+
+  defp finalize_result(kind, {:reply, result, %Session{}}, _spec, _params, session) do
+    respond_to_caller(encode_request_state(format_response(kind, result, session), session))
   end
 
   defp finalize_result(_kind, {:error, error, %Session{}}, _spec, _params, _session) do
@@ -1542,35 +1572,6 @@ defmodule Phantom.Router do
 
   defp finalize_result(kind, other, _spec, _params, session) do
     respond_to_caller(format_response(kind, other, session))
-  end
-
-  defp finalize_legacy_input_required(kind, elicit, state, spec, params, session) do
-    # Prefer the closure when available — under Task-mode the cross-process
-    # path would do GenServer.call to session.pid, but the closure (set by
-    # Phantom.Plug for the in-flight request) routes the elicit through the
-    # same SSE infrastructure without that indirection.
-    elicit_response =
-      if is_function(session.elicit) do
-        session.elicit.(elicit, :timer.minutes(5))
-      else
-        Session.elicit(session, elicit, await: true)
-      end
-
-    case elicit_response do
-      {:ok, response} ->
-        new_session = %{session | state: state}
-        new_params = Map.merge(params, response)
-        handler_result = apply(spec.handler, spec.function, [new_params, new_session])
-        finalize_result(kind, handler_result, spec, new_params, new_session)
-
-      :not_supported ->
-        respond_error_to_caller(
-          Request.invalid_params(%{elicit: "Client does not support elicitation"})
-        )
-
-      _ ->
-        respond_error_to_caller(Request.internal_error("Elicitation failed"))
-    end
   end
 
   defp format_response(:tool, result, _session), do: Tool.response(result)

@@ -1,17 +1,24 @@
 ## Unreleased
 
 - Initial support for MCP 2026-07-28 stateless core. `Phantom.Session.elicit/3`
-  has two call patterns with protocol-aware defaults:
+  has two call patterns with protocol-aware defaults — both backed by a
+  LiveView-style stateful Task that suspends on the originating node and
+  resumes inline when the client returns:
     - **Inline blocking** (`await: true`, or default under legacy) — the
-      handler continues after the response arrives. Under stateless, the
-      tool's Task is suspended and resumed inline when the follow-up
-      `tools/call` arrives, possibly on a different node.
-    - **Re-entry** (`:state` set, or default under stateless) — returns
-      `{:input_required, elicit, state, session}`; the dispatcher converts
-      that to `inputRequired` (stateless) or an SSE elicit round-trip
-      (legacy). The handler is re-entered with `session.state` populated to
-      whatever you passed as `:state`.
-  - `Phantom.Tool.input_required/1` is the lower-level result builder.
+      function continues after the response arrives. `case Session.elicit(...) do {:ok, _} -> ...`.
+    - **Re-entry** (`:state` set, or default under stateless) — the handler
+      returns `{:noreply, Session.elicit(session, elicit, state: %{...})}`;
+      Phantom holds the Task open, awaits the response, and re-invokes the
+      handler with `session.state` populated. State accumulates across
+      multiple elicit steps. Function-head clauses match on `%Session{state:
+      ...}` for each step.
+  - Under MCP `2026-07-28` the encrypted `requestState` blob is just an
+    opaque pointer to the suspended Task; cross-node follow-ups route via
+    `Phantom.Tracker`. State accumulation lives on the live Task, not in
+    the blob.
+  - `Phantom.Tool.input_required/2` is the lower-level builder for
+    constructing an `inputRequired` result map directly (skipping Task
+    suspension).
   - Existing legacy code that called `Session.elicit/3` without opts
     continues to work unchanged — the default under legacy is still inline
     blocking.
@@ -135,16 +142,17 @@ def delete_file(%{"confirm" => _}, session),
 
 # First-call clause — ask the client.
 def delete_file(%{"path" => path}, session) do
-  Phantom.Session.elicit(
-    session,
-    Phantom.Elicit.form(%{
-      message: "Really delete \#{path}?",
-      requested_schema: [
-        %{name: "confirm", type: :enum, enum: ["yes", "no"], required: true}
-      ]
-    }),
-    state: %{step: :confirming, path: path}
-  )
+  {:noreply,
+   Phantom.Session.elicit(
+     session,
+     Phantom.Elicit.form(%{
+       message: "Really delete \#{path}?",
+       requested_schema: [
+         %{name: "confirm", type: :enum, enum: ["yes", "no"], required: true}
+       ]
+     }),
+     state: %{step: :confirming, path: path}
+   )}
 end
 ```
 
