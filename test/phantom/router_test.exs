@@ -99,69 +99,71 @@ defmodule Phantom.RouterTest do
   end
 
   test "handles router errors when there's batched calls" do
-    Process.flag(:trap_exit, true)
+    test_pid = self()
+    handler_id = "exception-batch-#{System.unique_integer()}"
+
+    :telemetry.attach(
+      handler_id,
+      [:phantom, :dispatch, :exception],
+      fn _e, _m, meta, _ -> send(test_pid, {:dispatch_exception, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
 
     capture_log(fn ->
-      pid =
-        :post
-        |> conn("/mcp", %{
-          "_json" => [
-            %{
-              jsonrpc: "2.0",
-              id: 1,
-              method: "tools/call",
-              params: %{"name" => "explode_tool"}
-            },
-            %{
-              jsonrpc: "2.0",
-              id: 2,
-              method: "tools/call",
-              params: %{"name" => "explode_tool"}
-            }
-          ]
-        })
-        |> put_req_header("content-type", "application/json")
-        |> call()
+      :post
+      |> conn("/mcp", %{
+        "_json" => [
+          %{
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: %{"name" => "explode_tool"}
+          },
+          %{
+            jsonrpc: "2.0",
+            id: 2,
+            method: "tools/call",
+            params: %{"name" => "explode_tool"}
+          }
+        ]
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call()
 
-      assert_receive {:response, 1, "message", error}
-      assert_receive {:EXIT, ^pid, {exception, _stacktrace}}
+      assert_receive {:response, 1, "message", error_1}
+      assert_receive {:response, 2, "message", error_2}
+      assert_receive {:dispatch_exception, %{reason: exception_1}}
+      assert_receive {:dispatch_exception, %{reason: exception_2}}
 
-      assert %{
-               error: %{code: -32603, message: "boom"},
-               id: 1,
-               jsonrpc: "2.0"
-             } = error
-
-      assert %Phantom.ErrorWrapper{} = exception
-
-      assert [
-               {
-                 %{params: %{"name" => "explode_tool"}},
-                 %RuntimeError{message: "boom"},
-                 _stacktrace_one
-               },
-               {
-                 %{params: %{"name" => "explode_tool"}},
-                 %RuntimeError{message: "boom"},
-                 _stacktrace_two
-               }
-             ] = exception.exceptions_by_request
+      assert %{error: %{code: -32603, message: "boom"}, id: 1, jsonrpc: "2.0"} = error_1
+      assert %{error: %{code: -32603, message: "boom"}, id: 2, jsonrpc: "2.0"} = error_2
+      assert %RuntimeError{message: "boom"} = exception_1
+      assert %RuntimeError{message: "boom"} = exception_2
     end)
   end
 
   test "handles router errors when there's a single request" do
-    Process.flag(:trap_exit, true)
+    test_pid = self()
+    handler_id = "exception-single-#{System.unique_integer()}"
+
+    :telemetry.attach(
+      handler_id,
+      [:phantom, :dispatch, :exception],
+      fn _e, _m, meta, _ -> send(test_pid, {:dispatch_exception, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
 
     capture_log(fn ->
       request_tool("explode_tool", %{}, id: 4)
-      assert_exception_response(4, error, {exception, _stacktrace})
 
-      assert %{
-               error: %{code: -32603, message: "boom"},
-               id: 4,
-               jsonrpc: "2.0"
-             } = error
+      assert_receive {:response, 4, "message", error}
+      assert_receive {:dispatch_exception, %{reason: exception}}
 
+      assert %{error: %{code: -32603, message: "boom"}, id: 4, jsonrpc: "2.0"} = error
       assert %RuntimeError{message: "boom"} = exception
     end)
   end

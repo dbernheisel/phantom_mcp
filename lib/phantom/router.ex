@@ -1366,50 +1366,157 @@ defmodule Phantom.Router do
   end
 
   defp run_tool(tool, params, session, request) do
-    result =
-      apply(tool.handler, tool.function, [
-        params,
-        %{session | request: %{request | spec: tool}}
-      ])
+    request_id = request.id
+    parent_pid = session.pid
+    task_session = %{session | request: %{request | spec: tool}}
 
-    case result do
-      {:input_required, elicit, state, _handler_session} ->
-        handle_input_required(elicit, state, tool, params, session, request)
+    spawn(fn ->
+      try do
+        handler_result = apply(tool.handler, tool.function, [params, task_session])
+        finalize_tool_result(handler_result, tool, params, parent_pid, request_id, task_session)
+      rescue
+        exception ->
+          :telemetry.execute([:phantom, :dispatch, :exception], %{}, %{
+            kind: :error,
+            reason: exception,
+            stacktrace: __STACKTRACE__,
+            method: "tools/call",
+            params: params,
+            request: request,
+            session: task_session
+          })
 
-      other ->
-        wrap(:tool, other, session)
-    end
+          Session.respond_error(
+            parent_pid,
+            request_id,
+            Request.internal_error(Exception.message(exception))
+          )
+      end
+    end)
+
+    {:noreply, session}
   end
 
-  defp handle_input_required(elicit, state, tool, params, session, request) do
+  defp finalize_tool_result(
+         {:reply, result, %Session{}},
+         _tool,
+         _params,
+         parent_pid,
+         request_id,
+         session
+       ) do
+    Session.respond(parent_pid, request_id, encode_request_state(Tool.response(result), session))
+  end
+
+  defp finalize_tool_result(
+         {:input_required, elicit, state, _},
+         tool,
+         params,
+         parent_pid,
+         request_id,
+         session
+       ) do
+    request = session.request
+
     case Phantom.ProtocolVersion.mode(Map.get(request.meta || %{}, "protocolVersion")) do
       :stateless_core ->
-        result =
-          Phantom.Tool.input_required(
-            input_requests: Phantom.Elicit.to_input_requests(elicit),
-            state: state
-          )
+        secret = session.router.__phantom__(:info)[:secret_key_base]
 
-        wrap(:tool, {:reply, result, session}, session)
+        result =
+          if is_binary(secret) do
+            %{
+              resultType: "inputRequired",
+              inputRequests: Phantom.Elicit.to_input_requests(elicit),
+              requestState: Phantom.RequestState.encode(state, secret)
+            }
+          else
+            raise ArgumentError,
+                  "Tool returned input_required but #{inspect(session.router)} has no :secret_key_base configured"
+          end
+
+        Session.respond(parent_pid, request_id, result)
 
       _legacy ->
-        case Session.elicit(session, elicit) do
+        # Prefer the closure when available — under Task-mode the cross-process
+        # path would do GenServer.call to session.pid, but the closure (set by
+        # Phantom.Plug for the in-flight request) routes the elicit through the
+        # same SSE infrastructure without that indirection.
+        elicit_response =
+          if is_function(session.elicit) do
+            session.elicit.(elicit, :timer.minutes(5))
+          else
+            Session.elicit(session, elicit)
+          end
+
+        case elicit_response do
           {:ok, response} ->
-            run_tool(
+            new_session = %{session | state: state}
+            new_params = Map.merge(params, response)
+            handler_result = apply(tool.handler, tool.function, [new_params, new_session])
+
+            finalize_tool_result(
+              handler_result,
               tool,
-              Map.merge(params, response),
-              %{session | state: state},
-              request
+              new_params,
+              parent_pid,
+              request_id,
+              new_session
             )
 
           :not_supported ->
-            {:error, Request.invalid_params(%{elicit: "Client does not support elicitation"}),
-             session}
+            Session.respond_error(
+              parent_pid,
+              request_id,
+              Request.invalid_params(%{elicit: "Client does not support elicitation"})
+            )
 
           _ ->
-            {:error, Request.internal_error("Elicitation failed"), session}
+            Session.respond_error(
+              parent_pid,
+              request_id,
+              Request.internal_error("Elicitation failed")
+            )
         end
     end
+  end
+
+  defp finalize_tool_result(
+         {:error, error, %Session{}},
+         _tool,
+         _params,
+         parent_pid,
+         request_id,
+         _session
+       ) do
+    Session.respond_error(parent_pid, request_id, error)
+  end
+
+  defp finalize_tool_result(
+         {:noreply, %Session{}},
+         _tool,
+         _params,
+         _parent_pid,
+         _request_id,
+         _session
+       ) do
+    :ok
+  end
+
+  defp finalize_tool_result(
+         {:elicitation_required, elicitations},
+         _tool,
+         _params,
+         parent_pid,
+         request_id,
+         _session
+       )
+       when is_list(elicitations) do
+    Session.respond_error(parent_pid, request_id, Request.url_elicitation_required(elicitations))
+  end
+
+  defp finalize_tool_result(other, _tool, _params, parent_pid, request_id, _session) do
+    # Fallback: treat any other return as a Tool response payload
+    Session.respond(parent_pid, request_id, Tool.response(other))
   end
 
   defp maybe_decode_state(router, session, request) do
