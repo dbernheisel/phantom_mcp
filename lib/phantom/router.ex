@@ -326,7 +326,13 @@ defmodule Phantom.Router do
       def dispatch_method([method, params, request, session] = args) do
         :telemetry.span(
           [:phantom, :dispatch],
-          %{method: method, params: params, request: request, session: session},
+          %{
+            method: method,
+            params: params,
+            request: request,
+            session: session,
+            trace_context: Phantom.Request.trace_context(request)
+          },
           fn ->
             result = apply(__MODULE__, :dispatch_method, args)
             {result, %{}, %{result: result}}
