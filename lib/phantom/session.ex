@@ -100,12 +100,25 @@ defmodule Phantom.Session do
   @doc """
   Elicit input from the client.
 
-  Blocks until the client responds or timeout is reached. Returns
-  `{:ok, response}` where response is the client's JSON response map
-  (with `"action"` and `"content"` keys).
+  Two call patterns, selected by whether `:state` is passed:
+
+  - **Without `:state`** — blocks until the client responds via the SSE
+    `elicitation/create` round-trip. Returns `{:ok, response}` where
+    response is the client's JSON map (`"action"` and `"content"` keys).
+    Only works under MCP `≤ 2025-11-25` or stdio.
+
+  - **With `:state`** — returns `{:input_required, elicit, state, session}`
+    without blocking. The dispatcher converts this to a `Tool.input_required`
+    result under MCP `2026-07-28`, or performs the SSE round-trip and
+    re-invokes the handler with `session.state` populated under legacy
+    protocols. The handler is *re-entered* on resume rather than continuing
+    in place, so structure it with a function-head clause that matches on
+    `%Session{state: %{...}}` for the resume case.
 
   Options:
-    - `:timeout` - max time to wait in ms (default: 5 minutes)
+    - `:state` — opaque term carried across the round-trip. On resume it
+      arrives at `session.state` so the handler can pattern-match.
+    - `:timeout` - max blocking time in ms (legacy path only; default: 5 minutes)
   """
   @spec elicit(t, Phantom.Elicit.t(), keyword()) ::
           {:ok, response :: map()}

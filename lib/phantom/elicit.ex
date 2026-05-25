@@ -75,6 +75,27 @@ defmodule Phantom.Elicit do
 
   All property types accept `:name`, `:required`, `:title`, and `:description`.
 
+  ### Protocol-agnostic form elicitation
+
+  Under MCP `2026-07-28` the SSE-based `elicitation/create` round-trip
+  doesn't exist; the server instead returns an `inputRequired` result with
+  an encrypted `requestState` blob. To write a handler that works under
+  both protocols, call `Phantom.Session.elicit/3` with `state:`:
+
+      def my_tool(_params, %Session{state: %{step: :got_name} = state} = session) do
+        {:reply, Tool.text("Hello \#{state.name}"), session}
+      end
+
+      def my_tool(params, session) do
+        Session.elicit(session, @elicit_name, state: %{step: :got_name, name: params["name"]})
+      end
+
+  The dispatcher takes care of the legacy SSE round-trip *or* the encrypted
+  `requestState` response per the client's protocol version. The handler
+  is re-entered (not resumed in place) on continuation, so structure your
+  function clauses to pattern-match `%Session{state: ...}` for the resume
+  case. See `Phantom.Tool.input_required/1` for the lower-level builder.
+
   ## URL mode
 
   URL mode directs the user to an external URL (e.g., an OAuth flow

@@ -503,6 +503,65 @@ to any updates for the resource.
 Phantom.Tracker.notify_resource_updated(uri)
 ```
 
+## Eliciting input (MCP 2026-07-28 stateless core)
+
+When a tool needs more information from the user mid-call, call
+`Phantom.Session.elicit/3` with a `:state` option. Phantom decides per
+protocol version what to do:
+
+- Under `2026-07-28` the call returns an `inputRequired` result with an
+  encrypted `requestState` blob. The client re-issues the same `tools/call`
+  on any node and Phantom decodes the blob into `session.state` so your
+  handler resumes via a function-head pattern match.
+- Under earlier protocol versions Phantom performs the existing
+  `elicitation/create` SSE round-trip and re-invokes the same handler with
+  `session.state` populated. Same code, no `if protocol_version` check.
+
+```elixir
+use Phantom.Router,
+  name: "MyApp",
+  secret_key_base: Application.compile_env(:my_app, :secret_key_base)
+
+@description "Delete a file after confirming with the user"
+tool :delete_file do
+  field :path, :string, required: true
+end
+
+# Resume clause — runs on the second invocation under either protocol
+def delete_file(
+      %{"confirm" => "yes"},
+      %Phantom.Session{state: %{step: :confirming, path: path}} = session
+    ) do
+  File.rm!(path)
+  {:reply, Tool.text("Deleted #{path}"), session}
+end
+
+def delete_file(%{"confirm" => _}, session),
+  do: {:reply, Tool.text("Cancelled"), session}
+
+# First-call clause — ask the user
+def delete_file(%{"path" => path}, session) do
+  Session.elicit(
+    session,
+    Phantom.Elicit.form(%{
+      message: "Really delete #{path}?",
+      requested_schema: [
+        %{name: "confirm", type: :enum, enum: ["yes", "no"], required: true}
+      ]
+    }),
+    state: %{step: :confirming, path: path}
+  )
+end
+```
+
+The `:secret_key_base` is required for `2026-07-28` because Phantom encrypts
+the `requestState` blob with `Plug.Crypto` (no Phoenix dependency). Each
+node serving the same router must share it; clients can hop nodes freely.
+
+For the lower-level builder, see `Phantom.Tool.input_required/1` — useful
+when you want to construct the `inputRequired` result directly without
+going through `Session.elicit/3`.
+
 ## What PhantomMCP supports
 
 Phantom will implement these MCP requests on your behalf:
@@ -526,6 +585,10 @@ Phantom will implement these MCP requests on your behalf:
 - `notifications/tools/list_changed` - The server informs the client the list of tools has updated. This is triggered when `Phantom.Cache.add_tool/2` is called.
 - `elicitation/create` - The server requests input from
   the client in order to complete a request the client has made of it.
+  Under MCP `2026-07-28` the server-initiated SSE push is replaced by an
+  `inputRequired` result + encrypted `requestState`; both flows go through
+  `Phantom.Session.elicit/3` and behave identically from the tool's point
+  of view.
 
 Phantom **does not yet support these methods**:
 
@@ -593,7 +656,12 @@ There are several optional callbacks to help you hook into the lifecycle of the 
 
 For Telemetry, please see `m:Phantom.Plug#module-telemetry` and `m:Phantom.Router#module-telemetry` for emitted telemetry hooks.
 
-## Persistent Streams
+## Persistent Streams (legacy protocols, ≤ 2025-11-25)
+
+> Under MCP `2026-07-28` (stateless core), persistent SSE streams and
+> `mcp-session-id` are gone — every request is self-contained and any node
+> can serve any call. The setup below applies to clients on earlier protocol
+> versions; you can run both side-by-side from the same router.
 
 MCP supports SSE streams to get notifications allow resource subscriptions.
 To support this, Phantom needs to track connection pids in your cluster and uses

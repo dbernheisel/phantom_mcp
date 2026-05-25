@@ -1,3 +1,23 @@
+## Unreleased
+
+- Initial support for MCP 2026-07-28 stateless core. Tools can return
+  `Phantom.Tool.input_required/1` (or call `Session.elicit(session, elicit,
+  state: ...)`) to participate in the new multi-round-trip flow. The
+  dispatcher encrypts the `requestState` blob on the way out and restores
+  it onto `session.state` on the next call, so any node can serve the
+  continuation without sticky sessions.
+- New: `Phantom.Router` accepts `:secret_key_base` for the encrypted
+  `requestState` codec.
+- New: `Phantom.ProtocolVersion` (single source of truth for supported
+  versions + `mode/1`) and `Phantom.RequestState` (Plug.Crypto-backed
+  encode/decode of the continuation blob).
+- New: `Phantom.Request.with_cache/2` annotates any result with `ttlMs` /
+  `cacheScope`, and `Phantom.Request.trace_context/1` extracts W3C
+  traceparent/tracestate/baggage from `_meta` and surfaces it on the
+  `[:phantom, :dispatch]` telemetry span.
+- New: `Phantom.Plug.read_transport_headers/1` reads `mcp-protocol-version`,
+  `mcp-method`, and `mcp-name` for L7 routing.
+
 ## 0.4.5 (2026-04-29)
 
 - Fix `Plug.Conn.AlreadySentError` when a second SSE GET arrives for an
