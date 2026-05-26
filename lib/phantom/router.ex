@@ -1016,7 +1016,7 @@ defmodule Phantom.Router do
         Both must be set together.
         """
 
-      is_nil(secret) and has_handlers? and not test_env?() ->
+      is_nil(secret) and has_handlers? and not suppress_missing_secret_warning?() ->
         IO.warn("""
         #{inspect(mod)} has tools or prompts but no :secret_key_base /
         :request_state_salt configured.
@@ -1045,9 +1045,12 @@ defmodule Phantom.Router do
     end
   end
 
-  # Mix.env() is reliable at compile time; the verify hook only runs there.
-  defp test_env? do
-    Mix.env() == :test
+  # Suppress the missing-secret warning only when compiling Phantom's own
+  # test suite. Checking the current Mix project's app name (instead of
+  # `Mix.env()`) avoids silencing the warning for downstream users running
+  # their own test environments.
+  defp suppress_missing_secret_warning? do
+    Mix.Project.config()[:app] == :phantom_mcp
   rescue
     _ -> false
   end
@@ -1518,8 +1521,11 @@ defmodule Phantom.Router do
   # When the handler returns {:noreply, %Session{pending_elicit: {elicit, state}}},
   # the Task stays alive: we await the client's response via Session.elicit(await: true)
   # and re-apply the handler with `session.state` set and the response merged into
-  # params. Under MCP 2026-07-28 this routes through Phantom.Tracker so a follow-up
-  # request on any node can wake the suspended Task.
+  # params. Under MCP 2026-07-28 this `Session.elicit(await: true)` call blocks
+  # the Task on a `receive` while the adopter (the session GenServer) emits the
+  # `inputRequired` response to the client; the suspended Task resumes when a
+  # follow-up request adopts the task pid via `Phantom.Tracker`, possibly on
+  # another node.
   defp process_handler_result(
          kind,
          {:noreply, %Session{pending_elicit: {elicit, state}} = session},
@@ -1544,8 +1550,13 @@ defmodule Phantom.Router do
       :timeout ->
         respond_error_to_caller(Request.internal_error("Elicitation timed out"))
 
-      _ ->
+      :error ->
         respond_error_to_caller(Request.internal_error("Elicitation failed"))
+
+      other ->
+        respond_error_to_caller(
+          Request.internal_error("Unexpected Session.elicit/3 return: #{inspect(other)}")
+        )
     end
   end
 
