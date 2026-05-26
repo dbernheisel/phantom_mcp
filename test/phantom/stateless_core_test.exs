@@ -247,10 +247,71 @@ defmodule Phantom.StatelessCoreTest do
   end
 
   # Re-entry (`{:noreply, Session.elicit(..., state: ...)}`) uses the same
-  # Task-suspension machinery as `await: true` — see the "Session.elicit/3
-  # with `await: true`" describe block below for the orchestrated round-trip
-  # test. The end-to-end cross-node version lives in
+  # Task-suspension machinery as `await: true`. The dispatcher's
+  # `process_handler_result/5` converts the pending elicit into an
+  # `await: true` call internally and re-applies the handler on resume.
+  # The end-to-end cross-node version lives in
   # test/phantom/distributed_test.exs.
+  describe "re-entry: `{:noreply, Session.elicit(..., state: ...)}`" do
+    setup do
+      start_supervised({Phoenix.PubSub, name: Test.StatelessReentry.PubSub})
+
+      start_supervised(
+        {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Test.StatelessReentry.PubSub]}
+      )
+
+      :ok
+    end
+
+    test "dispatcher suspends the Task, then re-applies the handler with state and merged params" do
+      session = build_session()
+      request = build_request(%{"protocolVersion" => "2026-07-28"}, "elicit_demo", %{"q" => "hi"})
+      original_request_id = request.id
+
+      # First call — the Task spawns, the handler returns
+      # `{:noreply, Session.elicit(..., state: ...)}`, and
+      # `process_handler_result/5` invokes `Session.elicit(await: true)`
+      # which sends `{:phantom_await_elicit, ...}` to the adopter (test pid).
+      assert {:noreply, _} =
+               Router.dispatch_method("tools/call", request.params, request, session)
+
+      assert_receive {:phantom_await_elicit, ref_id, elicit, task_pid, ^original_request_id},
+                     1_000
+
+      assert %Phantom.Elicit{message: "pick"} = elicit
+
+      # Register the suspended task so a follow-up request can adopt it.
+      Phantom.Tracker.track_request(task_pid, ref_id, %{type: :pending_task, pid: task_pid})
+
+      # Follow-up request carrying the encrypted ref_id resumes the task.
+      token = RequestState.encode({:__phantom_await__, ref_id}, @secret, @salt)
+      follow_session = build_session()
+
+      follow_request =
+        build_request(
+          %{"requestState" => token, "protocolVersion" => "2026-07-28"},
+          "elicit_demo",
+          %{"choice" => "blue"}
+        )
+
+      assert {:noreply, _} =
+               Router.dispatch_method(
+                 "tools/call",
+                 follow_request.params,
+                 follow_request,
+                 follow_session
+               )
+
+      # On resume, the handler's second clause matches because
+      # `session.state == %{step: :got_choice, original: %{"q" => "hi"}}`
+      # and the response (`%{"choice" => "blue"}`) is merged into params.
+      response = assert_responded(2_000)
+
+      assert %{content: [%{type: :text, text: text}]} = response
+      assert text =~ "chose=blue"
+      assert text =~ ~s(orig=%{"q" => "hi"})
+    end
+  end
 
   describe "Session.elicit/3 with `await: true` — protocol-agnostic inline" do
     setup do

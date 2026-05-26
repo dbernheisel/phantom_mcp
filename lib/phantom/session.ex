@@ -13,6 +13,10 @@ defmodule Phantom.Session do
     :allowed_resource_templates,
     :allowed_tools,
     :state,
+    # `:elicit` is reserved. Adapters (`Phantom.Stdio`, `Phantom.Test`) still
+    # populate it, but the dispatcher always spawns the handler in a Task, so
+    # the in-process fast path that called this closure is unreachable in
+    # production. Kept for adapters that may bypass `run_handler/5`.
     :elicit,
     :id,
     :last_event_id,
@@ -187,6 +191,15 @@ defmodule Phantom.Session do
     end
   end
 
+  # Stateless-core inline-blocking implementation. Suspends the spawned Task
+  # on a `receive`, asks the adopter (session GenServer) to emit an
+  # `inputRequired` result to the client, and resumes when the follow-up
+  # request adopts this task pid via `Phantom.Tracker`.
+  #
+  # Side effect: rebinds `:phantom_adopter` and `:phantom_tool_request_id`
+  # in the process dictionary when a cross-node resume delivers the response,
+  # so any subsequent `Session.respond/2` or nested `Session.elicit/3` call
+  # in the same handler reaches the new adopter and carries the new request id.
   defp stateless_await(_session, elicitation, opts) do
     timeout = Keyword.get(opts, :timeout, @elicitation_timeout)
     ref_id = UUIDv7.generate()
@@ -195,7 +208,7 @@ defmodule Phantom.Session do
 
     if is_nil(adopter) or is_nil(request_id) do
       raise ArgumentError,
-            "Session.elicit/3 with `await: true` must be called from within a tool handler"
+            "Session.elicit/3 with `await: true` must be called from within a tool or prompt handler dispatched by `Phantom.Router`"
     end
 
     send(adopter, {:phantom_await_elicit, ref_id, elicitation, self(), request_id})
@@ -229,35 +242,25 @@ defmodule Phantom.Session do
       end
 
     with_elicitation_support(capabilities, elicitation, fn ->
-      cond do
-        # Fast path: called from within the stream-owner process
-        # (e.g. a synchronous tool handler). The adapter-provided
-        # `session.elicit` closure writes to the transport directly
-        # and blocks in a receive.
-        is_function(session.elicit) and self() == session.pid ->
-          session.elicit.(elicitation, timeout)
+      # Handlers always run in a Task spawned by `Phantom.Router.run_handler/5`,
+      # so the elicitation is initiated cross-process from the stream owner.
+      # The session GenServer at `session.pid` owns the transport and is the
+      # only process Bandit will accept writes from, so delegate there.
+      if is_pid(session.pid) do
+        tool_call_id = session.request && session.request.id
 
-        # Cross-process path: called from a Task spawned after the
-        # tool returned `{:noreply, session}`. The captured conn in
-        # the closure can only be written from the stream owner
-        # (Bandit enforces this), so delegate to the session
-        # GenServer which owns the stream.
-        is_pid(session.pid) ->
-          tool_call_id = session.request && session.request.id
-
-          try do
-            GenServer.call(
-              session.pid,
-              {:elicit, elicitation, tool_call_id},
-              timeout + 1_000
-            )
-          catch
-            :exit, {:timeout, _} -> :timeout
-            :exit, _ -> :error
-          end
-
-        true ->
-          :error
+        try do
+          GenServer.call(
+            session.pid,
+            {:elicit, elicitation, tool_call_id},
+            timeout + 1_000
+          )
+        catch
+          :exit, {:timeout, _} -> :timeout
+          :exit, _ -> :error
+        end
+      else
+        :error
       end
     end)
   end
