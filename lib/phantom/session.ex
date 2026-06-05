@@ -12,9 +12,15 @@ defmodule Phantom.Session do
     :allowed_prompts,
     :allowed_resource_templates,
     :allowed_tools,
+    :state,
+    # `:elicit` is reserved. Adapters (`Phantom.Stdio`, `Phantom.Test`) still
+    # populate it, but the dispatcher always spawns the handler in a Task, so
+    # the in-process fast path that called this closure is unreachable in
+    # production. Kept for adapters that may bypass `run_handler/5`.
     :elicit,
     :id,
     :last_event_id,
+    :pending_elicit,
     :pid,
     :pubsub,
     :request,
@@ -38,6 +44,7 @@ defmodule Phantom.Session do
           allowed_prompts: [String.t()],
           allowed_resource_templates: [String.t()],
           allowed_tools: [String.t()],
+          state: term() | nil,
           elicit:
             (Phantom.Elicit.t(), timeout :: pos_integer() ->
                {:ok, map()} | :error | :timeout)
@@ -46,6 +53,7 @@ defmodule Phantom.Session do
           close_after_complete: boolean(),
           id: binary(),
           last_event_id: String.t() | nil,
+          pending_elicit: {Phantom.Elicit.t(), term()} | nil,
           pid: pid() | nil,
           pubsub: module(),
           request: Phantom.Request.t() | nil,
@@ -98,19 +106,133 @@ defmodule Phantom.Session do
   @doc """
   Elicit input from the client.
 
-  Blocks until the client responds or timeout is reached. Returns
-  `{:ok, response}` where response is the client's JSON response map
-  (with `"action"` and `"content"` keys).
+  Two call patterns, with protocol-aware defaults that preserve historical
+  behavior:
+
+  - **Inline blocking** (`:await` true, or default under legacy) — returns
+    `{:ok, response}` where `response` is the client's JSON map (`"action"`
+    and `"content"` keys), or `:not_supported` / `:timeout` / `:error`.
+    Under legacy MCP protocols the call blocks via the open SSE stream;
+    under MCP `2026-07-28` Phantom suspends the tool's Task, returns an
+    `inputRequired` result to the client, and resumes the Task inline when
+    the follow-up `tools/call` arrives (possibly on another node).
+
+  - **Re-entry** (`:state` set, or default under stateless) — returns the
+    `session` struct with the pending elicit attached. The handler wraps
+    it in the standard `{:noreply, session}` reply shape:
+
+        {:noreply, Session.elicit(session, elicit, state: %{step: :got_input})}
+
+    The dispatcher then converts to an `inputRequired` result (stateless)
+    or runs through the SSE elicit round-trip + handler re-invocation
+    (legacy). On resume, the handler is re-entered with `session.state`
+    populated to whatever you passed as `:state`. Structure the handler
+    with a function-head clause that matches on `%Session{state: %{...}}`.
+
+  Protocol-aware defaults — when neither `:await` nor `:state` is set:
+
+  - Under legacy protocols (`≤ 2025-11-25`) the call defaults to inline
+    blocking. Existing legacy code that pattern-matches `{:ok, response}`
+    against `Session.elicit(session, elicit)` continues to work unchanged.
+  - Under MCP `2026-07-28` (stateless core) the call defaults to re-entry
+    with `state: nil`. Inline blocking under stateless requires explicit
+    `await: true` because it can't be the default — code that relied on the
+    implicit blocking under legacy would otherwise silently change semantics.
+
+  Pick based on style preference:
+
+      # Inline — the function continues after the response arrives
+      def my_tool(_params, session) do
+        {:ok, %{"choice" => c}} = Session.elicit(session, elicit, await: true)
+        {:reply, Tool.text("got \#{c}"), session}
+      end
+
+      # Re-entry — the handler is invoked again with session.state populated
+      def my_tool(%{"choice" => c}, %Session{state: %{step: :got_choice}} = session) do
+        {:reply, Tool.text("got \#{c}"), session}
+      end
+
+      def my_tool(params, session) do
+        {:noreply, Session.elicit(session, elicit, state: %{step: :got_choice})}
+      end
 
   Options:
-    - `:timeout` - max time to wait in ms (default: 5 minutes)
+    - `:await` — `true` to force inline blocking regardless of protocol
+    - `:state` — value placed on `session.state` on re-entry; forces re-entry
+      mode regardless of protocol
+    - `:timeout` — max blocking time in ms (`:await` mode only; default: 5 minutes)
   """
   @spec elicit(t, Phantom.Elicit.t(), keyword()) ::
           {:ok, response :: map()}
+          | t
           | :not_supported
           | :error
           | :timeout
   def elicit(session, elicitation, opts \\ []) do
+    cond do
+      # Explicit :await — force inline blocking on either protocol.
+      Keyword.get(opts, :await, false) ->
+        if stateless?(session) do
+          stateless_await(session, elicitation, opts)
+        else
+          do_elicit(session, elicitation, opts)
+        end
+
+      # Explicit :state — force re-entry on either protocol.
+      Keyword.has_key?(opts, :state) ->
+        %{session | pending_elicit: {elicitation, opts[:state]}}
+
+      # Protocol-aware default: stateless → re-entry, legacy → inline blocking.
+      stateless?(session) ->
+        %{session | pending_elicit: {elicitation, nil}}
+
+      true ->
+        do_elicit(session, elicitation, opts)
+    end
+  end
+
+  # Stateless-core inline-blocking implementation. Suspends the spawned Task
+  # on a `receive`, asks the adopter (session GenServer) to emit an
+  # `inputRequired` result to the client, and resumes when the follow-up
+  # request adopts this task pid via `Phantom.Tracker`.
+  #
+  # Side effect: rebinds `:phantom_adopter` and `:phantom_tool_request_id`
+  # in the process dictionary when a cross-node resume delivers the response,
+  # so any subsequent `Session.respond/2` or nested `Session.elicit/3` call
+  # in the same handler reaches the new adopter and carries the new request id.
+  defp stateless_await(_session, elicitation, opts) do
+    timeout = Keyword.get(opts, :timeout, @elicitation_timeout)
+    ref_id = UUIDv7.generate()
+    adopter = Process.get(:phantom_adopter)
+    request_id = Process.get(:phantom_tool_request_id)
+
+    if is_nil(adopter) or is_nil(request_id) do
+      raise ArgumentError,
+            "Session.elicit/3 with `await: true` must be called from within a tool or prompt handler dispatched by `Phantom.Router`"
+    end
+
+    send(adopter, {:phantom_await_elicit, ref_id, elicitation, self(), request_id})
+
+    receive do
+      {:phantom_elicit_response, ^ref_id, response, new_adopter, new_request_id} ->
+        Process.put(:phantom_adopter, new_adopter)
+        Process.put(:phantom_tool_request_id, new_request_id)
+        response
+    after
+      timeout -> :timeout
+    end
+  end
+
+  @doc """
+  Whether the session's current request is using the MCP `2026-07-28`
+  stateless-core protocol.
+  """
+  def stateless?(%__MODULE__{request: %{meta: meta}}) when is_map(meta),
+    do: meta["protocolVersion"] == "2026-07-28"
+
+  def stateless?(_), do: false
+
+  defp do_elicit(session, elicitation, opts) do
     timeout = Keyword.get(opts, :timeout, @elicitation_timeout)
 
     capabilities =
@@ -120,35 +242,25 @@ defmodule Phantom.Session do
       end
 
     with_elicitation_support(capabilities, elicitation, fn ->
-      cond do
-        # Fast path: called from within the stream-owner process
-        # (e.g. a synchronous tool handler). The adapter-provided
-        # `session.elicit` closure writes to the transport directly
-        # and blocks in a receive.
-        is_function(session.elicit) and self() == session.pid ->
-          session.elicit.(elicitation, timeout)
+      # Handlers always run in a Task spawned by `Phantom.Router.run_handler/5`,
+      # so the elicitation is initiated cross-process from the stream owner.
+      # The session GenServer at `session.pid` owns the transport and is the
+      # only process Bandit will accept writes from, so delegate there.
+      if is_pid(session.pid) do
+        tool_call_id = session.request && session.request.id
 
-        # Cross-process path: called from a Task spawned after the
-        # tool returned `{:noreply, session}`. The captured conn in
-        # the closure can only be written from the stream owner
-        # (Bandit enforces this), so delegate to the session
-        # GenServer which owns the stream.
-        is_pid(session.pid) ->
-          tool_call_id = session.request && session.request.id
-
-          try do
-            GenServer.call(
-              session.pid,
-              {:elicit, elicitation, tool_call_id},
-              timeout + 1_000
-            )
-          catch
-            :exit, {:timeout, _} -> :timeout
-            :exit, _ -> :error
-          end
-
-        true ->
-          :error
+        try do
+          GenServer.call(
+            session.pid,
+            {:elicit, elicitation, tool_call_id},
+            timeout + 1_000
+          )
+        catch
+          :exit, {:timeout, _} -> :timeout
+          :exit, _ -> :error
+        end
+      else
+        :error
       end
     end)
   end
@@ -290,6 +402,30 @@ defmodule Phantom.Session do
          id: request_id,
          jsonrpc: "2.0",
          result: payload
+       }}
+    )
+  end
+
+  @doc """
+  Send a JSON-RPC error response for a pending request.
+
+  Used by async tool handlers (running in a Task) to finalize a request
+  with a protocol-level error rather than a Tool.error result.
+  """
+  @spec respond_error(pid() | t(), Request.t() | String.t() | integer(), map()) :: :ok
+  def respond_error(%__MODULE__{pid: pid}, request_id, error),
+    do: respond_error(pid, request_id, error)
+
+  def respond_error(pid, %Request{id: id}, error), do: respond_error(pid, id, error)
+
+  def respond_error(pid, request_id, error) when is_pid(pid) do
+    GenServer.cast(
+      pid,
+      {:respond, request_id,
+       %{
+         id: request_id,
+         jsonrpc: "2.0",
+         error: error
        }}
     )
   end
@@ -521,6 +657,42 @@ defmodule Phantom.Session do
     end
   end
 
+  def handle_info(
+        {:phantom_await_elicit, ref_id, elicitation, task_pid, request_id},
+        state
+      ) do
+    info = state.session.router.__phantom__(:info)
+
+    case {info[:secret_key_base], info[:request_state_salt]} do
+      {secret, salt} when is_binary(secret) and is_binary(salt) ->
+        state_blob = Phantom.RequestState.encode({:__phantom_await__, ref_id}, secret, salt)
+
+        Phantom.Tracker.track_request(task_pid, ref_id, %{
+          type: :pending_task,
+          pid: task_pid
+        })
+
+        __MODULE__.respond(
+          self(),
+          request_id,
+          Phantom.Tool.input_required(elicitation, state_blob)
+        )
+
+        {:noreply, state |> set_activity() |> schedule_inactivity()}
+
+      _ ->
+        __MODULE__.respond_error(
+          self(),
+          request_id,
+          Request.internal_error(
+            "Stateless await requires :secret_key_base and :request_state_salt on the router"
+          )
+        )
+
+        {:noreply, state}
+    end
+  end
+
   def handle_info(:inactivity, state) do
     cond do
       not state.session.close_after_complete ->
@@ -643,6 +815,11 @@ defmodule Phantom.Session do
           requests = Map.put(session.requests, request.id, request.response)
           put_in(state.session, %{session | requests: requests})
 
+        {:reply, nil, %__MODULE__{} = session} ->
+          state
+          |> put_session(session)
+          |> release_in_flight(request.id)
+
         {:reply, result, %__MODULE__{} = session} ->
           request = Request.result(request, "message", result)
 
@@ -650,11 +827,6 @@ defmodule Phantom.Session do
           |> put_session(session)
           |> release_in_flight(request.id)
           |> stream_fun.(request.id, request.type, request.response)
-
-        {:reply, nil, %__MODULE__{} = session} ->
-          state
-          |> put_session(session)
-          |> release_in_flight(request.id)
 
         {:error, error, %__MODULE__{} = session} ->
           error = Request.error(request.id, error)

@@ -354,4 +354,180 @@ defmodule Phantom.DistributedTest do
       assert log_notification["params"]["data"]["message"] == "hello from node2"
     end
   end
+
+  describe "stateless core (2026-07-28) — no Tracker, no sticky session" do
+    # Node A returns `inputRequired` with an encrypted `requestState`.
+    # Node B — with no prior knowledge of the original call — decodes the
+    # blob using the shared `:secret_key_base`, populates `session.state`,
+    # and runs the same tool's resume clause to completion. This is the
+    # load-bearing claim of the stateless core: any node can serve any
+    # call as long as it shares the secret with the others.
+    test "node 1 returns inputRequired; node 2 resumes purely from the encrypted state" do
+      first_resp =
+        post_mcp(
+          @node1_port,
+          %{
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: %{
+              "name" => "resume_tool",
+              "arguments" => %{"origin" => "test"},
+              "_meta" => %{"protocolVersion" => "2026-07-28"}
+            }
+          },
+          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "resume_tool"}]
+        )
+
+      assert first_resp.status == 200
+
+      input_required =
+        poll_for_sse_event(first_resp, 5_000, fn msg ->
+          get_in(msg, ["result", "resultType"]) == "inputRequired"
+        end)
+
+      assert input_required, "Expected inputRequired result from node 1"
+
+      token = input_required["result"]["requestState"]
+      assert is_binary(token)
+      refute token == ""
+
+      input_requests = input_required["result"]["inputRequests"]
+      assert is_list(input_requests) and length(input_requests) >= 1
+
+      second_resp =
+        post_mcp(
+          @node2_port,
+          %{
+            jsonrpc: "2.0",
+            id: 2,
+            method: "tools/call",
+            params: %{
+              "name" => "resume_tool",
+              "arguments" => %{"name" => "alice"},
+              "_meta" => %{
+                "protocolVersion" => "2026-07-28",
+                "requestState" => token
+              }
+            }
+          },
+          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "resume_tool"}]
+        )
+
+      assert second_resp.status == 200
+
+      result =
+        poll_for_sse_event(second_resp, 5_000, fn msg ->
+          get_in(msg, ["result", "content"]) != nil
+        end)
+
+      assert result, "Expected tool result from node 2"
+
+      text = get_in(result, ["result", "content", Access.at(0), "text"])
+      assert text == "resumed name=alice origin=test"
+    end
+
+    test "an invalid requestState on node 2 is rejected as invalid_params" do
+      bad_resp =
+        post_mcp(
+          @node2_port,
+          %{
+            jsonrpc: "2.0",
+            id: 3,
+            method: "tools/call",
+            params: %{
+              "name" => "resume_tool",
+              "arguments" => %{"name" => "alice"},
+              "_meta" => %{
+                "protocolVersion" => "2026-07-28",
+                "requestState" => "not-a-real-token"
+              }
+            }
+          },
+          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "resume_tool"}]
+        )
+
+      assert bad_resp.status == 200
+
+      error =
+        poll_for_sse_event(bad_resp, 5_000, fn msg ->
+          get_in(msg, ["error", "code"]) != nil
+        end)
+
+      assert error, "Expected JSON-RPC error response"
+      assert error["error"]["code"] == -32602
+    end
+
+    # The `await_tool` calls Session.elicit(..., await: true) inline. The
+    # tool's Task suspends on node 1 when the elicit fires; the encrypted
+    # requestState carries the suspension reference. The follow-up
+    # tools/call to node 2 looks up the suspended Task via Phantom.Tracker
+    # (Erlang's distributed pid routing handles the cross-node send) and
+    # delivers the elicit response. The Task — still living on node 1 —
+    # resumes inline, runs to completion, and casts its final result to
+    # the new HTTP handler on node 2 via Session.respond. End-to-end
+    # proof that the inline-await pattern preserves the distributed
+    # property without sticky sessions.
+    test "inline await: Task suspends on node 1; response delivered via node 2 resumes inline" do
+      first_resp =
+        post_mcp(
+          @node1_port,
+          %{
+            jsonrpc: "2.0",
+            id: 10,
+            method: "tools/call",
+            params: %{
+              "name" => "await_tool",
+              "arguments" => %{},
+              "_meta" => %{"protocolVersion" => "2026-07-28"}
+            }
+          },
+          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "await_tool"}]
+        )
+
+      assert first_resp.status == 200
+
+      input_required =
+        poll_for_sse_event(first_resp, 5_000, fn msg ->
+          get_in(msg, ["result", "resultType"]) == "inputRequired"
+        end)
+
+      assert input_required,
+             "Expected inputRequired from node 1's await_tool — the Task should suspend"
+
+      token = input_required["result"]["requestState"]
+      assert is_binary(token)
+
+      second_resp =
+        post_mcp(
+          @node2_port,
+          %{
+            jsonrpc: "2.0",
+            id: 11,
+            method: "tools/call",
+            params: %{
+              "name" => "await_tool",
+              "arguments" => %{"color" => "violet"},
+              "_meta" => %{
+                "protocolVersion" => "2026-07-28",
+                "requestState" => token
+              }
+            }
+          },
+          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "await_tool"}]
+        )
+
+      assert second_resp.status == 200
+
+      result =
+        poll_for_sse_event(second_resp, 5_000, fn msg ->
+          get_in(msg, ["result", "content"]) != nil
+        end)
+
+      assert result, "Expected tool result from node 2 — the Task should resume inline"
+
+      text = get_in(result, ["result", "content", Access.at(0), "text"])
+      assert text == "awaited color=violet"
+    end
+  end
 end

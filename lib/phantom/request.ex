@@ -1,6 +1,6 @@
 defmodule Phantom.Request do
   @moduledoc "Standard requests and responses for the MCP protocol"
-  defstruct [:id, :type, :method, :params, :response, :spec]
+  defstruct [:id, :type, :method, :params, :response, :spec, meta: %{}]
 
   @opaque t :: %__MODULE__{
             id: String.t(),
@@ -8,10 +8,12 @@ defmodule Phantom.Request do
             method: String.t(),
             params: map(),
             response: map(),
-            spec: Phantom.ResourceTemplate.t() | Phantom.Tool.t() | Phantom.Prompt.t()
+            spec: Phantom.ResourceTemplate.t() | Phantom.Tool.t() | Phantom.Prompt.t(),
+            meta: map()
           }
 
   @connection -32000
+  @header_mismatch -32001
   @resource_not_found -32002
   @invalid_request -32600
   @method_not_found -32601
@@ -55,9 +57,24 @@ defmodule Phantom.Request do
   def not_found(message \\ nil),
     do: %{code: @method_not_found, message: message || "Method not found"}
 
-  @doc "The resource is not found"
-  def resource_not_found(data),
-    do: %{code: @resource_not_found, data: data, message: "Resource not found"}
+  @doc """
+  The HTTP routing headers (`Mcp-Method`, `Mcp-Name`) do not match the
+  request body, or a required header is missing (SEP-2243, MCP 2026-07-28).
+  """
+  def header_mismatch(message),
+    do: %{code: @header_mismatch, message: message}
+
+  @doc """
+  The resource is not found.
+
+  Under MCP `2026-07-28` (SEP-2164) the JSON-RPC code is the standard
+  `-32602 Invalid Params`. Under earlier protocol versions it remains
+  the MCP-custom `-32002` so legacy clients continue to match.
+  """
+  def resource_not_found(data, %Session{} = session) do
+    code = if Session.stateless?(session), do: @invalid_params, else: @resource_not_found
+    %{code: code, data: data, message: "Resource not found"}
+  end
 
   @doc "Error indicating URL mode elicitation is required before retrying"
   def url_elicitation_required(elicitations) when is_list(elicitations) do
@@ -82,11 +99,14 @@ defmodule Phantom.Request do
 
   def build(%{"jsonrpc" => "2.0", "method" => method} = request)
       when is_binary(method) do
+    params = request["params"] || %{}
+
     {:ok,
      struct!(__MODULE__,
-       params: request["params"] || %{},
+       params: params,
        method: method,
-       id: request["id"]
+       id: request["id"],
+       meta: params["_meta"] || %{}
      )}
   end
 
@@ -112,6 +132,56 @@ defmodule Phantom.Request do
       "params" => request.params
     }
   end
+
+  @doc false
+  # Used by Phantom.Router.dispatch_method to populate the `:trace_context`
+  # key on `[:phantom, :dispatch]` telemetry span metadata. Tracer libraries
+  # (OpenTelemetry et al.) attach to that event and read the field directly;
+  # devs shouldn't need to call this function.
+  def trace_context(%__MODULE__{meta: meta}) when is_map(meta) do
+    remove_nils(%{
+      traceparent: meta["traceparent"],
+      tracestate: meta["tracestate"],
+      baggage: meta["baggage"]
+    })
+  end
+
+  def trace_context(_), do: %{}
+
+  @doc """
+  Annotate a JSON-RPC result with MCP `2026-07-28` cache hints.
+
+  These are *advisory* — the server doesn't cache; the hints tell the client
+  (and any intermediate CDN / gateway) how to treat the result. Modeled on
+  HTTP `Cache-Control`.
+
+  Options:
+
+  - `:ttl_ms` — how long the client may consider the result fresh, in milliseconds
+    (becomes top-level `ttlMs` on the result)
+  - `:scope` — `:public` (shareable across users) or `:private` (per-session);
+    becomes top-level `cacheScope`
+
+  Works on any result map — `tools/call`, `resources/read`, `prompts/get`,
+  list responses, completions:
+
+      Tool.text("...") |> Request.with_cache(ttl_ms: 60_000, scope: :public)
+
+      Resource.list(links, nil) |> Request.with_cache(ttl_ms: 300_000, scope: :public)
+  """
+  def with_cache(%{} = result, opts) do
+    Map.merge(
+      result,
+      remove_nils(%{
+        ttlMs: Keyword.get(opts, :ttl_ms),
+        cacheScope: encode_scope(Keyword.get(opts, :scope))
+      })
+    )
+  end
+
+  defp encode_scope(nil), do: nil
+  defp encode_scope(:public), do: "public"
+  defp encode_scope(:private), do: "private"
 
   @doc "Ping request"
   def ping() do
@@ -178,11 +248,11 @@ defmodule Phantom.Request do
   end
 
   def resource_response(nil, uri, session) do
-    {:error, resource_not_found(%{uri: uri}), session}
+    {:error, resource_not_found(%{uri: uri}, session), session}
   end
 
   def resource_response({:reply, nil, %Session{} = session}, uri, _session) do
-    {:error, resource_not_found(%{uri: uri}), session}
+    {:error, resource_not_found(%{uri: uri}, session), session}
   end
 
   def resource_response(

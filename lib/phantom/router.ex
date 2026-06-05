@@ -5,13 +5,27 @@ defmodule Phantom.Router do
 
   See `Phantom` for usage examples.
 
+  ## Options
+
+  - `:name` — server name advertised to the client
+  - `:vsn` — server version string (defaults to the OTP app version)
+  - `:instructions` — server instructions, typically the moduledoc
+  - `:icons`, `:website_url` — server metadata
+  - `:secret_key_base` — required to support MCP `2026-07-28`. Used by
+    `Phantom.RequestState` to encrypt the multi-round-trip `requestState`
+    blob; nodes serving the same router must share this value.
+
   ## Telemetry
 
   Telemetry is provided with these events:
 
-  - `[:phantom, :dispatch, :start]` with meta: `~w[method params request session]a`
-  - `[:phantom, :dispatch, :stop]` with meta: `~w[method params request result session]a`
+  - `[:phantom, :dispatch, :start]` with meta: `~w[method params request session trace_context]a`
+  - `[:phantom, :dispatch, :stop]` with meta: `~w[method params request result session trace_context]a`
   - `[:phantom, :dispatch, :exception]` with meta: `~w[method kind reason stacktrace params request session]a`
+
+  The `:trace_context` value is `Phantom.Request.trace_context/1` applied to
+  the incoming request — a map of W3C `traceparent`, `tracestate`, and
+  `baggage` when the client provided them in `_meta`.
   """
 
   import Plug.Router.Utils, only: [build_path_match: 1]
@@ -117,7 +131,13 @@ defmodule Phantom.Router do
               | {:noreply, Session.t()}
               | {:error, any(), Session.t()}
 
-  @supported_protocol_versions ~w[2024-11-05 2025-03-26 2025-06-18 2025-11-25]
+  @supported_protocol_versions ~w[
+    2024-11-05
+    2025-03-26
+    2025-06-18
+    2025-11-25
+    2026-07-28
+  ]
 
   @dialyzer {:nowarn_function, default_vsn: 1}
   defp default_vsn(nil) do
@@ -141,6 +161,8 @@ defmodule Phantom.Router do
     instructions = Keyword.get(opts, :instructions, "")
     icons = Keyword.get(opts, :icons, nil)
     website_url = Keyword.get(opts, :website_url, nil)
+    secret_key_base = Keyword.get(opts, :secret_key_base, nil)
+    request_state_salt = Keyword.get(opts, :request_state_salt, nil)
 
     quote location: :keep, generated: true do
       @behaviour Phantom.Router
@@ -171,6 +193,8 @@ defmodule Phantom.Router do
       @instructions unquote(instructions)
       @icons unquote(icons)
       @website_url unquote(website_url)
+      @secret_key_base unquote(secret_key_base)
+      @request_state_salt unquote(request_state_salt)
 
       Module.register_attribute(__MODULE__, :phantom_tools, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_prompts, accumulate: true)
@@ -324,7 +348,13 @@ defmodule Phantom.Router do
       def dispatch_method([method, params, request, session] = args) do
         :telemetry.span(
           [:phantom, :dispatch],
-          %{method: method, params: params, request: request, session: session},
+          %{
+            method: method,
+            params: params,
+            request: request,
+            session: session,
+            trace_context: Phantom.Request.trace_context(request)
+          },
           fn ->
             result = apply(__MODULE__, :dispatch_method, args)
             {result, %{}, %{result: result}}
@@ -942,6 +972,87 @@ defmodule Phantom.Router do
     Cache.validate!(info.prompts)
     Cache.validate!(info.tools)
     Cache.validate!(info.resource_templates)
+    validate_secret_key_base!(mod, info)
+  end
+
+  defp validate_secret_key_base!(mod, info) do
+    has_handlers? = info.tools != [] or info.prompts != []
+    secret = info.secret_key_base
+    salt = info.request_state_salt
+
+    cond do
+      is_binary(secret) and byte_size(secret) < 64 ->
+        raise ArgumentError, """
+        #{inspect(mod)}: :secret_key_base must be at least 64 bytes (got \
+        #{byte_size(secret)}).
+
+        Used by Phantom.RequestState to encrypt the multi-round-trip
+        requestState blob under MCP 2026-07-28. A short key degrades the
+        security guarantee — the blob carries continuation state and live
+        Task references; an attacker who guesses the key could forge resume
+        requests.
+
+        Generate a strong key with `:crypto.strong_rand_bytes(64) |> Base.encode64()`.
+        """
+
+      is_binary(secret) and is_nil(salt) ->
+        raise ArgumentError, """
+        #{inspect(mod)}: :secret_key_base is configured but :request_state_salt is not.
+
+        Both must be set together. The salt is the HKDF salt used to derive a
+        key specifically for requestState blobs; it doesn't have to be secret
+        but it must be stable. Rotating it invalidates all in-flight blobs.
+
+            use Phantom.Router,
+              ...,
+              secret_key_base: ...,
+              request_state_salt: "myapp request_state v1"
+        """
+
+      is_nil(secret) and is_binary(salt) ->
+        raise ArgumentError, """
+        #{inspect(mod)}: :request_state_salt is configured but :secret_key_base is not.
+
+        Both must be set together.
+        """
+
+      is_nil(secret) and has_handlers? and not suppress_missing_secret_warning?() ->
+        IO.warn("""
+        #{inspect(mod)} has tools or prompts but no :secret_key_base /
+        :request_state_salt configured.
+
+        Tools/prompts that elicit input from the client will work under legacy
+        MCP protocols (≤ 2025-11-25) but fail under MCP 2026-07-28 (stateless
+        core), because Phantom needs both values to encrypt the requestState
+        continuation blob.
+
+        To support modern clients:
+
+            use Phantom.Router,
+              ...,
+              secret_key_base: Application.compile_env(:my_app, :secret_key_base),
+              request_state_salt: "myapp request_state v1"
+
+        The key must be at least 64 bytes. Generate one with:
+
+            :crypto.strong_rand_bytes(64) |> Base.encode64()
+
+        The salt is a stable string of your choosing — see `Phantom.RequestState`.
+        """)
+
+      true ->
+        :ok
+    end
+  end
+
+  # Suppress the missing-secret warning only when compiling Phantom's own
+  # test suite. Checking the current Mix project's app name (instead of
+  # `Mix.env()`) avoids silencing the warning for downstream users running
+  # their own test environments.
+  defp suppress_missing_secret_warning? do
+    Mix.Project.config()[:app] == :phantom_mcp
+  rescue
+    _ -> false
   end
 
   defmacro __before_compile__(env) do
@@ -954,7 +1065,9 @@ defmodule Phantom.Router do
             version: @vsn,
             tools: @phantom_tools,
             resource_templates: @phantom_resource_templates,
-            prompts: @phantom_prompts
+            prompts: @phantom_prompts,
+            secret_key_base: @secret_key_base,
+            request_state_salt: @request_state_salt
           }
         end
       end,
@@ -1230,8 +1343,24 @@ defmodule Phantom.Router do
   end
 
   def wrap(:tool, {:reply, result, %Session{} = session}, _session) do
-    {:reply, Tool.response(result), session}
+    {:reply, encode_request_state(Tool.response(result), session), session}
   end
+
+  defp encode_request_state(%{resultType: "inputRequired", requestState: raw} = result, session)
+       when not is_binary(raw) do
+    info = session.router.__phantom__(:info)
+
+    case {info[:secret_key_base], info[:request_state_salt]} do
+      {secret, salt} when is_binary(secret) and is_binary(salt) ->
+        %{result | requestState: Phantom.RequestState.encode(raw, secret, salt)}
+
+      _ ->
+        raise ArgumentError,
+              "Tool returned input_required but #{inspect(session.router)} has no :secret_key_base / :request_state_salt configured"
+    end
+  end
+
+  defp encode_request_state(result, _session), do: result
 
   defp paginate(entities, cursor, fun) do
     entities
@@ -1305,23 +1434,200 @@ defmodule Phantom.Router do
         {:error, Request.invalid_params(), session}
 
       tool ->
-        params = Map.get(params, "arguments", %{})
+        args = Map.get(params, "arguments", %{})
 
-        case JSONSchema.maybe_validate(tool.input_schema, params) do
-          {:ok, params} ->
-            wrap(
-              :tool,
-              apply(
-                tool.handler,
-                tool.function,
-                [params, %{session | request: %{request | spec: tool}}]
-              ),
-              session
-            )
+        case maybe_decode_state(router, session, request) do
+          {:ok, session} ->
+            with {:ok, validated} <- JSONSchema.maybe_validate(tool.input_schema, args) do
+              run_handler(:tool, tool, validated, session, request)
+            else
+              {:error, reasons} ->
+                {:error, Request.invalid_params(%{validation_errors: reasons}), session}
+            end
 
-          {:error, reasons} ->
-            {:error, Request.invalid_params(%{validation_errors: reasons}), session}
+          {:adopt_task, ref_id, session} ->
+            adopt_pending_task(ref_id, args, session, request)
+
+          {:error, :invalid_request_state} ->
+            {:error, Request.invalid_params(%{requestState: "Invalid request state"}), session}
+
+          {:error, :expired_request_state} ->
+            {:error,
+             %{
+               code: -32001,
+               message: "Request state expired",
+               data: %{requestState: "expired"}
+             }, session}
         end
+    end
+  end
+
+  defp adopt_pending_task(ref_id, response_args, session, request) do
+    # Phoenix.Tracker is CRDT-replicated and can lag behind by up to
+    # broadcast_period (default 1.5s) after registration on another node.
+    # Retry briefly before declaring the task missing.
+    case await_request_meta(ref_id) do
+      nil ->
+        {:error, Request.invalid_params(%{requestState: "Task not found or expired"}), session}
+
+      %{pid: task_pid} ->
+        send(
+          task_pid,
+          {:phantom_elicit_response, ref_id, {:ok, response_args}, session.pid, request.id}
+        )
+
+        {:noreply, session}
+    end
+  end
+
+  defp run_handler(kind, spec, params, session, request) do
+    request_id = request.id
+    parent_pid = session.pid
+    task_session = %{session | request: %{request | spec: spec}}
+
+    spawn(fn ->
+      # `:phantom_adopter` and `:phantom_tool_request_id` are read by
+      # `finalize_result/5` and updated by `Phantom.Session` when a
+      # stateless-core `Session.elicit(await: true)` resumes the task on a
+      # new node with a new adopter pid + request id.
+      Process.put(:phantom_adopter, parent_pid)
+      Process.put(:phantom_tool_request_id, request_id)
+
+      try do
+        handler_result = apply(spec.handler, spec.function, [params, task_session])
+        process_handler_result(kind, handler_result, spec, params, task_session)
+      rescue
+        exception ->
+          :telemetry.execute([:phantom, :dispatch, :exception], %{}, %{
+            kind: :error,
+            reason: exception,
+            stacktrace: __STACKTRACE__,
+            method: telemetry_method(kind),
+            params: params,
+            request: request,
+            session: task_session
+          })
+
+          respond_error_to_caller(Request.internal_error(Exception.message(exception)))
+      end
+    end)
+
+    {:noreply, session}
+  end
+
+  defp telemetry_method(:tool), do: "tools/call"
+  defp telemetry_method(:prompt), do: "prompts/get"
+
+  # When the handler returns {:noreply, %Session{pending_elicit: {elicit, state}}},
+  # the Task stays alive: we await the client's response via Session.elicit(await: true)
+  # and re-apply the handler with `session.state` set and the response merged into
+  # params. Under MCP 2026-07-28 this `Session.elicit(await: true)` call blocks
+  # the Task on a `receive` while the adopter (the session GenServer) emits the
+  # `inputRequired` response to the client; the suspended Task resumes when a
+  # follow-up request adopts the task pid via `Phantom.Tracker`, possibly on
+  # another node.
+  defp process_handler_result(
+         kind,
+         {:noreply, %Session{pending_elicit: {elicit, state}} = session},
+         spec,
+         params,
+         _session
+       ) do
+    session = %{session | pending_elicit: nil}
+
+    case Session.elicit(session, elicit, await: true) do
+      {:ok, response} ->
+        new_session = %{session | state: state}
+        new_params = Map.merge(params, response)
+        handler_result = apply(spec.handler, spec.function, [new_params, new_session])
+        process_handler_result(kind, handler_result, spec, new_params, new_session)
+
+      :not_supported ->
+        respond_error_to_caller(
+          Request.invalid_params(%{elicit: "Client does not support elicitation"})
+        )
+
+      :timeout ->
+        respond_error_to_caller(Request.internal_error("Elicitation timed out"))
+
+      :error ->
+        respond_error_to_caller(Request.internal_error("Elicitation failed"))
+
+      other ->
+        respond_error_to_caller(
+          Request.internal_error("Unexpected Session.elicit/3 return: #{inspect(other)}")
+        )
+    end
+  end
+
+  defp process_handler_result(kind, result, spec, params, session) do
+    finalize_result(kind, result, spec, params, session)
+  end
+
+  defp finalize_result(kind, {:reply, result, %Session{}}, _spec, _params, session) do
+    respond_to_caller(encode_request_state(format_response(kind, result, session), session))
+  end
+
+  defp finalize_result(_kind, {:error, error, %Session{}}, _spec, _params, _session) do
+    respond_error_to_caller(error)
+  end
+
+  defp finalize_result(_kind, {:noreply, %Session{}}, _spec, _params, _session) do
+    :ok
+  end
+
+  defp finalize_result(_kind, {:elicitation_required, elicitations}, _spec, _params, _session)
+       when is_list(elicitations) do
+    respond_error_to_caller(Request.url_elicitation_required(elicitations))
+  end
+
+  defp finalize_result(kind, other, _spec, _params, session) do
+    respond_to_caller(format_response(kind, other, session))
+  end
+
+  defp format_response(:tool, result, _session), do: Tool.response(result)
+
+  defp format_response(:prompt, result, session),
+    do: Prompt.response(result, session.request.spec)
+
+  # `:phantom_adopter` / `:phantom_tool_request_id` are set in `run_handler/5`
+  # and updated by `Phantom.Session.stateless_await/3` after a cross-node
+  # resume so subsequent responses route to the new caller.
+  defp respond_to_caller(payload) do
+    Session.respond(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      payload
+    )
+  end
+
+  defp respond_error_to_caller(error) do
+    Session.respond_error(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      error
+    )
+  end
+
+  defp maybe_decode_state(router, session, request) do
+    meta = request.meta || %{}
+    info = router.__phantom__(:info)
+
+    with token when is_binary(token) <- Map.get(meta, "requestState", :none),
+         secret when is_binary(secret) <- info[:secret_key_base],
+         salt when is_binary(salt) <- info[:request_state_salt],
+         {:ok, term} <- Phantom.RequestState.decode(token, secret, salt) do
+      case term do
+        {:__phantom_await__, ref_id} ->
+          {:adopt_task, ref_id, session}
+
+        _ ->
+          {:ok, %{session | state: term}}
+      end
+    else
+      :none -> {:ok, session}
+      {:error, :expired} -> {:error, :expired_request_state}
+      _ -> {:error, :invalid_request_state}
     end
   end
 
@@ -1339,14 +1645,24 @@ defmodule Phantom.Router do
       prompt ->
         args = Map.get(params, "arguments", %{})
 
-        wrap(
-          :prompt,
-          apply(prompt.handler, prompt.function, [
-            args,
-            %{session | request: %{request | spec: prompt}}
-          ]),
-          session
-        )
+        case maybe_decode_state(router, session, request) do
+          {:ok, session} ->
+            run_handler(:prompt, prompt, args, session, request)
+
+          {:adopt_task, ref_id, session} ->
+            adopt_pending_task(ref_id, args, session, request)
+
+          {:error, :invalid_request_state} ->
+            {:error, Request.invalid_params(%{requestState: "Invalid request state"}), session}
+
+          {:error, :expired_request_state} ->
+            {:error,
+             %{
+               code: -32001,
+               message: "Request state expired",
+               data: %{requestState: "expired"}
+             }, session}
+        end
     end
   end
 

@@ -1,3 +1,179 @@
+## Unreleased
+
+- Initial support for MCP 2026-07-28 stateless core. `Phantom.Session.elicit/3`
+  has two call patterns with protocol-aware defaults — both backed by a
+  LiveView-style stateful Task that suspends on the originating node and
+  resumes inline when the client returns:
+    - **Inline blocking** (`await: true`, or default under legacy) — the
+      function continues after the response arrives. `case Session.elicit(...) do {:ok, _} -> ...`.
+    - **Re-entry** (`:state` set, or default under stateless) — the handler
+      returns `{:noreply, Session.elicit(session, elicit, state: %{...})}`;
+      Phantom holds the Task open, awaits the response, and re-invokes the
+      handler with `session.state` populated. State accumulates across
+      multiple elicit steps. Function-head clauses match on `%Session{state:
+      ...}` for each step.
+  - Under MCP `2026-07-28` the encrypted `requestState` blob is just an
+    opaque pointer to the suspended Task; cross-node follow-ups route via
+    `Phantom.Tracker`. State accumulation lives on the live Task, not in
+    the blob.
+  - `Phantom.Tool.input_required/2` is the lower-level builder for
+    constructing an `inputRequired` result map directly (skipping Task
+    suspension).
+  - Existing legacy code that called `Session.elicit/3` without opts
+    continues to work unchanged — the default under legacy is still inline
+    blocking.
+- Tools/call now always dispatches in a spawned Task. Tool crashes are
+  isolated to the Task (the HTTP/session process keeps serving) and
+  surface via the `[:phantom, :dispatch, :exception]` telemetry event.
+- New: `Phantom.Session.respond_error/3` finalizes a pending request with
+  a JSON-RPC error from an async task.
+- New: `Phantom.Router` accepts `:secret_key_base` and `:request_state_salt`
+  for the encrypted `requestState` codec. Both required when supporting
+  MCP `2026-07-28`.
+- New: `Phantom.RequestState` (Plug.Crypto-backed encode/decode of the
+  continuation blob) and `Phantom.Session.stateless?/1` predicate.
+- New: `Phantom.Request.with_cache/2` annotates any result with `ttlMs` /
+  `cacheScope`.
+- W3C trace context (`traceparent` / `tracestate` / `baggage`) from `_meta`
+  is automatically surfaced on the `[:phantom, :dispatch]` telemetry span
+  under `metadata.trace_context`. Wire your tracer to that event (see
+  "Distributed tracing" in the README).
+- MCP `2026-07-28` adds three optional headers — `mcp-protocol-version`,
+  `mcp-method`, `mcp-name` — that upstream infrastructure (load balancers,
+  WAFs, gateways) can route on without inspecting the JSON-RPC body.
+  Phantom passes them through; no server-side configuration needed.
+
+### For existing users
+
+**If you only target legacy MCP clients (≤ 2025-11-25):** your existing
+code works unchanged. No changes required. The protocol-aware default for
+`Session.elicit/3` preserves the historical inline-blocking behavior on
+legacy.
+
+```elixir
+# Existing handler — unchanged, still works.
+def my_tool(params, session) do
+  case Session.elicit(session, @elicit_name) do
+    {:ok, %{"action" => "accept", "content" => content}} ->
+      {:reply, Tool.text("Hello \#{content["name"]}"), session}
+
+    {:ok, _rejected} ->
+      {:reply, Tool.error("Rejected"), session}
+
+    :not_supported ->
+      {:reply, Tool.text("Hello stranger"), session}
+  end
+end
+```
+
+**If you want to also support modern MCP `2026-07-28` clients:**
+
+*Step 1.* Add `:secret_key_base` and `:request_state_salt` to your router.
+Phantom encrypts the multi-round-trip `requestState` blob with `Plug.Crypto`;
+nodes serving the same router must share both values.
+
+```elixir
+use Phantom.Router,
+  name: "MyApp",
+  vsn: "1.0",
+  secret_key_base: Application.compile_env(:my_app, :secret_key_base),
+  request_state_salt: "myapp request_state v1"
+```
+
+- `:secret_key_base` is a high-entropy binary ≥ 64 bytes. Generate one with
+  `:crypto.strong_rand_bytes(64) |> Base.encode64()`.
+- `:request_state_salt` is a stable string of your choosing — it's the HKDF
+  salt used to derive a key specifically for requestState blobs. Doesn't
+  need to be secret, but rotating it invalidates all in-flight blobs.
+
+The router raises at compile time if the key is too short, if one is set
+without the other, and warns if both are missing while tools or prompts
+are defined.
+
+*Step 2.* Pick a migration shape for your `Session.elicit/3` calls.
+Existing calls without `:await` work under legacy because legacy defaults
+to inline blocking, but the same call under `2026-07-28` would return the
+re-entry tagged tuple instead — which your existing `case {:ok, _}`
+clauses don't match.
+
+The smallest change is to add `await: true` everywhere you currently call
+`Session.elicit/3` for blocking behavior:
+
+```elixir
+# Before: implicit inline blocking, legacy-only
+{:ok, response} = Session.elicit(session, elicit)
+
+# After: explicit inline blocking, works on both protocols
+{:ok, response} = Session.elicit(session, elicit, await: true)
+```
+
+Under `2026-07-28`, `await: true` suspends the tool's Task and resumes it
+inline when the follow-up `tools/call` arrives (possibly on a different
+node). The handler reads the same.
+
+### Recommendation for new PhantomMCP users targeting modern MCP clients
+
+For greenfield code, use the **re-entry pattern** rather than `await: true`.
+Re-entry is the natural shape for stateless: the handler is invoked again
+with `session.state` populated, no suspended Task, no `Phantom.Tracker`
+required for cross-node routing.
+
+```elixir
+use Phantom.Router,
+  name: "MyApp",
+  vsn: "1.0",
+  secret_key_base: Application.compile_env(:my_app, :secret_key_base)
+
+tool :delete_file do
+  field :path, :string, required: true
+end
+
+# Resume clause — runs on the second invocation.
+def delete_file(
+      %{"confirm" => "yes"},
+      %Phantom.Session{state: %{step: :confirming, path: path}} = session
+    ) do
+  File.rm!(path)
+  {:reply, Tool.text("Deleted \#{path}"), session}
+end
+
+def delete_file(%{"confirm" => _}, session),
+  do: {:reply, Tool.text("Cancelled"), session}
+
+# First-call clause — ask the client.
+def delete_file(%{"path" => path}, session) do
+  {:noreply,
+   Phantom.Session.elicit(
+     session,
+     Phantom.Elicit.form(%{
+       message: "Really delete \#{path}?",
+       requested_schema: [
+         %{name: "confirm", type: :enum, enum: ["yes", "no"], required: true}
+       ]
+     }),
+     state: %{step: :confirming, path: path}
+   )}
+end
+```
+
+Why re-entry over inline `await: true`:
+
+- **Truly stateless on the wire** — `state` is encrypted into `requestState`
+  and travels with the client. Any node can serve any follow-up call.
+  Inline `await: true` keeps a Task suspended on the originating node and
+  uses `Phantom.Tracker` for cross-node delivery.
+- **No resource pinning** — re-entry has no in-memory state between
+  requests. Inline await holds an Erlang process per pending elicit (with
+  a 5-minute default timeout).
+- **Pattern-match clarity** — the resume clause is a function head, not a
+  `case` block buried in the middle of a function.
+- **Multi-step state machines** read naturally — each step is its own
+  re-entry clause matching on a different `step` atom.
+
+Reserve `await: true` for cases where the inline ergonomics are
+genuinely simpler (short interactions, no multi-step flow, no need for
+distribution beyond one node).
+
 ## 0.4.5 (2026-04-29)
 
 - Fix `Plug.Conn.AlreadySentError` when a second SSE GET arrives for an

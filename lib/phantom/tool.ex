@@ -340,7 +340,50 @@ defmodule Phantom.Tool do
     }
   end
 
+  @doc """
+  Tool response indicating the server needs more input from the client before
+  it can complete this call (MCP `2026-07-28` stateless-core flow).
+
+  Returns a result map with the raw `requestState` term. The Plug dispatcher
+  encrypts that term with `Phantom.RequestState` before it leaves the server;
+  the client echoes the resulting opaque token back in `_meta.requestState`
+  on the follow-up `tools/call`, and Phantom restores it onto
+  `session.state` so the handler can resume.
+
+  Required options:
+
+  - `:input_requests` — list of input requests the client must satisfy
+  - `:state` — any term the handler needs to resume work; arrives at
+    `session.state` on the follow-up call
+
+  See `m:Phantom#module-defining-tools` for the full multi-round-trip pattern.
+  """
+  def input_required(opts) do
+    %{
+      resultType: "inputRequired",
+      inputRequests: Keyword.fetch!(opts, :input_requests),
+      requestState: Keyword.fetch!(opts, :state)
+    }
+  end
+
+  @doc """
+  Build an `inputRequired` result from an `Elicit` struct and an opaque
+  `requestState` term.
+
+  The `request_state` is passed through verbatim; the dispatcher encrypts
+  it with `Phantom.RequestState` before the response leaves the server.
+  """
+  @spec input_required(Phantom.Elicit.t(), term()) :: map()
+  def input_required(%Phantom.Elicit{} = elicit, request_state) do
+    %{
+      resultType: "inputRequired",
+      inputRequests: Phantom.Elicit.to_input_requests(elicit),
+      requestState: request_state
+    }
+  end
+
   @doc "Formats the response from an MCP Router to the MCP specification"
+  def response(%{resultType: "inputRequired"} = results), do: results
   def response(%{content: _} = results), do: results
 
   def response(results) do

@@ -12,10 +12,18 @@ defmodule Phantom.Plug do
 
   This module provides a complete MCP server implementation with:
   - JSON-RPC 2.0 message handling
-  - Server-Sent Events (SSE) streaming
+  - Server-Sent Events (SSE) streaming (legacy protocols)
+  - Stateless transactional request/response (MCP `2026-07-28`)
   - CORS handling and security features
   - Session management integration
   - Origin validation
+
+  Legacy clients (`≤ 2025-11-25`) carry an `mcp-session-id` header and may
+  hold a persistent `GET` SSE stream for server-initiated traffic. Stateless
+  core clients (`2026-07-28`) send no session header — every `POST` is
+  self-contained and any node behind a round-robin load balancer can serve
+  the call. Both modes run from the same router; the protocol version on
+  each request determines the dispatch path.
 
   <!-- tabs-open -->
 
@@ -152,7 +160,11 @@ defmodule Phantom.Plug do
     config = Map.merge(opts, app_config)
 
     conn
-    |> put_private(:phantom, %{router: config.router, session: nil, requests: %{}})
+    |> put_private(:phantom, %{
+      router: config.router,
+      session: nil,
+      requests: %{}
+    })
     |> validate_request(config)
     |> cors_preflight(config)
     |> cors_headers(config)
@@ -322,16 +334,24 @@ defmodule Phantom.Plug do
 
   defp dispatch(%Plug.Conn{body_params: params, method: "POST"} = conn, opts)
        when is_map(params) or is_map_key(params, "_json") do
-    session = conn.private.phantom.session
+    case validate_routing_headers(conn, params) do
+      :ok ->
+        session = conn.private.phantom.session
 
-    conn
-    |> put_resp_header("mcp-session-id", session.id)
-    |> put_resp_header("cache-control", "no-cache")
-    |> put_resp_content_type("text/event-stream")
-    |> put_resp_header("connection", "keep-alive")
-    |> put_resp_header("x-accel-buffering", "no")
-    |> send_chunked(200)
-    |> stream_loop(opts)
+        conn
+        |> put_resp_header("mcp-session-id", session.id)
+        |> put_resp_header("cache-control", "no-cache")
+        |> put_resp_content_type("text/event-stream")
+        |> put_resp_header("connection", "keep-alive")
+        |> put_resp_header("x-accel-buffering", "no")
+        |> send_chunked(200)
+        |> stream_loop(opts)
+
+      {:error, error, id} ->
+        conn
+        |> put_status(400)
+        |> json_error(Request.error(id, error))
+    end
   end
 
   defp dispatch(%Plug.Conn{method: "DELETE"} = conn, _opts) do
@@ -373,6 +393,60 @@ defmodule Phantom.Plug do
     )
   end
 
+  # SEP-2243: MCP 2026-07-28 mandates `Mcp-Method` and (where applicable)
+  # `Mcp-Name` routing headers and that servers reject requests where the
+  # headers and body disagree. Legacy clients on older protocol versions
+  # are exempt — they predate the requirement.
+  defp validate_routing_headers(_conn, %{"_json" => _}), do: :ok
+
+  defp validate_routing_headers(conn, params) when is_map(params) do
+    cond do
+      not Map.has_key?(params, "method") ->
+        :ok
+
+      get_in(params, ["params", "_meta", "protocolVersion"]) == "2026-07-28" ->
+        do_validate_routing_headers(conn, params)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp do_validate_routing_headers(conn, %{"method" => body_method} = params) do
+    id = params["id"]
+    header_method = get_req_header(conn, "mcp-method") |> List.first()
+    body_name = name_from_params(body_method, Map.get(params, "params"))
+    header_name = get_req_header(conn, "mcp-name") |> List.first()
+    needs_name? = body_method in ["tools/call", "prompts/get", "resources/read"]
+
+    cond do
+      is_nil(header_method) ->
+        {:error, Request.header_mismatch("Missing required header: Mcp-Method"), id}
+
+      header_method != body_method ->
+        {:error,
+         Request.header_mismatch(
+           "Header mismatch: Mcp-Method header value '#{header_method}' does not match body value '#{body_method}'"
+         ), id}
+
+      needs_name? and is_nil(header_name) ->
+        {:error, Request.header_mismatch("Missing required header: Mcp-Name"), id}
+
+      needs_name? and header_name != body_name ->
+        {:error,
+         Request.header_mismatch(
+           "Header mismatch: Mcp-Name header value '#{header_name}' does not match body value '#{body_name}'"
+         ), id}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp name_from_params("resources/read", params) when is_map(params), do: params["uri"]
+  defp name_from_params(_method, params) when is_map(params), do: params["name"]
+  defp name_from_params(_method, _params), do: nil
+
   defp continue(state) do
     {state, exceptions} =
       state
@@ -409,10 +483,39 @@ defmodule Phantom.Plug do
     state = maybe_track_response(state, request)
     state = put_in(state.conn, maybe_track_session_stream(state.conn))
 
-    put_in(state.session, %{
+    session =
       state.conn.private.phantom.session
-      | elicit: elicit_fun(state.conn, state.stream_fun, request)
-    })
+      |> hydrate_from_meta(request)
+      |> Map.put(:elicit, elicit_fun(state.conn, state.stream_fun, request))
+
+    put_in(state.session, session)
+  end
+
+  # Under MCP 2026-07-28 every request is self-contained; the `_meta`
+  # carries what `initialize` used to set on the session. Under legacy the
+  # session has already been hydrated from Tracker meta (see
+  # `inherit_session_meta/1`), so `_meta.clientInfo` and
+  # `_meta.capabilities` will be absent and this is a no-op.
+  defp hydrate_from_meta(session, %Phantom.Request{meta: meta}) when is_map(meta) do
+    session
+    |> maybe_put(:client_info, meta["clientInfo"])
+    |> maybe_put(:client_capabilities, normalize_client_capabilities(meta["capabilities"]))
+  end
+
+  defp hydrate_from_meta(session, _), do: session
+
+  defp maybe_put(struct, _key, nil), do: struct
+  defp maybe_put(struct, key, value), do: Map.put(struct, key, value)
+
+  defp normalize_client_capabilities(nil), do: nil
+
+  defp normalize_client_capabilities(caps) when is_map(caps) do
+    %{
+      roots: caps["roots"],
+      sampling: caps["sampling"],
+      elicitation: caps["elicitation"],
+      ui: get_in(caps, ["extensions", "io.modelcontextprotocol/ui"]) || false
+    }
   end
 
   defp dispatch_or_reject(state, request, exceptions) do
