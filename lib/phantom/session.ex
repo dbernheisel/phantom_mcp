@@ -643,6 +643,11 @@ defmodule Phantom.Session do
           requests = Map.put(session.requests, request.id, request.response)
           put_in(state.session, %{session | requests: requests})
 
+        {:reply, nil, %__MODULE__{} = session} ->
+          state
+          |> put_session(session)
+          |> release_in_flight(request.id)
+
         {:reply, result, %__MODULE__{} = session} ->
           request = Request.result(request, "message", result)
 
@@ -650,11 +655,6 @@ defmodule Phantom.Session do
           |> put_session(session)
           |> release_in_flight(request.id)
           |> stream_fun.(request.id, request.type, request.response)
-
-        {:reply, nil, %__MODULE__{} = session} ->
-          state
-          |> put_session(session)
-          |> release_in_flight(request.id)
 
         {:error, error, %__MODULE__{} = session} ->
           error = Request.error(request.id, error)
