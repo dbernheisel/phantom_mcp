@@ -2,6 +2,11 @@ defmodule Phantom.RequestTest do
   use ExUnit.Case, async: true
 
   alias Phantom.Request
+  alias Phantom.Session
+
+  defp session_with_protocol(version) do
+    %Session{id: "test", request: %Request{meta: %{"protocolVersion" => version}}}
+  end
 
   describe "build/1 captures _meta from params" do
     test "extracts an empty meta when params has no _meta" do
@@ -138,6 +143,26 @@ defmodule Phantom.RequestTest do
       assert result.content == [%{type: :text, text: "x"}]
       assert result.structuredContent == %{a: 1}
       assert result.ttlMs == 10
+    end
+  end
+
+  describe "resource_not_found/2 chooses the JSON-RPC code by protocol version" do
+    test "legacy protocols (≤ 2025-11-25) still emit the MCP-custom -32002" do
+      session = session_with_protocol("2025-11-25")
+
+      assert %{code: -32002, message: "Resource not found", data: %{uri: "x"}} =
+               Request.resource_not_found(%{uri: "x"}, session)
+    end
+
+    test "stateless core (2026-07-28) emits the standard -32602 Invalid Params (SEP-2164)" do
+      session = session_with_protocol("2026-07-28")
+
+      assert %{code: -32602, message: "Resource not found", data: %{uri: "x"}} =
+               Request.resource_not_found(%{uri: "x"}, session)
+    end
+
+    test "a session with no recorded protocol version defaults to legacy" do
+      assert %{code: -32002} = Request.resource_not_found(%{uri: "x"}, %Session{id: "test"})
     end
   end
 end

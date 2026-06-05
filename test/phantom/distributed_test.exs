@@ -364,16 +364,20 @@ defmodule Phantom.DistributedTest do
     # call as long as it shares the secret with the others.
     test "node 1 returns inputRequired; node 2 resumes purely from the encrypted state" do
       first_resp =
-        post_mcp(@node1_port, %{
-          jsonrpc: "2.0",
-          id: 1,
-          method: "tools/call",
-          params: %{
-            "name" => "resume_tool",
-            "arguments" => %{"origin" => "test"},
-            "_meta" => %{"protocolVersion" => "2026-07-28"}
-          }
-        })
+        post_mcp(
+          @node1_port,
+          %{
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: %{
+              "name" => "resume_tool",
+              "arguments" => %{"origin" => "test"},
+              "_meta" => %{"protocolVersion" => "2026-07-28"}
+            }
+          },
+          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "resume_tool"}]
+        )
 
       assert first_resp.status == 200
 
@@ -392,19 +396,23 @@ defmodule Phantom.DistributedTest do
       assert is_list(input_requests) and length(input_requests) >= 1
 
       second_resp =
-        post_mcp(@node2_port, %{
-          jsonrpc: "2.0",
-          id: 2,
-          method: "tools/call",
-          params: %{
-            "name" => "resume_tool",
-            "arguments" => %{"name" => "alice"},
-            "_meta" => %{
-              "protocolVersion" => "2026-07-28",
-              "requestState" => token
+        post_mcp(
+          @node2_port,
+          %{
+            jsonrpc: "2.0",
+            id: 2,
+            method: "tools/call",
+            params: %{
+              "name" => "resume_tool",
+              "arguments" => %{"name" => "alice"},
+              "_meta" => %{
+                "protocolVersion" => "2026-07-28",
+                "requestState" => token
+              }
             }
-          }
-        })
+          },
+          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "resume_tool"}]
+        )
 
       assert second_resp.status == 200
 
@@ -421,19 +429,23 @@ defmodule Phantom.DistributedTest do
 
     test "an invalid requestState on node 2 is rejected as invalid_params" do
       bad_resp =
-        post_mcp(@node2_port, %{
-          jsonrpc: "2.0",
-          id: 3,
-          method: "tools/call",
-          params: %{
-            "name" => "resume_tool",
-            "arguments" => %{"name" => "alice"},
-            "_meta" => %{
-              "protocolVersion" => "2026-07-28",
-              "requestState" => "not-a-real-token"
+        post_mcp(
+          @node2_port,
+          %{
+            jsonrpc: "2.0",
+            id: 3,
+            method: "tools/call",
+            params: %{
+              "name" => "resume_tool",
+              "arguments" => %{"name" => "alice"},
+              "_meta" => %{
+                "protocolVersion" => "2026-07-28",
+                "requestState" => "not-a-real-token"
+              }
             }
-          }
-        })
+          },
+          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "resume_tool"}]
+        )
 
       assert bad_resp.status == 200
 
@@ -458,16 +470,20 @@ defmodule Phantom.DistributedTest do
     # property without sticky sessions.
     test "inline await: Task suspends on node 1; response delivered via node 2 resumes inline" do
       first_resp =
-        post_mcp(@node1_port, %{
-          jsonrpc: "2.0",
-          id: 10,
-          method: "tools/call",
-          params: %{
-            "name" => "await_tool",
-            "arguments" => %{},
-            "_meta" => %{"protocolVersion" => "2026-07-28"}
-          }
-        })
+        post_mcp(
+          @node1_port,
+          %{
+            jsonrpc: "2.0",
+            id: 10,
+            method: "tools/call",
+            params: %{
+              "name" => "await_tool",
+              "arguments" => %{},
+              "_meta" => %{"protocolVersion" => "2026-07-28"}
+            }
+          },
+          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "await_tool"}]
+        )
 
       assert first_resp.status == 200
 
@@ -483,19 +499,23 @@ defmodule Phantom.DistributedTest do
       assert is_binary(token)
 
       second_resp =
-        post_mcp(@node2_port, %{
-          jsonrpc: "2.0",
-          id: 11,
-          method: "tools/call",
-          params: %{
-            "name" => "await_tool",
-            "arguments" => %{"color" => "violet"},
-            "_meta" => %{
-              "protocolVersion" => "2026-07-28",
-              "requestState" => token
+        post_mcp(
+          @node2_port,
+          %{
+            jsonrpc: "2.0",
+            id: 11,
+            method: "tools/call",
+            params: %{
+              "name" => "await_tool",
+              "arguments" => %{"color" => "violet"},
+              "_meta" => %{
+                "protocolVersion" => "2026-07-28",
+                "requestState" => token
+              }
             }
-          }
-        })
+          },
+          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "await_tool"}]
+        )
 
       assert second_resp.status == 200
 

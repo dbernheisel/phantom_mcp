@@ -51,6 +51,7 @@ defmodule Phantom.Test.NodeCase do
   """
   def post_mcp(port, body, opts \\ []) do
     session_id = Keyword.get(opts, :session_id)
+    extra_headers = Keyword.get(opts, :headers, [])
 
     headers = [
       {"content-type", "application/json"},
@@ -59,6 +60,8 @@ defmodule Phantom.Test.NodeCase do
 
     headers =
       if session_id, do: [{"mcp-session-id", session_id} | headers], else: headers
+
+    headers = headers ++ extra_headers
 
     Req.post!("http://127.0.0.1:#{port}/",
       json: body,

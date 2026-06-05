@@ -742,4 +742,180 @@ defmodule Phantom.PlugTest do
       assert resp_conn.status == 202
     end
   end
+
+  describe "MCP 2026-07-28 routing header validation (SEP-2243)" do
+    defp post_stateless(body, headers) do
+      conn =
+        :post
+        |> conn("/mcp", body)
+        |> put_req_header("content-type", "application/json")
+
+      Enum.reduce(headers, conn, fn {k, v}, c -> put_req_header(c, k, v) end)
+      |> call()
+    end
+
+    defp stateless_meta, do: %{"protocolVersion" => "2026-07-28"}
+
+    test "legacy protocol requests without routing headers still dispatch" do
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: %{"name" => "echo_tool", "arguments" => %{message: "x"}}
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call()
+
+      assert_connected(_conn)
+      assert_receive {:response, 1, "message", %{result: %{content: _}}}
+    end
+
+    test "matching Mcp-Method + Mcp-Name dispatches normally" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: %{
+            "name" => "echo_tool",
+            "arguments" => %{message: "ok"},
+            "_meta" => stateless_meta()
+          }
+        },
+        [{"mcp-method", "tools/call"}, {"mcp-name", "echo_tool"}]
+      )
+
+      assert_connected(_conn)
+      assert_receive {:response, 1, "message", %{result: %{content: _}}}
+    end
+
+    test "missing Mcp-Method rejects with 400 + -32001 HeaderMismatch" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 9,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{}, "_meta" => stateless_meta()}
+        },
+        [{"mcp-name", "echo_tool"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      error = JSON.decode!(conn.resp_body)
+      assert error["error"]["code"] == -32001
+      assert error["error"]["message"] =~ "Mcp-Method"
+      assert error["id"] == 9
+    end
+
+    test "Mcp-Method value mismatch rejects with 400 + -32001" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 10,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{}, "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "prompts/get"}, {"mcp-name", "echo_tool"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32001
+    end
+
+    test "Mcp-Method is case-sensitive: TOOLS/CALL vs tools/call rejects" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 11,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{}, "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "TOOLS/CALL"}, {"mcp-name", "echo_tool"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32001
+    end
+
+    test "tools/call without Mcp-Name rejects" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 12,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{}, "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "tools/call"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32001
+    end
+
+    test "tools/call with mismatched Mcp-Name rejects" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 13,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{}, "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "tools/call"}, {"mcp-name", "wrong_tool"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32001
+    end
+
+    test "resources/read Mcp-Name mirrors params.uri" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 14,
+          method: "resources/read",
+          params: %{"uri" => "test:///nonexistent/path", "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "resources/read"}, {"mcp-name", "test:///nonexistent/path"}]
+      )
+
+      # The URI doesn't resolve to a real resource, but it should at least pass
+      # header validation and reach the dispatcher (which then returns resource_not_found).
+      assert_connected(_conn)
+      assert_receive {:response, 14, "message", %{error: %{code: code}}}
+      # Under stateless protocol, resource_not_found returns -32602 (SEP-2164).
+      assert code == -32602
+    end
+
+    test "resources/read with mismatched Mcp-Name (different URI) rejects" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 15,
+          method: "resources/read",
+          params: %{"uri" => "test:///a", "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "resources/read"}, {"mcp-name", "test:///b"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32001
+    end
+
+    test "methods without a target name (e.g. ping) only need Mcp-Method" do
+      post_stateless(
+        %{jsonrpc: "2.0", id: 16, method: "ping", params: %{"_meta" => stateless_meta()}},
+        [{"mcp-method", "ping"}]
+      )
+
+      assert_connected(_conn)
+      assert_receive {:response, 16, "message", %{result: %{}}}
+    end
+  end
 end

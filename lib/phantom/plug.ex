@@ -334,16 +334,24 @@ defmodule Phantom.Plug do
 
   defp dispatch(%Plug.Conn{body_params: params, method: "POST"} = conn, opts)
        when is_map(params) or is_map_key(params, "_json") do
-    session = conn.private.phantom.session
+    case validate_routing_headers(conn, params) do
+      :ok ->
+        session = conn.private.phantom.session
 
-    conn
-    |> put_resp_header("mcp-session-id", session.id)
-    |> put_resp_header("cache-control", "no-cache")
-    |> put_resp_content_type("text/event-stream")
-    |> put_resp_header("connection", "keep-alive")
-    |> put_resp_header("x-accel-buffering", "no")
-    |> send_chunked(200)
-    |> stream_loop(opts)
+        conn
+        |> put_resp_header("mcp-session-id", session.id)
+        |> put_resp_header("cache-control", "no-cache")
+        |> put_resp_content_type("text/event-stream")
+        |> put_resp_header("connection", "keep-alive")
+        |> put_resp_header("x-accel-buffering", "no")
+        |> send_chunked(200)
+        |> stream_loop(opts)
+
+      {:error, error, id} ->
+        conn
+        |> put_status(400)
+        |> json_error(Request.error(id, error))
+    end
   end
 
   defp dispatch(%Plug.Conn{method: "DELETE"} = conn, _opts) do
@@ -384,6 +392,62 @@ defmodule Phantom.Plug do
       )
     )
   end
+
+  # SEP-2243: MCP 2026-07-28 mandates `Mcp-Method` and (where applicable)
+  # `Mcp-Name` routing headers and that servers reject requests where the
+  # headers and body disagree. Legacy clients on older protocol versions
+  # are exempt — they predate the requirement.
+  defp validate_routing_headers(_conn, %{"_json" => _}), do: :ok
+
+  defp validate_routing_headers(conn, params) when is_map(params) do
+    cond do
+      not Map.has_key?(params, "method") ->
+        :ok
+
+      get_in(params, ["params", "_meta", "protocolVersion"]) == "2026-07-28" ->
+        do_validate_routing_headers(conn, params)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_routing_headers(_conn, _params), do: :ok
+
+  defp do_validate_routing_headers(conn, %{"method" => body_method} = params) do
+    id = params["id"]
+    header_method = get_req_header(conn, "mcp-method") |> List.first()
+    body_name = name_from_params(body_method, Map.get(params, "params"))
+    header_name = get_req_header(conn, "mcp-name") |> List.first()
+    needs_name? = body_method in ["tools/call", "prompts/get", "resources/read"]
+
+    cond do
+      is_nil(header_method) ->
+        {:error, Request.header_mismatch("Missing required header: Mcp-Method"), id}
+
+      header_method != body_method ->
+        {:error,
+         Request.header_mismatch(
+           "Header mismatch: Mcp-Method header value '#{header_method}' does not match body value '#{body_method}'"
+         ), id}
+
+      needs_name? and is_nil(header_name) ->
+        {:error, Request.header_mismatch("Missing required header: Mcp-Name"), id}
+
+      needs_name? and header_name != body_name ->
+        {:error,
+         Request.header_mismatch(
+           "Header mismatch: Mcp-Name header value '#{header_name}' does not match body value '#{body_name}'"
+         ), id}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp name_from_params("resources/read", params) when is_map(params), do: params["uri"]
+  defp name_from_params(_method, params) when is_map(params), do: params["name"]
+  defp name_from_params(_method, _params), do: nil
 
   defp continue(state) do
     {state, exceptions} =
