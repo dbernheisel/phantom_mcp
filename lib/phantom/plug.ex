@@ -412,8 +412,6 @@ defmodule Phantom.Plug do
     end
   end
 
-  defp validate_routing_headers(_conn, _params), do: :ok
-
   defp do_validate_routing_headers(conn, %{"method" => body_method} = params) do
     id = params["id"]
     header_method = get_req_header(conn, "mcp-method") |> List.first()
