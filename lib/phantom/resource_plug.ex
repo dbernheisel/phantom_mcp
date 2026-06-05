@@ -33,8 +33,11 @@ defmodule Phantom.ResourcePlug do
         apply(handler, function, args)
       rescue
         _e in FunctionClauseError ->
-          {:error, Phantom.Request.resource_not_found(%{uri: fake_conn.assigns.uri}),
-           fake_conn.assigns.session}
+          {:error,
+           Phantom.Request.resource_not_found(
+             %{uri: fake_conn.assigns.uri},
+             fake_conn.assigns.session
+           ), fake_conn.assigns.session}
       end
 
     assign(
@@ -51,13 +54,13 @@ defmodule Phantom.ResourcePlug do
   defp wrap({:error, _reason, %Session{}} = result, _uri, _session), do: result
 
   defp wrap(nil, uri, session) do
-    {:error, Request.resource_not_found(%{uri: uri}), session}
+    {:error, Request.resource_not_found(%{uri: uri}, session), session}
   end
 
   defp wrap({:noreply, %Session{}} = result, _uri, _session), do: result
 
   defp wrap({:reply, nil, %Session{} = session}, uri, _session) do
-    {:error, Request.resource_not_found(%{uri: uri}), session}
+    {:error, Request.resource_not_found(%{uri: uri}, session), session}
   end
 
   defp wrap({:reply, %{code: code, message: _} = error, %Session{} = session}, _uri, _session)
@@ -78,8 +81,9 @@ defmodule Phantom.ResourcePlug do
     def init(opts), do: opts
 
     def call(conn, _opts) do
-      result = Phantom.Request.resource_not_found(%{uri: conn.assigns.uri})
-      assign(conn, :result, {:error, result, conn.assigns.session})
+      session = conn.assigns.session
+      result = Phantom.Request.resource_not_found(%{uri: conn.assigns.uri}, session)
+      assign(conn, :result, {:error, result, session})
     end
   end
 end

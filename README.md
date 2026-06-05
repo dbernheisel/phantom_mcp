@@ -768,14 +768,21 @@ least-connections; sticky routing is wasted complexity.
 
 ### L7 routing with MCP `2026-07-28` headers
 
-The new protocol adds three optional request headers your LB can route on
-*without* parsing the JSON-RPC body:
+SEP-2243 requires clients on `2026-07-28` to mirror routing fields from
+the JSON-RPC body into HTTP headers so load balancers, proxies, and WAFs
+can route on the operation without parsing the body:
 
-- `mcp-protocol-version` — `"2025-11-25"`, `"2026-07-28"`, etc.
-- `mcp-method` — `"tools/call"`, `"prompts/list"`, etc.
-- `mcp-name` — the tool or prompt name (e.g. `"search"`)
+- `Mcp-Method` — mirrors `method`. Required on every POST.
+- `Mcp-Name` — mirrors `params.name` (for `tools/call`, `prompts/get`)
+  or `params.uri` (for `resources/read`).
 
-Phantom doesn't read these headers server-side — they exist for the LB.
+Header names are case-insensitive; values are case-sensitive (so
+`Mcp-Method: TOOLS/CALL` does *not* match a body method of `tools/call`).
+
+Phantom validates these server-side and rejects requests where the
+headers and body disagree (or where required headers are missing) with
+HTTP `400 Bad Request` and JSON-RPC error code `-32001 HeaderMismatch`.
+Legacy clients negotiating an older protocol version are exempt.
 
 ### Response caching
 

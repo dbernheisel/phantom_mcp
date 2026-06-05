@@ -1,6 +1,10 @@
 defmodule Phantom.ClientLogger do
   @moduledoc """
   Notify the client of logs.
+
+  MCP version `2026-07-28` deprecates this functionality, and
+  instead favors simply using logger to  `stderr` (stdio adapter)
+  or OTel (HTTP adapter).
   """
 
   alias Phantom.Session

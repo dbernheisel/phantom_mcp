@@ -13,6 +13,7 @@ defmodule Phantom.Request do
           }
 
   @connection -32000
+  @header_mismatch -32001
   @resource_not_found -32002
   @invalid_request -32600
   @method_not_found -32601
@@ -56,9 +57,24 @@ defmodule Phantom.Request do
   def not_found(message \\ nil),
     do: %{code: @method_not_found, message: message || "Method not found"}
 
-  @doc "The resource is not found"
-  def resource_not_found(data),
-    do: %{code: @resource_not_found, data: data, message: "Resource not found"}
+  @doc """
+  The HTTP routing headers (`Mcp-Method`, `Mcp-Name`) do not match the
+  request body, or a required header is missing (SEP-2243, MCP 2026-07-28).
+  """
+  def header_mismatch(message),
+    do: %{code: @header_mismatch, message: message}
+
+  @doc """
+  The resource is not found.
+
+  Under MCP `2026-07-28` (SEP-2164) the JSON-RPC code is the standard
+  `-32602 Invalid Params`. Under earlier protocol versions it remains
+  the MCP-custom `-32002` so legacy clients continue to match.
+  """
+  def resource_not_found(data, %Session{} = session) do
+    code = if Session.stateless?(session), do: @invalid_params, else: @resource_not_found
+    %{code: code, data: data, message: "Resource not found"}
+  end
 
   @doc "Error indicating URL mode elicitation is required before retrying"
   def url_elicitation_required(elicitations) when is_list(elicitations) do
@@ -232,11 +248,11 @@ defmodule Phantom.Request do
   end
 
   def resource_response(nil, uri, session) do
-    {:error, resource_not_found(%{uri: uri}), session}
+    {:error, resource_not_found(%{uri: uri}, session), session}
   end
 
   def resource_response({:reply, nil, %Session{} = session}, uri, _session) do
-    {:error, resource_not_found(%{uri: uri}), session}
+    {:error, resource_not_found(%{uri: uri}, session), session}
   end
 
   def resource_response(

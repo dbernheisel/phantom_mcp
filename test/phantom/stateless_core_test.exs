@@ -402,6 +402,8 @@ defmodule Phantom.StatelessCoreTest do
         }
       })
       |> put_req_header("content-type", "application/json")
+      |> put_req_header("mcp-method", "tools/call")
+      |> put_req_header("mcp-name", "who_am_i")
       |> call(router: Router)
 
       assert_receive {:response, 7, "message", payload}, 1_000
