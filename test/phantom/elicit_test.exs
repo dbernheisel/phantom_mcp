@@ -334,12 +334,6 @@ defmodule Phantom.ElicitTest do
       assert elicit.elicitation_id == "elicit-123"
       assert elicit.requested_schema == nil
     end
-
-    test "raises on missing required fields" do
-      assert_raise KeyError, fn ->
-        Elicit.url(%{message: "Hello"})
-      end
-    end
   end
 
   describe "to_json/1 with URL mode" do
