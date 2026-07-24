@@ -20,7 +20,7 @@ defmodule Phantom.MixProject do
 
   def cli do
     [
-      preferred_envs: [tidewave: :test, format: :test, dialyzer: :test]
+      preferred_envs: [tidewave: :test, format: :test]
     ]
   end
 
@@ -47,7 +47,6 @@ defmodule Phantom.MixProject do
       {:uuidv7, "~> 1.0"},
       ## Test
       {:phoenix_live_view, "~> 1.0", only: [:dev, :test, :stdio]},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.31", only: :dev, warn_if_outdated: true, runtime: false},
       {:tidewave, "~> 0.5", only: [:dev, :test], warn_if_outdated: true},
       {:makeup_javascript, "~> 0.1", only: :dev},
