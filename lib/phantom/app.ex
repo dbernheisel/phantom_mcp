@@ -14,7 +14,7 @@ defmodule Phantom.App do
   > npm package. This JS handles the `postMessage` handshake with the host.
   > Without it, the host renders a blank iframe.
   >
-  > See the [MCP Apps JS SDK](https://apps.extensions.modelcontextprotocol.io/specification/architecture)
+  > See the [MCP Apps JS SDK](https://github.com/modelcontextprotocol/ext-apps)
   > for the full client-side API, including theming, tool input/result
   > handling, and host communication.
 
