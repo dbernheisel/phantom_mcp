@@ -2,6 +2,22 @@
 
 # epmd -daemon && iex --name primary@127.0.0.1 -S mix run start.exs
 
+# This script needs the mix project + deps on the code path. Run bare (e.g.
+# `./start.exs`) and deps like Phoenix aren't loaded, failing later with an
+# opaque "module Phoenix.Component is not loaded". Bail early with the fix.
+try do
+  Mix.Project.get()
+catch
+  _, _ ->
+    IO.puts(:stderr, """
+    start.exs must run inside the mix project, not as a bare script. Use:
+
+        epmd -daemon && iex --name primary@127.0.0.1 -S mix run start.exs
+    """)
+
+    System.halt(1)
+end
+
 # Bundle assets (initial build)
 {output, 0} = System.cmd("npm", ["run", "build"], stderr_to_stdout: true)
 IO.puts(output)

@@ -38,8 +38,9 @@ defmodule Phantom.RouterTest do
     |> call()
 
     assert_receive {:conn, conn}
-    assert conn.status == 200
-    assert_receive {:response, nil, "message", %{id: nil, result: nil, jsonrpc: "2.0"}}
+    assert conn.status == 202
+    assert conn.resp_body == ""
+    refute_receive {:response, nil, "message", _}
   end
 
   test "returns error for unknown method" do

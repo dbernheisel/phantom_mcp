@@ -741,5 +741,39 @@ defmodule Phantom.PlugTest do
 
       assert resp_conn.status == 202
     end
+
+    test "notification POST returns 202 with no body", context do
+      session_id = to_string(context.test)
+      initialize_with_elicitation(session_id)
+
+      parser =
+        Plug.Parsers.init(
+          parsers: [{:json, length: 1_000_000}],
+          pass: ["application/json"],
+          json_decoder: JSON
+        )
+
+      opts =
+        Phantom.Plug.init(
+          pubsub: Test.PubSub,
+          router: Test.MCP.Router,
+          validate_origin: false
+        )
+
+      resp_conn =
+        :post
+        |> conn("/mcp", %{
+          jsonrpc: "2.0",
+          method: "notifications/initialized"
+        })
+        |> put_req_header("content-type", "application/json")
+        |> Plug.Parsers.call(parser)
+        |> put_req_header("mcp-session-id", session_id)
+        |> Phantom.Plug.call(opts)
+
+      assert resp_conn.status == 202
+      assert resp_conn.resp_body == ""
+      refute {"content-type", "text/event-stream"} in resp_conn.resp_headers
+    end
   end
 end
