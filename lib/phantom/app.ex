@@ -166,6 +166,8 @@ defmodule Phantom.App do
 
   import Plug.Conn
 
+  alias Phoenix.HTML.Safe
+
   @typedoc """
   Output accepted from `c:render/1`.
 
@@ -183,8 +185,9 @@ defmodule Phantom.App do
     prefers_border = Keyword.get(opts, :prefers_border)
 
     quote do
-      use Plug.Builder
       @behaviour Phantom.App
+
+      use Plug.Builder
 
       if unquote(permissions) do
         plug :__phantom_put_permissions, unquote(permissions)
@@ -198,14 +201,11 @@ defmodule Phantom.App do
         plug :__phantom_put_prefers_border, unquote(prefers_border)
       end
 
-      defp __phantom_put_permissions(conn, perms),
-        do: Phantom.App.put_permissions(conn, perms)
+      defp __phantom_put_permissions(conn, perms), do: Phantom.App.put_permissions(conn, perms)
 
-      defp __phantom_put_domain(conn, domain),
-        do: Phantom.App.put_domain(conn, domain)
+      defp __phantom_put_domain(conn, domain), do: Phantom.App.put_domain(conn, domain)
 
-      defp __phantom_put_prefers_border(conn, val),
-        do: Phantom.App.put_prefers_border(conn, val)
+      defp __phantom_put_prefers_border(conn, val), do: Phantom.App.put_prefers_border(conn, val)
 
       @impl Phantom.App
       def mount(_params, _session), do: {:ok, %{}}
@@ -247,7 +247,12 @@ defmodule Phantom.App do
           Phantom.Utils.remove_nils(%{
             text: html,
             uri: uri,
-            mimeType: "text/html;profile=mcp-app"
+            mimeType: "text/html;profile=mcp-app",
+            # The UI `_meta` (CSP, permissions) must live on the content item —
+            # that's where hosts read it, per the MCP Apps SDK's own
+            # `registerAppResource` examples. It is also kept at the result level
+            # below for hosts that read there.
+            _meta: ui_meta
           })
 
         {:reply, %{contents: [content], _meta: ui_meta}, session}
@@ -317,7 +322,7 @@ defmodule Phantom.App do
     end)
   end
 
-  @phoenix_html_safe Code.ensure_loaded?(Phoenix.HTML.Safe)
+  @phoenix_html_safe Code.ensure_loaded?(Safe)
 
   @doc """
   Convert render output to an HTML binary string.
@@ -327,10 +332,8 @@ defmodule Phantom.App do
 
   if @phoenix_html_safe do
     def to_html(%_{} = struct) do
-      struct |> Phoenix.HTML.Safe.to_iodata() |> IO.iodata_to_binary()
+      struct |> Safe.to_iodata() |> IO.iodata_to_binary()
     end
-  else
-    def to_html(content), do: content
   end
 
   def to_html(content), do: IO.iodata_to_binary(content)
@@ -339,9 +342,11 @@ defmodule Phantom.App do
   @spec apply_layouts(binary(), Plug.Conn.t()) :: binary()
   def apply_layouts(html, conn) do
     if Code.ensure_loaded?(Phoenix.Controller) do
+      # Call via apply/3 so the compiler doesn't flag Phoenix.Controller (an
+      # optional dependency) as undefined when phantom_mcp is compiled without it.
       html
-      |> apply_layout(Phoenix.Controller.layout(conn, "html"))
-      |> apply_layout(Phoenix.Controller.root_layout(conn, "html"))
+      |> apply_layout(apply(Phoenix.Controller, :layout, [conn, "html"]))
+      |> apply_layout(apply(Phoenix.Controller, :root_layout, [conn, "html"]))
     else
       html
     end
@@ -351,6 +356,6 @@ defmodule Phantom.App do
 
   defp apply_layout(html, {module, template}) when is_atom(module) and is_atom(template) do
     assigns = %{inner_content: {:safe, html}, __changed__: nil}
-    apply(module, template, [assigns]) |> to_html()
+    module |> apply(template, [assigns]) |> to_html()
   end
 end
