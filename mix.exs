@@ -103,6 +103,7 @@ defmodule Phantom.MixProject do
     [
       main: "Phantom",
       extras: ["guides/mcp_apps.md", "CHANGELOG.md"],
+      assets: %{"assets" => "assets"},
       before_closing_body_tag: %{html: @mermaidjs}
     ]
   end

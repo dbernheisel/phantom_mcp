@@ -2,7 +2,9 @@ defmodule Test.MCP.Layouts do
   @moduledoc "Layouts for MCP App previews."
   use Phoenix.Component
 
-  @mcp_app_js_path Path.join(__DIR__, "js/mcp_app.js")
+  # The bundled IIFE (built by `npm run build:test`), not the ES-module source —
+  # the browser can't run bare `import` statements in a plain <script>.
+  @mcp_app_js_path Path.join(__DIR__, "../priv/static/mcp_app.js")
   @external_resource @mcp_app_js_path
   @mcp_app_js_b64 @mcp_app_js_path |> File.read!() |> Base.encode64()
 

@@ -4,6 +4,10 @@ defmodule Phantom.App.Preview do
 
   Lists registered MCP Apps and interact with them in the browser.
 
+  ![MCP Preview App](./assets/mcp-preview.png)
+
+  ![MCP Sample App](./assets/mcp-preview-sample-app.png)
+
   ## Usage
 
   Mount in your router during development
