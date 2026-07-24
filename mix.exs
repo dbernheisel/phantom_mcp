@@ -60,6 +60,7 @@ defmodule Phantom.MixProject do
       name: :phantom_mcp,
       maintainers: ["David Bernheisel"],
       licenses: ["MIT"],
+      files: ~w[lib priv .formatter.exs mix.exs README.md LICENSE CHANGELOG.md assets/*.png],
       links: %{
         "MCP Specification" => "https://modelcontextprotocol.io",
         "MCP Inspector" => "https://github.com/modelcontextprotocol/inspector",
