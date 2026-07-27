@@ -322,17 +322,24 @@ defmodule Phantom.App do
     end)
   end
 
-  @phoenix_html_safe Code.ensure_loaded?(Safe)
-
   @doc """
   Convert render output to an HTML binary string.
   """
   @spec to_html(binary() | iodata() | struct()) :: binary()
   def to_html(content) when is_binary(content), do: content
 
-  if @phoenix_html_safe do
-    def to_html(%_{} = struct) do
-      struct |> Safe.to_iodata() |> IO.iodata_to_binary()
+  def to_html(%_{} = struct) do
+    # phoenix_html is an optional dependency of phantom_mcp; resolve the
+    # `Phoenix.HTML.Safe` protocol at runtime (via apply/3 to avoid a
+    # compile-time undefined-function warning) so ~H /
+    # %Phoenix.LiveView.Rendered{} render output works in hosts that provide
+    # phoenix_html, without phantom_mcp depending on it at compile time.
+    if Code.ensure_loaded?(Safe) do
+      IO.iodata_to_binary(apply(Safe, :to_iodata, [struct]))
+    else
+      raise ArgumentError,
+            "cannot convert #{inspect(struct.__struct__)} to HTML without phoenix_html; " <>
+              "return a binary or iodata from render/1"
     end
   end
 
