@@ -1,3 +1,9 @@
+## 0.5.0 (2026-07-27)
+
+- Add `Phantom.App` which represents a Plug for mounting MCP Apps, which are
+embedded and self-contained resources in desktop clients.
+- Fix 202 response for SSE connections for notifications (thanks @anagrius)
+
 ## 0.4.5 (2026-04-29)
 
 - Fix `Plug.Conn.AlreadySentError` when a second SSE GET arrives for an
