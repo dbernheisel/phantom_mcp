@@ -437,7 +437,7 @@ defmodule Phantom.Router do
         else
           case Session.subscribe_to_resource(session, uri) do
             :ok ->
-              {:reply, Request.empty(), session}
+              {:reply, %{}, session}
 
             _ ->
               {:error, Request.not_found("SSE stream not open"), session}
@@ -451,7 +451,7 @@ defmodule Phantom.Router do
         else
           case Session.unsubscribe_to_resource(session, uri) do
             :ok ->
-              {:reply, Request.empty(), session}
+              {:reply, %{}, session}
 
             _ ->
               {:error, Request.not_found("SSE stream not open"), session}

@@ -209,6 +209,20 @@ defmodule Phantom.TestDispatcher do
     |> call(Map.merge(@opts, Map.new(init_opts)))
   end
 
+  def request_resource_unsubscribe(uri, init_opts \\ []) do
+    {id, init_opts} = Keyword.pop(init_opts, :id, 1)
+
+    :post
+    |> conn("/mcp", %{
+      jsonrpc: "2.0",
+      id: id,
+      method: "resources/unsubscribe",
+      params: %{"uri" => uri}
+    })
+    |> put_req_header("content-type", "application/json")
+    |> call(Map.merge(@opts, Map.new(init_opts)))
+  end
+
   def request_set_log_level(level, init_opts \\ []) do
     {id, init_opts} = Keyword.pop(init_opts, :id, 1)
 
