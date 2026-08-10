@@ -532,7 +532,8 @@ defmodule Phantom.PlugTest do
 
     request_resource_subscribe(uri, id: 2, session_id: session_id)
     assert_connected(_conn)
-    assert_response(2, %{result: %{result: "", jsonrpc: "2.0"}})
+    assert_response(2, response)
+    assert response == %{id: 2, jsonrpc: "2.0", result: %{}}
 
     Phantom.Tracker.notify_resource_updated(uri)
 
@@ -540,6 +541,14 @@ defmodule Phantom.PlugTest do
       method: "notifications/resources/updated",
       params: %{uri: ^uri}
     })
+
+    request_resource_unsubscribe(uri, id: 3, session_id: session_id)
+    assert_connected(_conn)
+    assert_response(3, response)
+    assert response == %{id: 3, jsonrpc: "2.0", result: %{}}
+
+    Phantom.Tracker.notify_resource_updated(uri)
+    refute_receive {:response, nil, "message", %{method: "notifications/resources/updated"}}
   end
 
   describe "elicitation" do
