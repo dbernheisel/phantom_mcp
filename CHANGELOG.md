@@ -1,3 +1,8 @@
+## 0.5.1 (2026-08-11)
+
+- Fix Resource subscriptions' responses when they have empty responses. (thanks
+  @merhard)
+
 ## 0.5.0 (2026-07-27)
 
 - Add `Phantom.App` which represents a Plug for mounting MCP Apps, which are

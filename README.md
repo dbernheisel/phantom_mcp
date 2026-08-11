@@ -7,14 +7,14 @@
 
 MCP (Model Context Protocol) framework for Elixir Plug.
 
-This library provides a complete implementation of the [MCP server specification](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) with Plug.
+This library provides a complete implementation of the [MCP server specification](https://modelcontextprotocol.io/specification/20.5.13-26/basic/transports) with Plug.
 
 ## Installation
 
 Add Phantom to your dependencies:
 
 ```elixir
-  {:phantom_mcp, "~> 0.5.0"},
+  {:phantom_mcp, "~> 0.5.1"},
 ```
 
 ## Stdio Transport (Local Clients)
@@ -515,7 +515,7 @@ Phantom will implement these MCP requests on your behalf:
 - `resources/read` dispatch the request to your handler. `Phantom.Resource`.
 - `resources/subscribe` available if the MCP router is configured with `pubsub`. To notify of updates for the resource, use `Phantom.Tracker.notify_resource_updated(uri)`.
 - `resources/unsubscribe` see above.
-- `logging/setLevel` available if the MCP router is configured with `pubsub`. Logs can be sent to client with `Session.log_{level}(session, map_content)`. [See docs](https://modelcontextprotocol.io/specification/2025-03-26/server/utilities/logging#log-levels).
+- `logging/setLevel` available if the MCP router is configured with `pubsub`. Logs can be sent to client with `Session.log_{level}(session, map_content)`. [See docs](https://modelcontextprotocol.io/specification/20.5.13-26/server/utilities/logging#log-levels).
 - `tools/list` list either the allowed tools as provided in the `connect/2` callback or all tools by default. To disable, return `allow_tools(session, [])` in the `connect/2` callback.
 - `tools/call` dispatch the request to your handler. Read more in `Phantom.Tool`.
 - `completion/complete` dispatch the request to your completion handler for the given prompt or resource.
@@ -540,7 +540,7 @@ Batched requests will also be handled transparently. **please note** there is no
 
 Phantom does not implement authentication on its own. MCP applications needing authentication should investigate OAuth provider solutions like [Oidcc](https://hex.pm/packages/oidcc) or [Boruta](https://hex.pm/packages/boruta) or [ExOauth2Provider](https://hex.pm/packages/ex_oauth2_provider) and configure the route to serve a discovery endpoint.
 
-1. [MCP authentication and discovery](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization) is not handled by Phantom itself. You will need to implement OAuth2 and provide the discovery mechanisms as described in the specification. In the `connect/2` callback you can return `{:unauthorized, www_authenticate_info}` or `{:forbidden, "error message"}` to inform the client of how to move forward. An `{:ok, session}` result will imply successful auth.
+1. [MCP authentication and discovery](https://modelcontextprotocol.io/specification/20.5.16-18/basic/authorization) is not handled by Phantom itself. You will need to implement OAuth2 and provide the discovery mechanisms as described in the specification. In the `connect/2` callback you can return `{:unauthorized, www_authenticate_info}` or `{:forbidden, "error message"}` to inform the client of how to move forward. An `{:ok, session}` result will imply successful auth.
 
 2. Once the authentication flow has been completed, a request to the MCP router should land with an authorization header that can be received and verified in the `connect/2` callback of your MCP router.
 
