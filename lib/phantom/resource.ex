@@ -171,11 +171,14 @@ defmodule Phantom.Resource do
     %{contents: List.wrap(results)}
   end
 
-  @type list_response :: %{nextCursor: String.t() | nil, resources: [resource_link()]}
+  @type list_response :: %{
+          required(:resources) => [resource_link()],
+          optional(:nextCursor) => String.t()
+        }
   @spec list([resource_link()], cursor :: String.t() | nil) :: list_response()
   @doc "Formats the response from the MCP Router to the MCP specification for listing resources"
   def list(resource_links, next_cursor) do
-    %{resources: List.wrap(resource_links), nextCursor: next_cursor}
+    remove_nils(%{resources: List.wrap(resource_links), nextCursor: next_cursor})
   end
 
   @doc """
