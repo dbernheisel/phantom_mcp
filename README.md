@@ -493,15 +493,46 @@ def list_resources(cursor, session) do
 end
 ```
 
-You can notify the client of resource updates in case they have subscribed
-to any updates for the resource.
+You can notify clients after subscribed resources change. For bulk writes, collect the changed
+URIs in your application and notify Phantom once. This lets Phantom group the resources by
+subscribed session and lets your authorization callback use one bulk query per session.
 
 ```elixir
-# Do some work and update some underlying resource,
-# then notify any listeners:
-{:ok, uri} = MyApp.MCP.Router.resource_uri(:my_resource, id: "foo")
-Phantom.Tracker.notify_resource_updated(uri)
+# Do a bulk write, then collect the affected URIs from its result.
+uris =
+  Enum.map(updated_records, fn record ->
+    {:ok, uri} = MyApp.MCP.Router.resource_uri(:my_resource, id: record.id)
+    uri
+  end)
+
+Phantom.Tracker.notify_resources_updated(uris)
 ```
+
+Resource subscriptions are allowed by default. For user-scoped resources, override
+`authorize_resource_subscriptions/2`. Phantom resolves each URI before invoking the callback and
+uses the same callback both when accepting `resources/subscribe` and immediately before sending
+update notifications. This second check ensures permission changes take effect after subscription.
+
+```elixir
+def authorize_resource_subscriptions(resources, session) do
+  user = session.assigns.user
+
+  allowed_ids =
+    resources
+    |> Enum.map(fn {_uri, %{"id" => id}, _template} -> id end)
+    |> MyApp.Resources.list_authorized_ids(user)
+    |> MapSet.new()
+
+  Enum.filter(resources, fn {_uri, %{"id" => id}, _template} ->
+    id in allowed_ids
+  end)
+end
+```
+
+The callback receives `{uri, path_params, resource_template}` tuples and the authenticated session.
+It may return the allowed tuples or just their URI strings. Returning `nil` or `[]`, raising, or
+returning an invalid value rejects the resources. URIs that do not resolve to an available resource
+template are rejected before the callback runs.
 
 ## What PhantomMCP supports
 
@@ -513,7 +544,7 @@ Phantom will implement these MCP requests on your behalf:
 - `resources/list` dispatch to your MCP router. By default it will be an empty list until you implement it. Read more in `Phantom.Resource`.
 - `resource/templates/list` list either the allowed resources as provided in the `connect/2` callback or all resource templates by default. To disable, return `allow_resource_templates(session, [])` in the `connect/2` callback. Read more in `Phantom.ResourceTemplate`.
 - `resources/read` dispatch the request to your handler. `Phantom.Resource`.
-- `resources/subscribe` available if the MCP router is configured with `pubsub`. To notify of updates for the resource, use `Phantom.Tracker.notify_resource_updated(uri)`.
+- `resources/subscribe` available if the MCP router is configured with `pubsub`. To notify of updates, prefer `Phantom.Tracker.notify_resources_updated(uris)`; `notify_resource_updated(uri)` remains available for individual changes.
 - `resources/unsubscribe` see above.
 - `logging/setLevel` available if the MCP router is configured with `pubsub`. Logs can be sent to client with `Session.log_{level}(session, map_content)`. [See docs](https://modelcontextprotocol.io/specification/20.5.13-26/server/utilities/logging#log-levels).
 - `tools/list` list either the allowed tools as provided in the `connect/2` callback or all tools by default. To disable, return `allow_tools(session, [])` in the `connect/2` callback.
