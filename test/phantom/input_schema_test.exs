@@ -1211,4 +1211,70 @@ defmodule Phantom.Tool.JSONSchemaTest do
       assert json.properties.email.pattern == "@"
     end
   end
+
+  describe "schema modules that are not loaded yet" do
+    setup do
+      :code.purge(Phantom.Test.PurgeableSchema)
+      :code.delete(Phantom.Test.PurgeableSchema)
+      refute function_exported?(Phantom.Test.PurgeableSchema, :__input_schema__, 0)
+
+      on_exit(fn -> Code.ensure_loaded!(Phantom.Test.PurgeableSchema) end)
+
+      :ok
+    end
+
+    test "validates elements of {:array, Module}" do
+      schema =
+        JSONSchema.build_from_fields([
+          JSONSchema.build_field(:hosts, {:array, Phantom.Test.PurgeableSchema}, required: true)
+        ])
+
+      assert {:ok, _} = JSONSchema.validate(schema, %{"hosts" => [%{"name" => "foo.example"}]})
+
+      assert {:error, errors} = JSONSchema.validate(schema, %{"hosts" => [%{}]})
+      assert Enum.any?(errors, &String.contains?(&1, "name"))
+    end
+
+    test "validates a bare Module field type" do
+      schema =
+        JSONSchema.build_from_fields([
+          JSONSchema.build_field(:host, Phantom.Test.PurgeableSchema, required: true)
+        ])
+
+      assert {:ok, _} = JSONSchema.validate(schema, %{"host" => %{"name" => "foo.example"}})
+
+      assert {:error, errors} = JSONSchema.validate(schema, %{"host" => %{"name" => 1}})
+      assert Enum.any?(errors, &String.contains?(&1, "expected string"))
+    end
+
+    test "renders the module's schema as the array's items" do
+      schema =
+        JSONSchema.build_from_fields([
+          JSONSchema.build_field(:hosts, {:array, Phantom.Test.PurgeableSchema})
+        ])
+
+      json = JSONSchema.to_json(schema)
+      assert json.properties.hosts.items.required == ["name"]
+      assert json.properties.hosts.items.properties.name == %{type: "string"}
+
+      assert json.properties.hosts.items.properties.ports == %{
+               type: "array",
+               items: %{type: "integer"}
+             }
+    end
+
+    test "an atom that is not a module is still an unknown type" do
+      schema = JSONSchema.build_from_fields([JSONSchema.build_field(:thing, :not_a_type)])
+
+      assert {:error, errors} = JSONSchema.validate(schema, %{"thing" => "x"})
+      assert Enum.any?(errors, &String.contains?(&1, "unknown type"))
+    end
+
+    test "a module without __input_schema__/0 is still an unknown type" do
+      schema = JSONSchema.build_from_fields([JSONSchema.build_field(:thing, Phantom.Session)])
+
+      assert {:error, errors} = JSONSchema.validate(schema, %{"thing" => %{}})
+      assert Enum.any?(errors, &String.contains?(&1, "unknown type"))
+    end
+  end
 end

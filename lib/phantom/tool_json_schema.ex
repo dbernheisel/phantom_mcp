@@ -552,7 +552,7 @@ defmodule Phantom.Tool.JSONSchema do
   defp check_type(nil, _value, _path, _handler), do: :ok
 
   defp check_type(module, value, path, handler) when is_atom(module) do
-    if function_exported?(module, :__input_schema__, 0) do
+    if input_schema_module?(module) do
       schema = module.__input_schema__()
 
       do_validate_field(
@@ -823,12 +823,27 @@ defmodule Phantom.Tool.JSONSchema do
   defp type_to_json(:map, _field), do: %{type: "object"}
 
   defp type_to_json(module, _field) when is_atom(module) do
-    if function_exported?(module, :__input_schema__, 0) do
+    if input_schema_module?(module) do
       schema = module.__input_schema__()
       to_json(schema)
     else
       %{type: "object"}
     end
+  end
+
+  # Resolving a module-typed field needs the module loaded, which
+  # `function_exported?/3` reports on but never causes. Under Mix's lazy code
+  # loading a schema module named only as a field type is never loaded by
+  # anything else, so asking `function_exported?/3` alone answers false for a
+  # perfectly valid schema.
+  #
+  # `Code.ensure_compiled/1` covers both callers. Inside a `tool` declaration it
+  # blocks until the module is compiled and records the compile-time dependency,
+  # so a router recompiles when a schema it renders changes. At dispatch time,
+  # with no compilation in flight, it loads the module like `Code.ensure_loaded/1`.
+  defp input_schema_module?(module) do
+    Code.ensure_compiled(module) == {:module, module} and
+      function_exported?(module, :__input_schema__, 0)
   end
 
   defp maybe_put(map, _key, nil), do: map
