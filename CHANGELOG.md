@@ -1,3 +1,11 @@
+## 0.5.2 (2026-08-20)
+
+- Remove `Connection: keep-alive` in response headers in SSE stream. This is
+handled in other infrastructure. (thanks @merhard)
+- Omit `nextCursor` in pagination responses if there are no more. Simply the
+presence, even if null, can trip up clients. (thanks @merhard)
+- Allow standalone `Phantom.Tool.JSONSchema` modules. (thanks @merhard)
+
 ## 0.5.1 (2026-08-11)
 
 - Fix Resource subscriptions' responses when they have empty responses. (thanks
