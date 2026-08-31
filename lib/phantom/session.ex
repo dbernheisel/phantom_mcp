@@ -114,7 +114,7 @@ defmodule Phantom.Session do
     and `"content"` keys), or `:not_supported` / `:timeout` / `:error`.
     Under legacy MCP protocols the call blocks via the open SSE stream;
     under MCP `2026-07-28` Phantom suspends the tool's Task, returns an
-    `inputRequired` result to the client, and resumes the Task inline when
+    `input_required` result to the client, and resumes the Task inline when
     the follow-up `tools/call` arrives (possibly on another node).
 
   - **Re-entry** (`:state` set, or default under stateless) — returns the
@@ -123,7 +123,7 @@ defmodule Phantom.Session do
 
         {:noreply, Session.elicit(session, elicit, state: %{step: :got_input})}
 
-    The dispatcher then converts to an `inputRequired` result (stateless)
+    The dispatcher then converts to an `input_required` result (stateless)
     or runs through the SSE elicit round-trip + handler re-invocation
     (legacy). On resume, the handler is re-entered with `session.state`
     populated to whatever you passed as `:state`. Structure the handler
@@ -193,7 +193,7 @@ defmodule Phantom.Session do
 
   # Stateless-core inline-blocking implementation. Suspends the spawned Task
   # on a `receive`, asks the adopter (session GenServer) to emit an
-  # `inputRequired` result to the client, and resumes when the follow-up
+  # `input_required` result to the client, and resumes when the follow-up
   # request adopts this task pid via `Phantom.Tracker`.
   #
   # Side effect: rebinds `:phantom_adopter` and `:phantom_tool_request_id`
@@ -227,8 +227,8 @@ defmodule Phantom.Session do
   Whether the session's current request is using the MCP `2026-07-28`
   stateless-core protocol.
   """
-  def stateless?(%__MODULE__{request: %{meta: meta}}) when is_map(meta),
-    do: meta["protocolVersion"] == "2026-07-28"
+  def stateless?(%__MODULE__{request: request}),
+    do: Request.protocol_version(request) == "2026-07-28"
 
   def stateless?(_), do: false
 
@@ -560,6 +560,8 @@ defmodule Phantom.Session do
 
   def handle_cast({:respond, request_id, payload}, state) do
     cancel_inactivity(state)
+    request = state.session.requests[request_id]
+    payload = normalize_response_payload(payload, request)
     state = state.stream_fun.(state, request_id, "message", payload)
     requests = Map.delete(state.session.requests, request_id)
     state = put_in(state.session.requests, requests)
@@ -632,6 +634,13 @@ defmodule Phantom.Session do
     state = state.stream_fun.(state, request.id, "message", %{})
     {:noreply, %{state | log_level: level_num}}
   end
+
+  defp normalize_response_payload(%{result: result} = payload, %Request{} = request)
+       when is_map(result) do
+    %{payload | result: Request.normalize_result(result, request)}
+  end
+
+  defp normalize_response_payload(payload, _request), do: payload
 
   defp maybe_finish(state) do
     if Enum.any?(Map.keys(state.session.requests)) or not state.session.close_after_complete do
@@ -812,7 +821,7 @@ defmodule Phantom.Session do
         {:noreply, %__MODULE__{} = session} ->
           # In-flight claim stays held until `Session.respond/2`
           # casts back to this GenServer and untracks.
-          requests = Map.put(session.requests, request.id, request.response)
+          requests = Map.put(session.requests, request.id, request)
           put_in(state.session, %{session | requests: requests})
 
         {:reply, nil, %__MODULE__{} = session} ->

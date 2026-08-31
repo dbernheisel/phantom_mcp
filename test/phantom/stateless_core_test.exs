@@ -157,7 +157,7 @@ defmodule Phantom.StatelessCoreTest do
       response = assert_responded()
 
       assert %{
-               resultType: "inputRequired",
+               resultType: "input_required",
                inputRequests: [_],
                requestState: token
              } = response
@@ -395,9 +395,12 @@ defmodule Phantom.StatelessCoreTest do
           "name" => "who_am_i",
           "arguments" => %{},
           "_meta" => %{
-            "protocolVersion" => "2026-07-28",
-            "clientInfo" => %{"name" => "TestClient", "version" => "1.0.0"},
-            "capabilities" => %{"elicitation" => %{}}
+            "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+            "io.modelcontextprotocol/clientInfo" => %{
+              "name" => "TestClient",
+              "version" => "1.0.0"
+            },
+            "io.modelcontextprotocol/clientCapabilities" => %{"elicitation" => %{}}
           }
         }
       })

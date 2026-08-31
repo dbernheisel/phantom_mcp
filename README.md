@@ -529,7 +529,7 @@ end
 
 Under legacy protocols and stdio, the call blocks via the open SSE stream.
 Under MCP `2026-07-28`, Phantom suspends the tool's Task, returns
-`inputRequired` to the client, and resumes the Task inline when the
+`input_required` to the client, and resumes the Task inline when the
 follow-up `tools/call` arrives — possibly on a different node. The
 stateless adoption uses `Phantom.PubSub` + `Phantom.Tracker` (the
 existing cross-node infrastructure).
@@ -579,7 +579,7 @@ def delete_file(%{"path" => path}, session) do
 end
 ```
 
-Under `2026-07-28` the call returns an `inputRequired` result with an
+Under `2026-07-28` the call returns an `input_required` result with an
 encrypted `requestState` blob; any node can serve the follow-up. Under
 legacy protocols Phantom performs the SSE `elicitation/create` round-trip
 and re-invokes the handler — same handler code, no `if protocol_version`
@@ -615,7 +615,7 @@ Phantom will implement these MCP requests on your behalf:
 - `elicitation/create` - The server requests input from
   the client in order to complete a request the client has made of it.
   Under MCP `2026-07-28` the server-initiated SSE push is replaced by an
-  `inputRequired` result + encrypted `requestState`; both flows go through
+  `input_required` result + encrypted `requestState`; both flows go through
   `Phantom.Session.elicit/3` and behave identically from the tool's point
   of view.
 

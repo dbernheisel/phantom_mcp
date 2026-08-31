@@ -17,7 +17,7 @@
     `Phantom.Tracker`. State accumulation lives on the live Task, not in
     the blob.
   - `Phantom.Tool.input_required/2` is the lower-level builder for
-    constructing an `inputRequired` result map directly (skipping Task
+    constructing an `input_required` result map directly (skipping Task
     suspension).
   - Existing legacy code that called `Session.elicit/3` without opts
     continues to work unchanged — the default under legacy is still inline

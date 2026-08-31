@@ -414,6 +414,37 @@ defmodule Phantom.Router do
         end
       end
 
+      def dispatch_method("server/discover", _params, _request, session) do
+        instructions =
+          case instructions(session) do
+            {:ok, result} -> result
+            _ -> ""
+          end
+
+        server_info =
+          case server_info(session) do
+            {:ok, result} -> result
+            _ -> %{}
+          end
+
+        capabilities =
+          %{elicitation: %{}}
+          |> Phantom.Router.tool_capability(__MODULE__, session)
+          |> Phantom.Router.prompt_capability(__MODULE__, session)
+          |> Phantom.Router.resource_capability(__MODULE__, session)
+          |> Phantom.Router.completion_capability(__MODULE__, session)
+          |> Phantom.Router.logging_capability(__MODULE__, session)
+          |> Phantom.Router.ui_capability(__MODULE__, session)
+
+        {:reply,
+         %{
+           supportedVersions: ["2026-07-28"],
+           capabilities: capabilities,
+           instructions: instructions,
+           _meta: %{"io.modelcontextprotocol/serverInfo" => server_info}
+         }, session}
+      end
+
       def dispatch_method("ping", _params, _request, session) do
         {:reply, %{}, session}
       end
@@ -1346,8 +1377,8 @@ defmodule Phantom.Router do
     {:reply, encode_request_state(Tool.response(result), session), session}
   end
 
-  defp encode_request_state(%{resultType: "inputRequired", requestState: raw} = result, session)
-       when not is_binary(raw) do
+  defp encode_request_state(%{resultType: result_type, requestState: raw} = result, session)
+       when result_type in ["input_required", "inputRequired"] and not is_binary(raw) do
     info = session.router.__phantom__(:info)
 
     case {info[:secret_key_base], info[:request_state_salt]} do
@@ -1523,7 +1554,7 @@ defmodule Phantom.Router do
   # and re-apply the handler with `session.state` set and the response merged into
   # params. Under MCP 2026-07-28 this `Session.elicit(await: true)` call blocks
   # the Task on a `receive` while the adopter (the session GenServer) emits the
-  # `inputRequired` response to the client; the suspended Task resumes when a
+  # `input_required` response to the client; the suspended Task resumes when a
   # follow-up request adopts the task pid via `Phantom.Tracker`, possibly on
   # another node.
   defp process_handler_result(

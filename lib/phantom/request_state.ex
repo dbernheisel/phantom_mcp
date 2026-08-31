@@ -4,7 +4,7 @@ defmodule Phantom.RequestState do
   tool calls under MCP `2026-07-28`.
 
   Under the stateless core, a tool that needs additional client input returns
-  an `inputRequired` result containing a `requestState` value. The client
+  an `input_required` result containing a `requestState` value. The client
   echoes that value back on the follow-up `tools/call`, and any server node
   can pick up where the previous one left off — no sticky session, no
   cross-node state replication.

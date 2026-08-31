@@ -4,12 +4,12 @@ defmodule Phantom.ToolTest do
   alias Phantom.Tool
 
   describe "input_required/1" do
-    test "returns the MCP 2026-07-28 inputRequired shape" do
+    test "returns the MCP 2026-07-28 input_required shape" do
       input_requests = [%{name: "choice", schema: %{type: "string"}}]
       state = %{step: :resolve, candidates: ["a", "b"]}
 
       assert %{
-               resultType: "inputRequired",
+               resultType: "input_required",
                inputRequests: ^input_requests,
                requestState: ^state
              } = Tool.input_required(input_requests: input_requests, state: state)
@@ -35,8 +35,8 @@ defmodule Phantom.ToolTest do
     end
   end
 
-  describe "response/1 passes inputRequired through unchanged" do
-    test "does not wrap an inputRequired result in :content" do
+  describe "response/1 passes input_required through unchanged" do
+    test "does not wrap an input_required result in :content" do
       result = Tool.input_required(input_requests: [], state: %{a: 1})
 
       assert Tool.response(result) == result

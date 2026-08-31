@@ -360,14 +360,14 @@ defmodule Phantom.Tool do
   """
   def input_required(opts) do
     %{
-      resultType: "inputRequired",
+      resultType: "input_required",
       inputRequests: Keyword.fetch!(opts, :input_requests),
       requestState: Keyword.fetch!(opts, :state)
     }
   end
 
   @doc """
-  Build an `inputRequired` result from an `Elicit` struct and an opaque
+  Build an `input_required` result from an `Elicit` struct and an opaque
   `requestState` term.
 
   The `request_state` is passed through verbatim; the dispatcher encrypts
@@ -376,14 +376,17 @@ defmodule Phantom.Tool do
   @spec input_required(Phantom.Elicit.t(), term()) :: map()
   def input_required(%Phantom.Elicit{} = elicit, request_state) do
     %{
-      resultType: "inputRequired",
+      resultType: "input_required",
       inputRequests: Phantom.Elicit.to_input_requests(elicit),
       requestState: request_state
     }
   end
 
   @doc "Formats the response from an MCP Router to the MCP specification"
-  def response(%{resultType: "inputRequired"} = results), do: results
+  def response(%{resultType: result_type} = results)
+      when result_type in ["input_required", "inputRequired"],
+      do: results
+
   def response(%{content: _} = results), do: results
 
   def response(results) do

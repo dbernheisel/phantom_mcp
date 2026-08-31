@@ -22,6 +22,19 @@ defmodule Phantom.Request do
   @parse_error -32700
   @url_elicitation_required -32042
 
+  @protocol_version_meta_key "io.modelcontextprotocol/protocolVersion"
+  @client_info_meta_key "io.modelcontextprotocol/clientInfo"
+  @client_capabilities_meta_key "io.modelcontextprotocol/clientCapabilities"
+
+  @modern_cacheable_methods ~w[
+    server/discover
+    tools/list
+    prompts/list
+    resources/list
+    resources/templates/list
+    resources/read
+  ]
+
   import Phantom.Utils
   alias Phantom.Session
 
@@ -121,6 +134,72 @@ defmodule Phantom.Request do
 
   def build(request) do
     {:error, struct!(__MODULE__, id: request["id"], response: error(request["id"], invalid()))}
+  end
+
+  @doc false
+  def protocol_version(%__MODULE__{meta: meta}), do: protocol_version(meta)
+
+  def protocol_version(meta) when is_map(meta),
+    do: meta[@protocol_version_meta_key] || meta["protocolVersion"]
+
+  def protocol_version(_), do: nil
+
+  @doc false
+  def client_info(%__MODULE__{meta: meta}), do: client_info(meta)
+
+  def client_info(meta) when is_map(meta),
+    do: meta[@client_info_meta_key] || meta["clientInfo"]
+
+  def client_info(_), do: nil
+
+  @doc false
+  def client_capabilities(%__MODULE__{meta: meta}), do: client_capabilities(meta)
+
+  def client_capabilities(meta) when is_map(meta),
+    do: meta[@client_capabilities_meta_key] || meta["capabilities"]
+
+  def client_capabilities(_), do: nil
+
+  @doc false
+  def normalize_result(%{} = result, %__MODULE__{} = request) do
+    if protocol_version(request) == "2026-07-28" do
+      result
+      |> normalize_result_type()
+      |> put_default_cache_hint(request.method)
+    else
+      result
+    end
+  end
+
+  defp normalize_result_type(%{resultType: "inputRequired"} = result),
+    do: %{result | resultType: "input_required"}
+
+  defp normalize_result_type(%{"resultType" => "inputRequired"} = result),
+    do: %{result | "resultType" => "input_required"}
+
+  defp normalize_result_type(%{resultType: _} = result), do: result
+  defp normalize_result_type(%{"resultType" => _} = result), do: result
+  defp normalize_result_type(result), do: Map.put(result, :resultType, "complete")
+
+  defp put_default_cache_hint(%{resultType: "input_required"} = result, _method), do: result
+
+  defp put_default_cache_hint(%{"resultType" => "input_required"} = result, _method),
+    do: result
+
+  defp put_default_cache_hint(result, method) when method in @modern_cacheable_methods do
+    result
+    |> put_new_result_field(:ttlMs, "ttlMs", 0)
+    |> put_new_result_field(:cacheScope, "cacheScope", "private")
+  end
+
+  defp put_default_cache_hint(result, _method), do: result
+
+  defp put_new_result_field(result, atom_key, string_key, value) do
+    if Map.has_key?(result, atom_key) or Map.has_key?(result, string_key) do
+      result
+    else
+      Map.put(result, atom_key, value)
+    end
   end
 
   @doc false

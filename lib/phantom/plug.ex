@@ -166,6 +166,7 @@ defmodule Phantom.Plug do
       requests: %{}
     })
     |> validate_request(config)
+    |> hydrate_protocol_version()
     |> cors_preflight(config)
     |> cors_headers(config)
     |> connect(config)
@@ -270,6 +271,15 @@ defmodule Phantom.Plug do
     end
   end
 
+  defp hydrate_protocol_version(
+         %Plug.Conn{body_params: params, method: "POST", halted: false} = conn
+       )
+       when is_map(params) do
+    %{conn | body_params: put_protocol_version_from_header(params, conn)}
+  end
+
+  defp hydrate_protocol_version(conn), do: conn
+
   defp request_error(conn, error), do: json_error(conn, Request.error(error))
 
   defp dispatch(%Plug.Conn{halted: true} = conn, _opts), do: conn
@@ -327,7 +337,7 @@ defmodule Phantom.Plug do
     end
 
     conn
-    |> put_resp_header("mcp-session-id", session.id)
+    |> maybe_put_session_header(params, session.id)
     |> send_resp(202, "")
   end
 
@@ -346,7 +356,7 @@ defmodule Phantom.Plug do
     end
 
     conn
-    |> put_resp_header("mcp-session-id", session.id)
+    |> maybe_put_session_header(params, session.id)
     |> send_resp(202, "")
   end
 
@@ -357,7 +367,7 @@ defmodule Phantom.Plug do
         session = conn.private.phantom.session
 
         conn
-        |> put_resp_header("mcp-session-id", session.id)
+        |> maybe_put_session_header(params, session.id)
         |> put_resp_header("cache-control", "no-cache")
         |> put_resp_content_type("text/event-stream")
         |> put_resp_header("x-accel-buffering", "no")
@@ -421,7 +431,7 @@ defmodule Phantom.Plug do
       not Map.has_key?(params, "method") ->
         :ok
 
-      get_in(params, ["params", "_meta", "protocolVersion"]) == "2026-07-28" ->
+      params |> get_in(["params", "_meta"]) |> Request.protocol_version() == "2026-07-28" ->
         do_validate_routing_headers(conn, params)
 
       true ->
@@ -463,6 +473,37 @@ defmodule Phantom.Plug do
   defp name_from_params("resources/read", params) when is_map(params), do: params["uri"]
   defp name_from_params(_method, params) when is_map(params), do: params["name"]
   defp name_from_params(_method, _params), do: nil
+
+  # After server/discover, the modern transport carries the negotiated version
+  # in MCP-Protocol-Version. Mirror it into the request metadata used internally
+  # so every POST remains self-contained without requiring clients to duplicate
+  # the version in the JSON-RPC body.
+  defp put_protocol_version_from_header(%{"_json" => batch} = params, conn)
+       when is_list(batch) do
+    Map.put(params, "_json", Enum.map(batch, &put_protocol_version_from_header(&1, conn)))
+  end
+
+  defp put_protocol_version_from_header(%{} = request, conn) do
+    case get_req_header(conn, "mcp-protocol-version") |> List.first() do
+      nil ->
+        request
+
+      version ->
+        params = Map.get(request, "params", %{})
+        meta = Map.get(params, "_meta", %{})
+        meta = Map.put_new(meta, "io.modelcontextprotocol/protocolVersion", version)
+        Map.put(request, "params", Map.put(params, "_meta", meta))
+    end
+  end
+
+  defp maybe_put_session_header(conn, params, session_id) do
+    header_version = get_req_header(conn, "mcp-protocol-version") |> List.first()
+    meta_version = params |> get_in(["params", "_meta"]) |> Request.protocol_version()
+
+    if "2026-07-28" in [header_version, meta_version],
+      do: conn,
+      else: put_resp_header(conn, "mcp-session-id", session_id)
+  end
 
   defp continue(state) do
     {state, exceptions} =
@@ -515,8 +556,11 @@ defmodule Phantom.Plug do
   # `_meta.capabilities` will be absent and this is a no-op.
   defp hydrate_from_meta(session, %Phantom.Request{meta: meta}) when is_map(meta) do
     session
-    |> maybe_put(:client_info, meta["clientInfo"])
-    |> maybe_put(:client_capabilities, normalize_client_capabilities(meta["capabilities"]))
+    |> maybe_put(:client_info, Request.client_info(meta))
+    |> maybe_put(
+      :client_capabilities,
+      normalize_client_capabilities(Request.client_capabilities(meta))
+    )
   end
 
   defp hydrate_from_meta(session, _), do: session
@@ -572,11 +616,12 @@ defmodule Phantom.Plug do
   defp handle_dispatch_result({:noreply, %Session{} = session}, state, request, exceptions) do
     # Async tool — in-flight claim stays held until `Session.respond/2`
     # eventually casts to the session GenServer and untracks.
-    requests = Map.put(session.requests, request.id, request.response)
+    requests = Map.put(session.requests, request.id, request)
     {put_in(state.session, %{session | requests: requests}), exceptions}
   end
 
   defp handle_dispatch_result({:reply, result, %Session{} = session}, state, request, exceptions) do
+    result = Request.normalize_result(result, request)
     request = Request.result(request, "message", result)
     state = put_in(state.session, session)
     state = state.stream_fun.(state, request.id, request.type, request.response)

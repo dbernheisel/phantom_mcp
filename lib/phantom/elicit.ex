@@ -91,7 +91,7 @@ defmodule Phantom.Elicit do
          Session.elicit(session, @elicit_name, state: %{step: :got_name, params: params})}
       end
 
-  The dispatcher converts the call to an `inputRequired` result under
+  The dispatcher converts the call to an `input_required` result under
   stateless or to an SSE elicit round-trip + handler re-invocation under
   legacy. See `Phantom.Tool.input_required/1` for the lower-level result
   builder.

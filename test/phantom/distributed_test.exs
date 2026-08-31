@@ -383,7 +383,7 @@ defmodule Phantom.DistributedTest do
 
       input_required =
         poll_for_sse_event(first_resp, 5_000, fn msg ->
-          get_in(msg, ["result", "resultType"]) == "inputRequired"
+          get_in(msg, ["result", "resultType"]) == "input_required"
         end)
 
       assert input_required, "Expected inputRequired result from node 1"
@@ -489,7 +489,7 @@ defmodule Phantom.DistributedTest do
 
       input_required =
         poll_for_sse_event(first_resp, 5_000, fn msg ->
-          get_in(msg, ["result", "resultType"]) == "inputRequired"
+          get_in(msg, ["result", "resultType"]) == "input_required"
         end)
 
       assert input_required,

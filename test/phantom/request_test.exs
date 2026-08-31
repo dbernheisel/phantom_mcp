@@ -35,6 +35,25 @@ defmodule Phantom.RequestTest do
                })
     end
 
+    test "reads the MCP 2026-07-28 namespaced metadata fields" do
+      meta = %{
+        "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+        "io.modelcontextprotocol/clientInfo" => %{
+          "name" => "ModernClient",
+          "version" => "2.0.0"
+        },
+        "io.modelcontextprotocol/clientCapabilities" => %{"elicitation" => %{}}
+      }
+
+      request = %Request{meta: meta}
+
+      assert Request.protocol_version(request) == "2026-07-28"
+      assert Request.client_info(request) == meta["io.modelcontextprotocol/clientInfo"]
+
+      assert Request.client_capabilities(request) ==
+               meta["io.modelcontextprotocol/clientCapabilities"]
+    end
+
     test "extracts W3C trace context fields" do
       meta = %{
         "traceparent" => "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",

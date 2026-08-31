@@ -833,6 +833,79 @@ defmodule Phantom.PlugTest do
       assert_receive {:response, 1, "message", %{result: %{content: _}}}
     end
 
+    test "MCP-Protocol-Version header selects stateless core after discovery" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{message: "modern"}}
+        },
+        [
+          {"mcp-protocol-version", "2026-07-28"},
+          {"mcp-method", "tools/call"},
+          {"mcp-name", "echo_tool"}
+        ]
+      )
+
+      assert_connected(conn)
+      assert get_resp_header(conn, "mcp-session-id") == []
+
+      assert_receive {:response, 2, "message", %{result: %{content: _, resultType: "complete"}}}
+    end
+
+    test "server/discover returns the modern negotiation and cache envelope" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 3,
+          method: "server/discover",
+          params: %{
+            "_meta" => %{
+              "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+              "io.modelcontextprotocol/clientInfo" => %{
+                "name" => "Inspector",
+                "version" => "2.4.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities" => %{}
+            }
+          }
+        },
+        [{"mcp-method", "server/discover"}]
+      )
+
+      assert_connected(conn)
+      assert get_resp_header(conn, "mcp-session-id") == []
+
+      assert_receive {:response, 3, "message",
+                      %{
+                        result: %{
+                          supportedVersions: ["2026-07-28"],
+                          resultType: "complete",
+                          ttlMs: 0,
+                          cacheScope: "private"
+                        }
+                      }}
+    end
+
+    test "modern notifications remain stateless" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          method: "notifications/cancelled",
+          params: %{"requestId" => 123, "reason" => "test"}
+        },
+        [
+          {"mcp-protocol-version", "2026-07-28"},
+          {"mcp-method", "notifications/cancelled"}
+        ]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 202
+      assert get_resp_header(conn, "mcp-session-id") == []
+    end
+
     test "missing Mcp-Method rejects with 400 + -32001 HeaderMismatch" do
       post_stateless(
         %{
@@ -958,7 +1031,7 @@ defmodule Phantom.PlugTest do
       )
 
       assert_connected(_conn)
-      assert_receive {:response, 16, "message", %{result: %{}}}
+      assert_receive {:response, 16, "message", %{result: %{resultType: "complete"}}}
     end
   end
 end
