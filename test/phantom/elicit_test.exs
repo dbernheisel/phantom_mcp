@@ -195,6 +195,43 @@ defmodule Phantom.ElicitTest do
     end
   end
 
+  describe "to_input_requests/1" do
+    test "builds the modern embedded elicitation request map" do
+      elicit =
+        Elicit.build(%{
+          message: "Your name?",
+          requested_schema: [%{type: :string, name: "name", required: true}]
+        })
+
+      assert %{
+               "elicitation" => %{
+                 method: "elicitation/create",
+                 params: %{
+                   mode: "form",
+                   message: "Your name?",
+                   requestedSchema: %{type: "object"}
+                 }
+               }
+             } = Elicit.to_input_requests(elicit)
+    end
+
+    test "omits the legacy elicitation id from a modern URL request" do
+      elicit =
+        Elicit.url(%{
+          message: "Authenticate",
+          url: "https://example.com",
+          elicitation_id: "legacy-id"
+        })
+
+      assert %{
+               "elicitation" => %{
+                 method: "elicitation/create",
+                 params: %{mode: "url", message: "Authenticate", url: "https://example.com"}
+               }
+             } = Elicit.to_input_requests(elicit)
+    end
+  end
+
   describe "build/1 with non-enum properties" do
     test "string property still works" do
       elicit =

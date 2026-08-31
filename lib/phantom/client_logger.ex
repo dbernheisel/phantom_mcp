@@ -2,9 +2,9 @@ defmodule Phantom.ClientLogger do
   @moduledoc """
   Notify the client of logs.
 
-  MCP version `2026-07-28` deprecates this functionality, and
-  instead favors simply using logger to  `stderr` (stdio adapter)
-  or OTel (HTTP adapter).
+  Under MCP `2026-07-28`, clients opt into these notifications per request
+  with the `io.modelcontextprotocol/logLevel` metadata key. Legacy clients
+  configure the session-wide threshold with `logging/setLevel`.
   """
 
   alias Phantom.Session

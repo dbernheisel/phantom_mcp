@@ -540,6 +540,7 @@ defmodule Phantom.Plug do
   defp prepare_for_dispatch(state, request) do
     state = maybe_track_response(state, request)
     state = put_in(state.conn, maybe_track_session_stream(state.conn))
+    state = put_request_log_level(state, request)
 
     session =
       state.conn.private.phantom.session
@@ -547,6 +548,19 @@ defmodule Phantom.Plug do
       |> Map.put(:elicit, elicit_fun(state.conn, state.stream_fun, request))
 
     put_in(state.session, session)
+  end
+
+  defp put_request_log_level(state, %Request{} = request) do
+    if Request.protocol_version(request) == "2026-07-28" do
+      log_level =
+        Enum.find_value(Phantom.ClientLogger.log_levels(), 0, fn {name, grade} ->
+          if Atom.to_string(name) == Request.log_level(request), do: grade
+        end)
+
+      Map.put(state, :log_level, log_level)
+    else
+      state
+    end
   end
 
   # Under MCP 2026-07-28 every request is self-contained; the `_meta`

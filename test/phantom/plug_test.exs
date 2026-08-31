@@ -906,6 +906,153 @@ defmodule Phantom.PlugTest do
       assert get_resp_header(conn, "mcp-session-id") == []
     end
 
+    test "subscriptions/listen acknowledges and filters modern notifications" do
+      uri = "test:///text/1"
+      subscription_id = "listen:0"
+
+      stream_pid =
+        post_stateless(
+          %{
+            jsonrpc: "2.0",
+            id: subscription_id,
+            method: "subscriptions/listen",
+            params: %{
+              notifications: %{
+                toolsListChanged: true,
+                promptsListChanged: false,
+                resourcesListChanged: true,
+                resourceSubscriptions: [uri]
+              }
+            }
+          },
+          [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "subscriptions/listen"}
+          ]
+        )
+
+      assert_notify(%{
+        jsonrpc: "2.0",
+        method: "notifications/subscriptions/acknowledged",
+        params: %{
+          notifications: %{
+            "toolsListChanged" => true,
+            "promptsListChanged" => false,
+            "resourcesListChanged" => true,
+            "resourceSubscriptions" => [^uri]
+          },
+          _meta: %{"io.modelcontextprotocol/subscriptionId" => ^subscription_id}
+        }
+      })
+
+      Phantom.Tracker.notify_tool_list()
+
+      assert_notify(%{
+        jsonrpc: "2.0",
+        method: "notifications/tools/list_changed",
+        params: %{_meta: %{"io.modelcontextprotocol/subscriptionId" => ^subscription_id}}
+      })
+
+      Phantom.Tracker.notify_prompt_list()
+      refute_receive {:response, nil, "message", %{method: "notifications/prompts/list_changed"}}
+
+      Phantom.Tracker.notify_resource_list()
+
+      assert_notify(%{
+        jsonrpc: "2.0",
+        method: "notifications/resources/list_changed",
+        params: %{_meta: %{"io.modelcontextprotocol/subscriptionId" => ^subscription_id}}
+      })
+
+      Phantom.Tracker.notify_resource_updated(uri)
+
+      assert_notify(%{
+        jsonrpc: "2.0",
+        method: "notifications/resources/updated",
+        params: %{
+          uri: ^uri,
+          _meta: %{"io.modelcontextprotocol/subscriptionId" => ^subscription_id}
+        }
+      })
+
+      Phantom.Tracker.notify_resource_updated("test:///text/2")
+
+      refute_receive {:response, nil, "message",
+                      %{
+                        method: "notifications/resources/updated",
+                        params: %{uri: "test:///text/2"}
+                      }}
+
+      Phantom.Session.finish(stream_pid)
+      assert_receive {:conn, %{status: 200}}
+    end
+
+    test "subscriptions/listen rejects an invalid resource subscription filter" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: "listen:invalid",
+          method: "subscriptions/listen",
+          params: %{notifications: %{resourceSubscriptions: "test:///text/1"}}
+        },
+        [
+          {"mcp-protocol-version", "2026-07-28"},
+          {"mcp-method", "subscriptions/listen"}
+        ]
+      )
+
+      assert_connected(_conn)
+
+      assert_receive {:response, "listen:invalid", "message",
+                      %{error: %{code: -32602, message: "Invalid Params"}}}
+    end
+
+    test "modern logging is enabled by the per-request log level metadata" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 21,
+          method: "tools/call",
+          params: %{
+            name: "client_log_tool",
+            arguments: %{message: "modern log"},
+            _meta: %{"io.modelcontextprotocol/logLevel" => "debug"}
+          }
+        },
+        [
+          {"mcp-protocol-version", "2026-07-28"},
+          {"mcp-method", "tools/call"},
+          {"mcp-name", "client_log_tool"}
+        ]
+      )
+
+      assert_notify(%{
+        method: "notifications/message",
+        params: %{data: %{message: "modern log"}, logger: "test", level: :info}
+      })
+
+      assert_response(21, %{result: %{resultType: "complete"}})
+    end
+
+    test "modern logging stays silent when the request does not opt in" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 22,
+          method: "tools/call",
+          params: %{name: "client_log_tool", arguments: %{message: "do not emit"}}
+        },
+        [
+          {"mcp-protocol-version", "2026-07-28"},
+          {"mcp-method", "tools/call"},
+          {"mcp-name", "client_log_tool"}
+        ]
+      )
+
+      assert_response(22, %{result: %{resultType: "complete"}})
+      refute_receive {:response, nil, "message", %{method: "notifications/message"}}
+    end
+
     test "missing Mcp-Method rejects with 400 + -32001 HeaderMismatch" do
       post_stateless(
         %{

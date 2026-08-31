@@ -393,7 +393,7 @@ defmodule Phantom.DistributedTest do
       refute token == ""
 
       input_requests = input_required["result"]["inputRequests"]
-      assert is_list(input_requests) and length(input_requests) >= 1
+      assert is_map(input_requests) and map_size(input_requests) >= 1
 
       second_resp =
         post_mcp(
@@ -404,10 +404,16 @@ defmodule Phantom.DistributedTest do
             method: "tools/call",
             params: %{
               "name" => "resume_tool",
-              "arguments" => %{"name" => "alice"},
+              "arguments" => %{},
+              "requestState" => token,
+              "inputResponses" => %{
+                "elicitation" => %{
+                  "action" => "accept",
+                  "content" => %{"name" => "alice"}
+                }
+              },
               "_meta" => %{
-                "protocolVersion" => "2026-07-28",
-                "requestState" => token
+                "protocolVersion" => "2026-07-28"
               }
             }
           },
@@ -438,9 +444,9 @@ defmodule Phantom.DistributedTest do
             params: %{
               "name" => "resume_tool",
               "arguments" => %{"name" => "alice"},
+              "requestState" => "not-a-real-token",
               "_meta" => %{
-                "protocolVersion" => "2026-07-28",
-                "requestState" => "not-a-real-token"
+                "protocolVersion" => "2026-07-28"
               }
             }
           },
@@ -507,10 +513,16 @@ defmodule Phantom.DistributedTest do
             method: "tools/call",
             params: %{
               "name" => "await_tool",
-              "arguments" => %{"color" => "violet"},
+              "arguments" => %{},
+              "requestState" => token,
+              "inputResponses" => %{
+                "elicitation" => %{
+                  "action" => "accept",
+                  "content" => %{"color" => "violet"}
+                }
+              },
               "_meta" => %{
-                "protocolVersion" => "2026-07-28",
-                "requestState" => token
+                "protocolVersion" => "2026-07-28"
               }
             }
           },

@@ -289,10 +289,24 @@ defmodule Phantom.StatelessCoreTest do
 
       follow_request =
         build_request(
-          %{"requestState" => token, "protocolVersion" => "2026-07-28"},
+          %{"protocolVersion" => "2026-07-28"},
           "elicit_demo",
-          %{"choice" => "blue"}
+          %{}
         )
+
+      follow_request = %{
+        follow_request
+        | params:
+            Map.merge(follow_request.params, %{
+              "requestState" => token,
+              "inputResponses" => %{
+                "elicitation" => %{
+                  "action" => "accept",
+                  "content" => %{"choice" => "blue"}
+                }
+              }
+            })
+      }
 
       assert {:noreply, _} =
                Router.dispatch_method(
@@ -350,10 +364,24 @@ defmodule Phantom.StatelessCoreTest do
 
       follow_request =
         build_request(
-          %{"requestState" => token, "protocolVersion" => "2026-07-28"},
+          %{"protocolVersion" => "2026-07-28"},
           "await_demo",
-          %{"color" => "blue"}
+          %{}
         )
+
+      follow_request = %{
+        follow_request
+        | params:
+            Map.merge(follow_request.params, %{
+              "requestState" => token,
+              "inputResponses" => %{
+                "elicitation" => %{
+                  "action" => "accept",
+                  "content" => %{"color" => "blue"}
+                }
+              }
+            })
+      }
 
       # Dispatch should adopt the suspended task and return {:noreply}.
       assert {:noreply, _} =

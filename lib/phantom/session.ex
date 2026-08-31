@@ -26,6 +26,8 @@ defmodule Phantom.Session do
     :request,
     :router,
     :stream_fun,
+    :subscription_filter,
+    :subscription_id,
     :tracker,
     :transport_pid,
     assigns: %{},
@@ -60,6 +62,8 @@ defmodule Phantom.Session do
           requests: map(),
           router: module(),
           stream_fun: fun(),
+          subscription_filter: map() | nil,
+          subscription_id: String.t() | integer() | nil,
           client_info: map(),
           client_capabilities: %{
             elicitation: false | map(),
@@ -336,6 +340,35 @@ defmodule Phantom.Session do
     end
   end
 
+  @doc false
+  @spec listen(t(), String.t() | integer(), map()) :: {:ok, t()} | :error
+  def listen(%__MODULE__{pubsub: nil}, _subscription_id, _filter), do: :error
+
+  def listen(%__MODULE__{} = session, subscription_id, filter)
+      when (is_binary(subscription_id) or is_integer(subscription_id)) and is_map(filter) do
+    with {:ok, filter} <- normalize_subscription_filter(filter) do
+      Phantom.Tracker.track_session(self(), session.id, session.client_info)
+
+      Enum.each(filter["resourceSubscriptions"], &Phantom.Tracker.subscribe_resource/1)
+
+      session = %{
+        session
+        | close_after_complete: false,
+          subscription_filter: filter,
+          subscription_id: subscription_id
+      }
+
+      GenServer.cast(
+        session.pid,
+        {:send, Request.subscriptions_acknowledged(subscription_id, filter)}
+      )
+
+      {:ok, session}
+    end
+  end
+
+  def listen(%__MODULE__{}, _subscription_id, _filter), do: :error
+
   def list_resource_subscriptions(session) do
     case Phantom.Tracker.get_session(session) do
       nil -> []
@@ -583,17 +616,30 @@ defmodule Phantom.Session do
   end
 
   def handle_cast({:resource_updated, uri}, state) do
-    cancel_inactivity(state)
-    state = state.stream_fun.(state, nil, "message", Request.resource_updated(%{uri: uri}))
-    {:noreply, state |> set_activity() |> schedule_inactivity()}
+    if subscription_requested?(state.session, "resourceSubscriptions", uri) do
+      cancel_inactivity(state)
+
+      notification =
+        Request.resource_updated(%{uri: uri})
+        |> add_subscription_id(state.session)
+
+      state = state.stream_fun.(state, nil, "message", notification)
+      {:noreply, state |> set_activity() |> schedule_inactivity()}
+    else
+      {:noreply, state}
+    end
   end
 
   def handle_cast(:tools_updated, state) do
-    notify? = state.session.allowed_tools == nil
+    notify? =
+      state.session.allowed_tools == nil and
+        subscription_requested?(state.session, "toolsListChanged")
 
     if notify? do
       cancel_inactivity(state)
-      state = state.stream_fun.(state, nil, "message", Request.tools_updated())
+
+      notification = add_subscription_id(Request.tools_updated(), state.session)
+      state = state.stream_fun.(state, nil, "message", notification)
       {:noreply, state |> set_activity() |> schedule_inactivity()}
     else
       {:noreply, state}
@@ -601,11 +647,15 @@ defmodule Phantom.Session do
   end
 
   def handle_cast(:prompts_updated, state) do
-    notify? = state.session.allowed_prompts == nil
+    notify? =
+      state.session.allowed_prompts == nil and
+        subscription_requested?(state.session, "promptsListChanged")
 
     if notify? do
       cancel_inactivity(state)
-      state = state.stream_fun.(state, nil, "message", Request.prompts_updated())
+
+      notification = add_subscription_id(Request.prompts_updated(), state.session)
+      state = state.stream_fun.(state, nil, "message", notification)
       {:noreply, state |> set_activity() |> schedule_inactivity()}
     else
       {:noreply, state}
@@ -613,11 +663,15 @@ defmodule Phantom.Session do
   end
 
   def handle_cast(:resources_updated, state) do
-    notify? = state.session.allowed_resource_templates == nil
+    notify? =
+      state.session.allowed_resource_templates == nil and
+        subscription_requested?(state.session, "resourcesListChanged")
 
     if notify? do
       cancel_inactivity(state)
-      state = state.stream_fun.(state, nil, "message", Request.resources_updated())
+
+      notification = add_subscription_id(Request.resources_updated(), state.session)
+      state = state.stream_fun.(state, nil, "message", notification)
       {:noreply, state |> set_activity() |> schedule_inactivity()}
     else
       {:noreply, state}
@@ -641,6 +695,41 @@ defmodule Phantom.Session do
   end
 
   defp normalize_response_payload(payload, _request), do: payload
+
+  defp normalize_subscription_filter(filter) do
+    resource_subscriptions = Map.get(filter, "resourceSubscriptions", [])
+
+    if is_list(resource_subscriptions) and Enum.all?(resource_subscriptions, &is_binary/1) do
+      {:ok,
+       %{
+         "toolsListChanged" => Map.get(filter, "toolsListChanged", false) == true,
+         "promptsListChanged" => Map.get(filter, "promptsListChanged", false) == true,
+         "resourcesListChanged" => Map.get(filter, "resourcesListChanged", false) == true,
+         "resourceSubscriptions" => Enum.uniq(resource_subscriptions)
+       }}
+    else
+      :error
+    end
+  end
+
+  defp subscription_requested?(%__MODULE__{subscription_filter: nil}, _key), do: true
+
+  defp subscription_requested?(%__MODULE__{subscription_filter: filter}, key),
+    do: filter[key] == true
+
+  defp subscription_requested?(%__MODULE__{subscription_filter: nil}, _key, _value), do: true
+
+  defp subscription_requested?(%__MODULE__{subscription_filter: filter}, key, value),
+    do: value in filter[key]
+
+  defp add_subscription_id(notification, %__MODULE__{subscription_id: nil}), do: notification
+
+  defp add_subscription_id(notification, %__MODULE__{subscription_id: subscription_id}) do
+    params = Map.get(notification, :params, %{})
+    meta = Map.get(params, :_meta, %{})
+    meta = Map.put(meta, "io.modelcontextprotocol/subscriptionId", subscription_id)
+    Map.put(notification, :params, Map.put(params, :_meta, meta))
+  end
 
   defp maybe_finish(state) do
     if Enum.any?(Map.keys(state.session.requests)) or not state.session.close_after_complete do

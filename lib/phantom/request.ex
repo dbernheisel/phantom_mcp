@@ -25,6 +25,7 @@ defmodule Phantom.Request do
   @protocol_version_meta_key "io.modelcontextprotocol/protocolVersion"
   @client_info_meta_key "io.modelcontextprotocol/clientInfo"
   @client_capabilities_meta_key "io.modelcontextprotocol/clientCapabilities"
+  @log_level_meta_key "io.modelcontextprotocol/logLevel"
 
   @modern_cacheable_methods ~w[
     server/discover
@@ -159,6 +160,12 @@ defmodule Phantom.Request do
     do: meta[@client_capabilities_meta_key] || meta["capabilities"]
 
   def client_capabilities(_), do: nil
+
+  @doc false
+  def log_level(%__MODULE__{meta: meta}), do: log_level(meta)
+
+  def log_level(meta) when is_map(meta), do: meta[@log_level_meta_key]
+  def log_level(_), do: nil
 
   @doc false
   def normalize_result(%{} = result, %__MODULE__{} = request) do
@@ -378,6 +385,18 @@ defmodule Phantom.Request do
   @doc "Resources List updated notification"
   def resources_updated do
     %{jsonrpc: "2.0", method: "notifications/resources/list_changed"}
+  end
+
+  @doc false
+  def subscriptions_acknowledged(subscription_id, notifications) do
+    %{
+      jsonrpc: "2.0",
+      method: "notifications/subscriptions/acknowledged",
+      params: %{
+        notifications: notifications,
+        _meta: %{"io.modelcontextprotocol/subscriptionId" => subscription_id}
+      }
+    }
   end
 
   @doc "A generic notifiation"

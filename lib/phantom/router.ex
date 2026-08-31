@@ -449,6 +449,18 @@ defmodule Phantom.Router do
         {:reply, %{}, session}
       end
 
+      def dispatch_method(
+            "subscriptions/listen",
+            %{"notifications" => notifications},
+            request,
+            session
+          ) do
+        case Session.listen(session, request.id, notifications) do
+          {:ok, session} -> {:noreply, session}
+          :error -> {:error, Request.invalid_params(), session}
+        end
+      end
+
       def dispatch_method("tools/list", params, _request, session) do
         Phantom.Router.list_tools(__MODULE__, session, params["cursor"])
       end
@@ -1466,18 +1478,28 @@ defmodule Phantom.Router do
 
       tool ->
         args = Map.get(params, "arguments", %{})
+        input_response_args = input_response_args(request)
 
         case maybe_decode_state(router, session, request) do
           {:ok, session} ->
             with {:ok, validated} <- JSONSchema.maybe_validate(tool.input_schema, args) do
-              run_handler(:tool, tool, validated, session, request)
+              run_handler(
+                :tool,
+                tool,
+                Map.merge(validated, input_response_args),
+                session,
+                request
+              )
             else
               {:error, reasons} ->
                 {:error, Request.invalid_params(%{validation_errors: reasons}), session}
             end
 
           {:adopt_task, ref_id, session} ->
-            adopt_pending_task(ref_id, args, session, request)
+            response_args =
+              if map_size(input_response_args) == 0, do: args, else: input_response_args
+
+            adopt_pending_task(ref_id, response_args, session, request)
 
           {:error, :invalid_request_state} ->
             {:error, Request.invalid_params(%{requestState: "Invalid request state"}), session}
@@ -1643,8 +1665,9 @@ defmodule Phantom.Router do
   defp maybe_decode_state(router, session, request) do
     meta = request.meta || %{}
     info = router.__phantom__(:info)
+    request_state = request.params["requestState"] || meta["requestState"]
 
-    with token when is_binary(token) <- Map.get(meta, "requestState", :none),
+    with token when is_binary(token) <- request_state || :none,
          secret when is_binary(secret) <- info[:secret_key_base],
          salt when is_binary(salt) <- info[:request_state_salt],
          {:ok, term} <- Phantom.RequestState.decode(token, secret, salt) do
@@ -1661,6 +1684,17 @@ defmodule Phantom.Router do
       _ -> {:error, :invalid_request_state}
     end
   end
+
+  defp input_response_args(%Request{params: %{"inputResponses" => responses}})
+       when is_map(responses) do
+    Enum.reduce(responses, %{}, fn
+      {_id, %{"content" => content}}, acc when is_map(content) -> Map.merge(acc, content)
+      {_id, response}, acc when is_map(response) -> Map.merge(acc, response)
+      _response, acc -> acc
+    end)
+  end
+
+  defp input_response_args(%Request{}), do: %{}
 
   @doc false
   def get_prompt(router, session, name) do
