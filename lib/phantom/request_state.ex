@@ -44,7 +44,14 @@ defmodule Phantom.RequestState do
   """
   def encode(term, secret_key_base, salt)
       when is_binary(secret_key_base) and byte_size(secret_key_base) >= 64 and is_binary(salt) do
-    Plug.Crypto.encrypt(secret_key_base, salt, term)
+    encode(term, %{}, secret_key_base, salt)
+  end
+
+  @doc "Encrypts request state and binds it to the authenticated request context."
+  def encode(term, binding, secret_key_base, salt)
+      when is_map(binding) and is_binary(secret_key_base) and byte_size(secret_key_base) >= 64 and
+             is_binary(salt) do
+    Plug.Crypto.encrypt(secret_key_base, salt, %{value: term, binding: binding})
   end
 
   @doc """
@@ -59,10 +66,23 @@ defmodule Phantom.RequestState do
       when is_binary(token) and is_binary(salt) do
     max_age = Keyword.get(opts, :max_age, @default_max_age)
 
+    expected_binding = Keyword.get(opts, :binding, :any)
+
     case Plug.Crypto.decrypt(secret_key_base, salt, token, max_age: max_age) do
-      {:ok, term} -> {:ok, term}
+      {:ok, %{value: term, binding: _binding}} when expected_binding == :any -> {:ok, term}
+      {:ok, %{value: term, binding: ^expected_binding}} -> {:ok, term}
+      {:ok, _} -> {:error, :invalid}
       {:error, :expired} -> {:error, :expired}
       {:error, _} -> {:error, :invalid}
     end
+  end
+
+  @doc false
+  def binding(%Phantom.Request{} = request, %Phantom.Session{} = session) do
+    %{
+      method: request.method,
+      target: request.params["name"] || request.params["uri"],
+      principal: session.assigns[:request_state_principal]
+    }
   end
 end

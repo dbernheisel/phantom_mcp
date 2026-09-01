@@ -125,6 +125,82 @@ defmodule Phantom.StdioTest do
     end
   end
 
+  describe "MCP 2026-07-28 stateless core" do
+    defp modern_meta(extra \\ %{}) do
+      Map.merge(
+        %{
+          "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities" => %{}
+        },
+        extra
+      )
+    end
+
+    test "normalizes synchronous discovery and tool results" do
+      ctx = start_stdio()
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "server/discover",
+        params: %{"_meta" => modern_meta()}
+      })
+
+      discovery = read_response(ctx)
+      assert discovery["result"]["resultType"] == "complete"
+      assert discovery["result"]["ttlMs"] == 0
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: %{
+          "name" => "echo_tool",
+          "arguments" => %{"message" => "modern stdio"},
+          "_meta" => modern_meta()
+        }
+      })
+
+      tool = read_response(ctx)
+      assert tool["result"]["resultType"] == "complete"
+      assert get_in(tool, ["result", "content", Access.at(0), "text"]) == "modern stdio"
+    end
+
+    test "rejects malformed metadata and removed methods" do
+      ctx = start_stdio()
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "server/discover",
+        params: %{
+          "_meta" => %{"io.modelcontextprotocol/protocolVersion" => "2026-07-28"}
+        }
+      })
+
+      assert read_response(ctx)["error"]["code"] == -32602
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 2,
+        method: "ping",
+        params: %{"_meta" => modern_meta()}
+      })
+
+      assert read_response(ctx)["error"]["code"] == -32601
+    end
+
+    test "rejects a JSON-RPC batch as one invalid message" do
+      ctx = start_stdio()
+
+      send_request(ctx, [
+        %{jsonrpc: "2.0", id: 1, method: "server/discover", params: %{"_meta" => modern_meta()}}
+      ])
+
+      assert read_response(ctx)["error"]["code"] == -32600
+    end
+  end
+
   describe "tools/call" do
     test "calls a tool and returns result" do
       ctx = start_stdio()

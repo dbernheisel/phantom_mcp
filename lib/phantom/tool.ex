@@ -124,7 +124,7 @@ defmodule Phantom.Tool do
         }
 
   @type structured_response :: %{
-          structuredContent: map(),
+          structuredContent: term(),
           content: [%{type: :text, text: json_encoded :: String.t()}]
         }
 
@@ -210,15 +210,21 @@ defmodule Phantom.Tool do
 
   @spec text(map) :: structured_response()
   def text(data) when is_map(data) do
-    %{
-      structuredContent: data,
-      content: [%{type: :text, text: JSON.encode!(data)}]
-    }
+    structured(data)
   end
 
   @spec text(String.t()) :: text_response()
   def text(data) do
     %{content: [%{type: :text, text: data || ""}]}
+  end
+
+  @doc "Return any JSON value as structured tool content."
+  @spec structured(term()) :: structured_response()
+  def structured(data) do
+    %{
+      structuredContent: data,
+      content: [%{type: :text, text: JSON.encode!(data)}]
+    }
   end
 
   @spec error(message :: String.t()) :: error_response()
@@ -350,20 +356,32 @@ defmodule Phantom.Tool do
   on the follow-up `tools/call`, and Phantom restores it onto
   `session.state` so the handler can resume.
 
-  Required options:
+  At least one of these options is required:
 
-  - `:input_requests` — list of input requests the client must satisfy
+  - `:input_requests` — non-empty map of stable request keys to embedded MCP requests
   - `:state` — any term the handler needs to resume work; arrives at
     `session.state` on the follow-up call
 
   See `m:Phantom#module-defining-tools` for the full multi-round-trip pattern.
   """
   def input_required(opts) do
-    %{
-      resultType: "input_required",
-      inputRequests: Keyword.fetch!(opts, :input_requests),
-      requestState: Keyword.fetch!(opts, :state)
-    }
+    input_requests = Keyword.get(opts, :input_requests)
+    state? = Keyword.has_key?(opts, :state)
+
+    if not is_nil(input_requests) and
+         not (is_map(input_requests) and map_size(input_requests) > 0) do
+      raise ArgumentError, ":input_requests must be a non-empty map"
+    end
+
+    unless state? or is_map(input_requests) do
+      raise ArgumentError, ":state or :input_requests is required"
+    end
+
+    result = maybe_put(%{resultType: "input_required"}, :inputRequests, input_requests)
+
+    if state?,
+      do: Map.put(result, :requestState, Keyword.fetch!(opts, :state)),
+      else: result
   end
 
   @doc """
@@ -381,6 +399,9 @@ defmodule Phantom.Tool do
       requestState: request_state
     }
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   @doc "Formats the response from an MCP Router to the MCP specification"
   def response(%{resultType: result_type} = results)

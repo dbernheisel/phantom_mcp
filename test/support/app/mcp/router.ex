@@ -150,6 +150,7 @@ defmodule Test.MCP.Router do
   tool :client_log_tool,
     description: "A tool that sends a log to the MCP client",
     input_schema: %{
+      type: "object",
       properties: %{
         message: %{type: "string", description: "message to log"}
       }
@@ -159,6 +160,7 @@ defmodule Test.MCP.Router do
     description: "A test that echos your message",
     icons: [%{src: "https://example.com/echo-icon.png", mime_type: "image/png"}],
     input_schema: %{
+      type: "object",
       required: [:message],
       properties: %{
         message: %{
@@ -168,9 +170,20 @@ defmodule Test.MCP.Router do
       }
     }
 
+  tool :header_echo_tool,
+    description: "Echo a header-routed argument",
+    input_schema: %{
+      type: "object",
+      required: [:tenant],
+      properties: %{
+        tenant: %{type: "string", "x-mcp-header": "Tenant"}
+      }
+    }
+
   tool :structured_echo_tool,
     description: "A test that echos your message",
     input_schema: %{
+      type: "object",
       required: [:message],
       properties: %{
         message: %{
@@ -180,6 +193,7 @@ defmodule Test.MCP.Router do
       }
     },
     output_schema: %{
+      type: "object",
       required: [:message],
       properties: %{
         message: %{
@@ -200,6 +214,7 @@ defmodule Test.MCP.Router do
   @description "A test that echos your message slowly"
   tool :async_echo_tool, AsyncModule,
     input_schema: %{
+      type: "object",
       required: [:message],
       properties: %{
         message: %{
@@ -261,6 +276,10 @@ defmodule Test.MCP.Router do
 
   def echo_tool(params, session) do
     {:reply, Phantom.Tool.text(params["message"] || ""), session}
+  end
+
+  def header_echo_tool(params, session) do
+    {:reply, Phantom.Tool.text(params["tenant"]), session}
   end
 
   def client_log_tool(params, session) do

@@ -361,7 +361,7 @@ defmodule Phantom.Elicit do
     attrs =
       Map.take(
         attrs,
-        ~w[name required type title description min_length max_length pattern format]a
+        ~w[name required type title description min_length max_length pattern format default]a
       )
 
     if format = attrs[:format] do
@@ -372,7 +372,7 @@ defmodule Phantom.Elicit do
   end
 
   defp build_property(%{type: :enum} = attrs) do
-    Map.take(attrs, ~w[name required type title description enum multi min max]a)
+    Map.take(attrs, ~w[name required type title description enum multi min max default]a)
   end
 
   defp build_property(%{type: :boolean} = attrs) do
@@ -386,7 +386,7 @@ defmodule Phantom.Elicit do
   defp build_property(%{type: type} = attrs) when type in @integer do
     Map.take(
       attrs,
-      ~w[name required type title description minimum maximum]a
+      ~w[name required type title description minimum maximum default]a
     )
   end
 

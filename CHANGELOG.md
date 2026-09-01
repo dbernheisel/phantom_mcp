@@ -1,21 +1,12 @@
 ## Unreleased
 
 - Initial support for MCP 2026-07-28 stateless core. `Phantom.Session.elicit/3`
-  has two call patterns with protocol-aware defaults — both backed by a
-  LiveView-style stateful Task that suspends on the originating node and
-  resumes inline when the client returns:
-    - **Inline blocking** (`await: true`, or default under legacy) — the
-      function continues after the response arrives. `case Session.elicit(...) do {:ok, _} -> ...`.
-    - **Re-entry** (`:state` set, or default under stateless) — the handler
-      returns `{:noreply, Session.elicit(session, elicit, state: %{...})}`;
-      Phantom holds the Task open, awaits the response, and re-invokes the
-      handler with `session.state` populated. State accumulates across
-      multiple elicit steps. Function-head clauses match on `%Session{state:
-      ...}` for each step.
-  - Under MCP `2026-07-28` the encrypted `requestState` blob is just an
-    opaque pointer to the suspended Task; cross-node follow-ups route via
-    `Phantom.Tracker`. State accumulation lives on the live Task, not in
-    the blob.
+  uses true stateless re-entry: the handler returns
+  `{:noreply, Session.elicit(session, elicit, state: %{...})}`, Phantom
+  authenticates and encrypts that state into `requestState`, and any node can
+  re-invoke the handler with `session.state` populated. Inline `await: true`
+  remains available on legacy transports and returns `:not_supported` under
+  stateless core because a running BEAM continuation is not serializable.
   - `Phantom.Tool.input_required/2` is the lower-level builder for
     constructing an `input_required` result map directly (skipping Task
     suspension).
@@ -103,13 +94,11 @@ The smallest change is to add `await: true` everywhere you currently call
 # Before: implicit inline blocking, legacy-only
 {:ok, response} = Session.elicit(session, elicit)
 
-# After: explicit inline blocking, works on both protocols
+# After: explicit inline blocking on legacy transports
 {:ok, response} = Session.elicit(session, elicit, await: true)
 ```
 
-Under `2026-07-28`, `await: true` suspends the tool's Task and resumes it
-inline when the follow-up `tools/call` arrives (possibly on a different
-node). The handler reads the same.
+Under `2026-07-28`, use re-entry; `await: true` returns `:not_supported`.
 
 ### Recommendation for new PhantomMCP users targeting modern MCP clients
 
@@ -160,11 +149,8 @@ Why re-entry over inline `await: true`:
 
 - **Truly stateless on the wire** — `state` is encrypted into `requestState`
   and travels with the client. Any node can serve any follow-up call.
-  Inline `await: true` keeps a Task suspended on the originating node and
-  uses `Phantom.Tracker` for cross-node delivery.
-- **No resource pinning** — re-entry has no in-memory state between
-  requests. Inline await holds an Erlang process per pending elicit (with
-  a 5-minute default timeout).
+  Inline `await: true` is intentionally unavailable under stateless core.
+- **No resource pinning** — re-entry has no in-memory state between requests.
 - **Pattern-match clarity** — the resume clause is a function head, not a
   `case` block buried in the middle of a function.
 - **Multi-step state machines** read naturally — each step is its own

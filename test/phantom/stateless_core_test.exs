@@ -32,7 +32,9 @@ defmodule Phantom.StatelessCoreTest do
     def resume_demo(params, session) do
       {:reply,
        T.input_required(
-         input_requests: [%{name: "confirm", schema: %{type: "string"}}],
+         input_requests: %{
+           "confirm" => %{method: "elicitation/create", params: %{mode: "form"}}
+         },
          state: %{step: :ready, seed: params["seed"] || "default"}
        ), session}
     end
@@ -119,7 +121,12 @@ defmodule Phantom.StatelessCoreTest do
   end
 
   defp build_session do
-    Session.new(nil, router: Router, pid: self(), transport_pid: self())
+    Session.new(nil,
+      router: Router,
+      pid: self(),
+      transport_pid: self(),
+      client_capabilities: %{roots: false, sampling: false, elicitation: %{}, ui: false}
+    )
   end
 
   defp build_request(meta \\ %{}, name \\ "resume_demo", arguments \\ %{}) do
@@ -158,7 +165,7 @@ defmodule Phantom.StatelessCoreTest do
 
       assert %{
                resultType: "input_required",
-               inputRequests: [_],
+               inputRequests: %{"confirm" => _},
                requestState: token
              } = response
 
@@ -173,7 +180,9 @@ defmodule Phantom.StatelessCoreTest do
   describe "decode-on-inbound" do
     test "a valid requestState in _meta populates session.state and resumes" do
       session = build_session()
-      token = RequestState.encode(%{step: :ready, seed: "echo"}, @secret, @salt)
+      request = build_request()
+      binding = RequestState.binding(request, session)
+      token = RequestState.encode(%{step: :ready, seed: "echo"}, binding, @secret, @salt)
       request = build_request(%{"requestState" => token})
 
       assert {:noreply, _} =
@@ -195,7 +204,9 @@ defmodule Phantom.StatelessCoreTest do
 
     test "an expired requestState returns a distinct error code" do
       session = build_session()
-      token = RequestState.encode(%{step: :ready, seed: "x"}, @secret, @salt)
+      initial_request = build_request()
+      binding = RequestState.binding(initial_request, session)
+      token = RequestState.encode(%{step: :ready, seed: "x"}, binding, @secret, @salt)
       Process.sleep(1_100)
       request = build_request(%{"requestState" => token})
 
@@ -263,28 +274,15 @@ defmodule Phantom.StatelessCoreTest do
       :ok
     end
 
-    test "dispatcher suspends the Task, then re-applies the handler with state and merged params" do
+    test "dispatcher returns serializable state, then re-applies the handler on any node" do
       session = build_session()
       request = build_request(%{"protocolVersion" => "2026-07-28"}, "elicit_demo", %{"q" => "hi"})
-      original_request_id = request.id
 
-      # First call — the Task spawns, the handler returns
-      # `{:noreply, Session.elicit(..., state: ...)}`, and
-      # `process_handler_result/5` invokes `Session.elicit(await: true)`
-      # which sends `{:phantom_await_elicit, ...}` to the adopter (test pid).
       assert {:noreply, _} =
                Router.dispatch_method("tools/call", request.params, request, session)
 
-      assert_receive {:phantom_await_elicit, ref_id, elicit, task_pid, ^original_request_id},
-                     1_000
-
-      assert %Phantom.Elicit{message: "pick"} = elicit
-
-      # Register the suspended task so a follow-up request can adopt it.
-      Phantom.Tracker.track_request(task_pid, ref_id, %{type: :pending_task, pid: task_pid})
-
-      # Follow-up request carrying the encrypted ref_id resumes the task.
-      token = RequestState.encode({:__phantom_await__, ref_id}, @secret, @salt)
+      assert_receive {:"$gen_cast", {:respond, 1, %{result: input_required}}}
+      assert %{resultType: "input_required", requestState: token} = input_required
       follow_session = build_session()
 
       follow_request =
@@ -316,9 +314,6 @@ defmodule Phantom.StatelessCoreTest do
                  follow_session
                )
 
-      # On resume, the handler's second clause matches because
-      # `session.state == %{step: :got_choice, original: %{"q" => "hi"}}`
-      # and the response (`%{"choice" => "blue"}`) is merged into params.
       response = assert_responded(2_000)
 
       assert %{content: [%{type: :text, text: text}]} = response
@@ -327,86 +322,23 @@ defmodule Phantom.StatelessCoreTest do
     end
   end
 
-  describe "Session.elicit/3 with `await: true` — protocol-agnostic inline" do
-    setup do
-      start_supervised({Phoenix.PubSub, name: Test.StatelessAwait.PubSub})
-
-      start_supervised(
-        {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Test.StatelessAwait.PubSub]}
-      )
-
-      :ok
-    end
-
-    test "stateless: tool's inline elicit yields inputRequired; follow-up resumes the same task" do
+  describe "Session.elicit/3 with `await: true`" do
+    test "stateless rejects unserializable inline continuations" do
       session = build_session()
       request = build_request(%{"protocolVersion" => "2026-07-28"}, "await_demo")
-      original_request_id = request.id
 
-      # First call — the Task spawns and the handler calls Session.elicit(await: true).
-      # That sends {:phantom_await_elicit, ...} to the test pid (session.pid).
-      # We have to handle it like the session GenServer would.
       assert {:noreply, _} =
                Router.dispatch_method("tools/call", request.params, request, session)
 
-      assert_receive {:phantom_await_elicit, ref_id, elicit, task_pid, ^original_request_id},
-                     1_000
-
-      # Verify the elicit struct made it through.
-      assert %Phantom.Elicit{message: "pick"} = elicit
-
-      # The session GenServer would register the task in Tracker. Do it manually here.
-      Phantom.Tracker.track_request(task_pid, ref_id, %{type: :pending_task, pid: task_pid})
-
-      # Simulate the follow-up: a NEW request arrives carrying the encrypted ref_id.
-      token = RequestState.encode({:__phantom_await__, ref_id}, @secret, @salt)
-      follow_session = build_session()
-
-      follow_request =
-        build_request(
-          %{"protocolVersion" => "2026-07-28"},
-          "await_demo",
-          %{}
-        )
-
-      follow_request = %{
-        follow_request
-        | params:
-            Map.merge(follow_request.params, %{
-              "requestState" => token,
-              "inputResponses" => %{
-                "elicitation" => %{
-                  "action" => "accept",
-                  "content" => %{"color" => "blue"}
-                }
-              }
-            })
-      }
-
-      # Dispatch should adopt the suspended task and return {:noreply}.
-      assert {:noreply, _} =
-               Router.dispatch_method(
-                 "tools/call",
-                 follow_request.params,
-                 follow_request,
-                 follow_session
-               )
-
-      # The task is now resumed. It returns Tool.text("got color=blue") and
-      # casts Session.respond to the new adopter (our test pid).
       response = assert_responded(2_000)
-      assert %{content: [%{type: :text, text: "got color=blue"}]} = response
-
-      # Verify the original request id was preserved at await-yield time.
-      assert original_request_id == request.id
+      assert %{content: [%{type: :text, text: text}], isError: true} = response
+      assert text =~ "await failed: :not_supported"
     end
   end
 
   # Prompt-side parity with the tool re-entry pattern: a `prompts/get` handler
-  # can return `{:noreply, Session.elicit(...)}` and the suspended-Task flow
-  # works the same as for tools. See the "Session.elicit/3 with `await: true`"
-  # describe block for the orchestrated round-trip exercising this machinery
-  # at the dispatcher level.
+  # can return `{:noreply, Session.elicit(...)}` and use the same stateless
+  # re-entry flow as tools.
 
   describe "_meta hydrates session.client_info and client_capabilities" do
     # Under stateless core there is no `initialize` call to populate these
@@ -433,6 +365,7 @@ defmodule Phantom.StatelessCoreTest do
         }
       })
       |> put_req_header("content-type", "application/json")
+      |> put_req_header("mcp-protocol-version", "2026-07-28")
       |> put_req_header("mcp-method", "tools/call")
       |> put_req_header("mcp-name", "who_am_i")
       |> call(router: Router)
@@ -460,7 +393,14 @@ defmodule Phantom.StatelessCoreTest do
       # to :not_supported. Critically, this is NOT a session struct, so
       # existing `{:ok, _} = Session.elicit(session, elicit)` callers keep
       # their original semantics.
-      session = %{build_session() | request: request, pid: nil, elicit: nil}
+      session = %{
+        build_session()
+        | request: request,
+          pid: nil,
+          elicit: nil,
+          client_capabilities: %{roots: false, sampling: false, elicitation: false, ui: false}
+      }
+
       elicit = Phantom.Elicit.form(%{message: "x", requested_schema: []})
 
       assert :not_supported = Phantom.Session.elicit(session, elicit)

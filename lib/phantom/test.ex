@@ -370,6 +370,11 @@ defmodule Phantom.Test do
         send(self(), {:phantom_test_progress, payload})
         await_response(request_id, timeout, deadline)
 
+      {:"$gen_cast", {:progress, token, progress, total, message}} ->
+        payload = Phantom.Request.notify_progress(token, progress, total, message)
+        send(self(), {:phantom_test_progress, payload})
+        await_response(request_id, timeout, deadline)
+
       {:"$gen_cast", {:notify, payload}} ->
         send(self(), {:phantom_test_notify, payload})
         await_response(request_id, timeout, deadline)
@@ -401,6 +406,11 @@ defmodule Phantom.Test do
         drain_session_casts(request_id)
 
       {:"$gen_cast", {:send, payload}} ->
+        send(self(), {:phantom_test_progress, payload})
+        drain_session_casts(request_id)
+
+      {:"$gen_cast", {:progress, token, progress, total, message}} ->
+        payload = Phantom.Request.notify_progress(token, progress, total, message)
         send(self(), {:phantom_test_progress, payload})
         drain_session_casts(request_id)
 

@@ -5,6 +5,10 @@ defmodule Phantom.DistributedTest do
   @node2 :"node2@127.0.0.1"
   @node1_port 4101
   @node2_port 4102
+  @modern_meta %{
+    "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+    "io.modelcontextprotocol/clientCapabilities" => %{"elicitation" => %{}}
+  }
 
   # Initialize and return {session_id, resp, ref, buffer} so the caller
   # can keep reading SSE events from the initialize stream.
@@ -373,10 +377,14 @@ defmodule Phantom.DistributedTest do
             params: %{
               "name" => "resume_tool",
               "arguments" => %{"origin" => "test"},
-              "_meta" => %{"protocolVersion" => "2026-07-28"}
+              "_meta" => @modern_meta
             }
           },
-          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "resume_tool"}]
+          headers: [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "tools/call"},
+            {"mcp-name", "resume_tool"}
+          ]
         )
 
       assert first_resp.status == 200
@@ -412,12 +420,14 @@ defmodule Phantom.DistributedTest do
                   "content" => %{"name" => "alice"}
                 }
               },
-              "_meta" => %{
-                "protocolVersion" => "2026-07-28"
-              }
+              "_meta" => @modern_meta
             }
           },
-          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "resume_tool"}]
+          headers: [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "tools/call"},
+            {"mcp-name", "resume_tool"}
+          ]
         )
 
       assert second_resp.status == 200
@@ -445,12 +455,14 @@ defmodule Phantom.DistributedTest do
               "name" => "resume_tool",
               "arguments" => %{"name" => "alice"},
               "requestState" => "not-a-real-token",
-              "_meta" => %{
-                "protocolVersion" => "2026-07-28"
-              }
+              "_meta" => @modern_meta
             }
           },
-          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "resume_tool"}]
+          headers: [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "tools/call"},
+            {"mcp-name", "resume_tool"}
+          ]
         )
 
       assert bad_resp.status == 200
@@ -464,17 +476,7 @@ defmodule Phantom.DistributedTest do
       assert error["error"]["code"] == -32602
     end
 
-    # The `await_tool` calls Session.elicit(..., await: true) inline. The
-    # tool's Task suspends on node 1 when the elicit fires; the encrypted
-    # requestState carries the suspension reference. The follow-up
-    # tools/call to node 2 looks up the suspended Task via Phantom.Tracker
-    # (Erlang's distributed pid routing handles the cross-node send) and
-    # delivers the elicit response. The Task — still living on node 1 —
-    # resumes inline, runs to completion, and casts its final result to
-    # the new HTTP handler on node 2 via Session.respond. End-to-end
-    # proof that the inline-await pattern preserves the distributed
-    # property without sticky sessions.
-    test "inline await: Task suspends on node 1; response delivered via node 2 resumes inline" do
+    test "inline await is rejected because a running continuation is not stateless" do
       first_resp =
         post_mcp(
           @node1_port,
@@ -485,61 +487,26 @@ defmodule Phantom.DistributedTest do
             params: %{
               "name" => "await_tool",
               "arguments" => %{},
-              "_meta" => %{"protocolVersion" => "2026-07-28"}
+              "_meta" => @modern_meta
             }
           },
-          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "await_tool"}]
+          headers: [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "tools/call"},
+            {"mcp-name", "await_tool"}
+          ]
         )
 
       assert first_resp.status == 200
 
-      input_required =
-        poll_for_sse_event(first_resp, 5_000, fn msg ->
-          get_in(msg, ["result", "resultType"]) == "input_required"
-        end)
-
-      assert input_required,
-             "Expected inputRequired from node 1's await_tool — the Task should suspend"
-
-      token = input_required["result"]["requestState"]
-      assert is_binary(token)
-
-      second_resp =
-        post_mcp(
-          @node2_port,
-          %{
-            jsonrpc: "2.0",
-            id: 11,
-            method: "tools/call",
-            params: %{
-              "name" => "await_tool",
-              "arguments" => %{},
-              "requestState" => token,
-              "inputResponses" => %{
-                "elicitation" => %{
-                  "action" => "accept",
-                  "content" => %{"color" => "violet"}
-                }
-              },
-              "_meta" => %{
-                "protocolVersion" => "2026-07-28"
-              }
-            }
-          },
-          headers: [{"mcp-method", "tools/call"}, {"mcp-name", "await_tool"}]
-        )
-
-      assert second_resp.status == 200
-
       result =
-        poll_for_sse_event(second_resp, 5_000, fn msg ->
+        poll_for_sse_event(first_resp, 5_000, fn msg ->
           get_in(msg, ["result", "content"]) != nil
         end)
 
-      assert result, "Expected tool result from node 2 — the Task should resume inline"
-
       text = get_in(result, ["result", "content", Access.at(0), "text"])
-      assert text == "awaited color=violet"
+      assert text =~ "await failed: :not_supported"
+      assert result["result"]["isError"] == true
     end
   end
 end

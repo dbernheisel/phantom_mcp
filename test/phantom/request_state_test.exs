@@ -27,6 +27,19 @@ defmodule Phantom.RequestStateTest do
   end
 
   describe "decode/3 rejects tampered tokens" do
+    test "rejects replay under a different authenticated binding" do
+      binding = %{method: "tools/call", target: "one", principal: "user-1"}
+      token = RequestState.encode(%{step: 1}, binding, @secret, @salt)
+
+      assert {:ok, %{step: 1}} =
+               RequestState.decode(token, @secret, @salt, binding: binding)
+
+      assert {:error, :invalid} =
+               RequestState.decode(token, @secret, @salt,
+                 binding: %{binding | principal: "user-2"}
+               )
+    end
+
     test "flipping a byte in the ciphertext yields :invalid" do
       token = RequestState.encode(%{a: 1}, @secret, @salt)
 

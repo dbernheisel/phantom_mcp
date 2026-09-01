@@ -90,6 +90,37 @@ defmodule Phantom.RequestTest do
     end
   end
 
+  describe "modern request validation" do
+    test "build is total for malformed params and ids" do
+      assert {:error, %{response: %{error: %{code: -32600}}}} =
+               Request.build(%{"jsonrpc" => "2.0", "id" => nil, "method" => "tools/list"})
+
+      assert {:error, %{response: %{error: %{code: -32600}}}} =
+               Request.build(%{
+                 "jsonrpc" => "2.0",
+                 "id" => 1,
+                 "method" => "tools/list",
+                 "params" => []
+               })
+    end
+
+    test "requires the complete namespaced envelope" do
+      {:ok, request} =
+        Request.build(%{
+          "jsonrpc" => "2.0",
+          "id" => 1,
+          "method" => "tools/list",
+          "params" => %{
+            "_meta" => %{
+              "io.modelcontextprotocol/protocolVersion" => "2026-07-28"
+            }
+          }
+        })
+
+      assert {:error, %{code: -32602}} = Request.validate_modern(request, "2026-07-28")
+    end
+  end
+
   describe "trace_context/1" do
     test "extracts the three W3C fields when present" do
       {:ok, request} =

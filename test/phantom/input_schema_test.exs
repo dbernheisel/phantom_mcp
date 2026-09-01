@@ -545,6 +545,20 @@ defmodule Phantom.Tool.JSONSchemaTest do
       assert {:ok, _} = JSONSchema.maybe_validate(schema, %{"query" => "hello"})
       assert {:error, _} = JSONSchema.maybe_validate(schema, %{})
     end
+
+    test "map schemas validate JSON objects with atom or string keys" do
+      schema = %JSONSchema{
+        type: "object",
+        required: [:message],
+        properties: %{message: %{type: "string"}},
+        fields: nil
+      }
+
+      assert {:ok, %{message: "atom"}} = JSONSchema.maybe_validate(schema, %{message: "atom"})
+
+      assert {:ok, %{"message" => "string"}} =
+               JSONSchema.maybe_validate(schema, %{"message" => "string"})
+    end
   end
 
   describe "DSL macros" do
@@ -940,16 +954,15 @@ defmodule Phantom.Tool.JSONSchemaTest do
       assert Enum.any?(errors, &String.contains?(&1, "query"))
     end
 
-    test "tools/call with raw-map input_schema does NOT validate (backwards compatible)" do
-      # echo_tool uses raw map input_schema, should pass through without validation
+    test "tools/call validates raw-map input_schema" do
       request_tool("echo_tool", %{"message" => 12345}, [])
 
       assert_receive {:conn, conn}
       assert conn.status == 200
 
       assert_receive {:response, 1, "message", response}
-      # Should succeed even with wrong type - raw map schemas don't validate
-      assert %{jsonrpc: "2.0", id: 1, result: %{content: _}} = response
+      assert %{jsonrpc: "2.0", id: 1, error: %{code: -32602, data: data}} = response
+      assert Enum.any?(data.validation_errors, &String.contains?(&1, "expected string"))
     end
   end
 

@@ -507,10 +507,10 @@ Phantom.Tracker.notify_resource_updated(uri)
 
 Two helpers, picked by how the dev wants to structure the handler.
 
-### Inline blocking — `Session.elicit/3` with `await: true`
+### Inline blocking — legacy transports only
 
-The tool function "awaits" the response in place and continues inline.
-Same source on both protocols:
+The tool function "awaits" the response in place and continues inline on
+legacy session transports:
 
 ```elixir
 def my_tool(params, session) do
@@ -527,12 +527,9 @@ def my_tool(params, session) do
 end
 ```
 
-Under legacy protocols and stdio, the call blocks via the open SSE stream.
-Under MCP `2026-07-28`, Phantom suspends the tool's Task, returns
-`input_required` to the client, and resumes the Task inline when the
-follow-up `tools/call` arrives — possibly on a different node. The
-stateless adoption uses `Phantom.PubSub` + `Phantom.Tracker` (the
-existing cross-node infrastructure).
+Under MCP `2026-07-28`, `await: true` returns `:not_supported`. A running
+BEAM continuation cannot be serialized into request state, so modern handlers
+must use the re-entry pattern below.
 
 ### Re-entry — `Session.elicit/3` (no `:await`)
 

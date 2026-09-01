@@ -415,12 +415,102 @@ defmodule Phantom.Tool.JSONSchema do
     })
   end
 
-  @doc "Passthrough when no schema is present, or when schema has no DSL fields."
+  @doc "Validate both DSL schemas and map-based JSON Schemas."
   def maybe_validate(nil, params), do: {:ok, params}
-  def maybe_validate(%__MODULE__{fields: nil}, params), do: {:ok, params}
+
+  def maybe_validate(%__MODULE__{fields: nil} = schema, params) do
+    case validate_json(to_json(schema), params, "$") do
+      [] -> {:ok, params}
+      errors -> {:error, errors}
+    end
+  end
 
   def maybe_validate(%__MODULE__{fields: fields}, params) when is_list(fields),
     do: validate(fields, params)
+
+  @doc false
+  def validate_json(schema, value, path \\ "$") when is_map(schema) do
+    type = schema[:type] || schema["type"]
+    enum = schema[:enum] || schema["enum"]
+
+    []
+    |> json_type_error(type, value, path)
+    |> json_enum_error(enum, value, path)
+    |> json_object_errors(schema, value, path)
+    |> json_array_errors(schema, value, path)
+  end
+
+  defp json_type_error(errors, nil, _value, _path), do: errors
+  defp json_type_error(errors, "object", value, _path) when is_map(value), do: errors
+  defp json_type_error(errors, "array", value, _path) when is_list(value), do: errors
+  defp json_type_error(errors, "string", value, _path) when is_binary(value), do: errors
+  defp json_type_error(errors, "integer", value, _path) when is_integer(value), do: errors
+  defp json_type_error(errors, "number", value, _path) when is_number(value), do: errors
+  defp json_type_error(errors, "boolean", value, _path) when is_boolean(value), do: errors
+  defp json_type_error(errors, "null", nil, _path), do: errors
+
+  defp json_type_error(errors, types, value, path) when is_list(types) do
+    if Enum.any?(types, &(json_type_error([], &1, value, path) == [])),
+      do: errors,
+      else: ["#{path}: expected one of #{inspect(types)}" | errors]
+  end
+
+  defp json_type_error(errors, type, _value, path),
+    do: ["#{path}: expected #{type}" | errors]
+
+  defp json_enum_error(errors, nil, _value, _path), do: errors
+
+  defp json_enum_error(errors, allowed, value, path) do
+    if value in allowed, do: errors, else: ["#{path}: is not an allowed value" | errors]
+  end
+
+  defp json_object_errors(errors, schema, value, path) when is_map(value) do
+    required = schema[:required] || schema["required"] || []
+    properties = schema[:properties] || schema["properties"] || %{}
+
+    errors =
+      Enum.reduce(required, errors, fn key, acc ->
+        if json_key?(value, key),
+          do: acc,
+          else: ["#{path}.#{key}: is required" | acc]
+      end)
+
+    Enum.reduce(properties, errors, fn {key, child_schema}, acc ->
+      case fetch_json_key(value, key) do
+        {:ok, child} -> validate_json(child_schema, child, "#{path}.#{key}") ++ acc
+        :error -> acc
+      end
+    end)
+  end
+
+  defp json_object_errors(errors, _schema, _value, _path), do: errors
+
+  defp json_array_errors(errors, schema, value, path) when is_list(value) do
+    case schema[:items] || schema["items"] do
+      items when is_map(items) ->
+        value
+        |> Enum.with_index()
+        |> Enum.reduce(errors, fn {item, index}, acc ->
+          validate_json(items, item, "#{path}[#{index}]") ++ acc
+        end)
+
+      _ ->
+        errors
+    end
+  end
+
+  defp json_array_errors(errors, _schema, _value, _path), do: errors
+
+  defp json_key?(value, key), do: match?({:ok, _}, fetch_json_key(value, key))
+
+  defp fetch_json_key(value, key) do
+    key = to_string(key)
+
+    case Enum.find(value, fn {candidate, _value} -> to_string(candidate) == key end) do
+      {_candidate, found} -> {:ok, found}
+      nil -> :error
+    end
+  end
 
   @doc """
   Validate params against the field definitions. Returns `{:ok, params_with_defaults}`
