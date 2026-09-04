@@ -1,4 +1,4 @@
-## Unreleased
+## 0.5.3 (2026-09-04)
 
 - Switch UUID dependency from `uuidv7` to `uuid_v7` to avoid module name
   collisions with other Hex packages that also define `UUIDv7` (e.g. when used
