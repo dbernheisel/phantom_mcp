@@ -44,7 +44,7 @@ defmodule Phantom.MixProject do
       {:plug, "~> 1.0"},
       {:telemetry, "~> 1.0"},
       {:phoenix_pubsub, "~> 2.0", optional: true, only: [:dev, :test, :prod, :stdio]},
-      {:uuidv7, "~> 1.0"},
+      {:uuid_v7, "~> 0.6"},
       ## Test
       {:phoenix_live_view, "~> 1.0", only: [:dev, :test, :stdio]},
       {:ex_doc, "~> 0.31", only: :dev, warn_if_outdated: true, runtime: false},
