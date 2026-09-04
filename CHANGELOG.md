@@ -1,3 +1,9 @@
+## Unreleased
+
+- Switch UUID dependency from `uuidv7` to `uuid_v7` to avoid module name
+  collisions with other Hex packages that also define `UUIDv7` (e.g. when used
+  alongside `posthog`). Call sites are unchanged (`UUIDv7.generate/0`).
+
 ## 0.5.2 (2026-08-20)
 
 - Remove `Connection: keep-alive` in response headers in SSE stream. This is
