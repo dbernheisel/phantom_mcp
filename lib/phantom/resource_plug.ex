@@ -12,6 +12,14 @@ defmodule Phantom.ResourcePlug do
   def init(opts), do: opts
 
   @impl Plug
+  def call(%{assigns: %{resolve_resource: true}} = fake_conn, _opts) do
+    assign(
+      fake_conn,
+      :result,
+      {:resolved_resource, fake_conn.path_params, fake_conn.assigns.resource_template}
+    )
+  end
+
   def call(fake_conn, _opts) do
     session = %{
       fake_conn.assigns.session
