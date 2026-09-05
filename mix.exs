@@ -7,6 +7,7 @@ defmodule Phantom.MixProject do
       app: :phantom_mcp,
       description: "Elixir MCP (Model Context Protocol) server library with Plug",
       deps: deps(),
+      dialyzer: [plt_add_apps: [:ex_unit]],
       docs: docs(),
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
