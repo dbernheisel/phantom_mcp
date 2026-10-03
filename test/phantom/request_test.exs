@@ -119,6 +119,36 @@ defmodule Phantom.RequestTest do
 
       assert {:error, %{code: -32602}} = Request.validate_modern(request, "2026-07-28")
     end
+
+    test "reports a header mismatch before an unsupported body version" do
+      {:ok, request} =
+        Request.build(%{
+          "jsonrpc" => "2.0",
+          "id" => 1,
+          "method" => "tools/list",
+          "params" => %{
+            "_meta" => %{
+              "io.modelcontextprotocol/protocolVersion" => "2025-11-25",
+              "io.modelcontextprotocol/clientCapabilities" => %{}
+            }
+          }
+        })
+
+      assert {:error, %{code: -32020}} = Request.validate_modern(request, "2026-07-28")
+      assert {:error, %{code: -32022}} = Request.validate_modern(request, "2025-11-25")
+    end
+  end
+
+  describe "missing_capability/1" do
+    test "names the missing capabilities as a ClientCapabilities object" do
+      assert %{code: -32021, data: %{requiredCapabilities: required}} =
+               Request.missing_capability(["sampling", "elicitation", "elicitation.url"])
+
+      assert required == %{
+               "sampling" => %{},
+               "elicitation" => %{"url" => %{}}
+             }
+    end
   end
 
   describe "trace_context/1" do

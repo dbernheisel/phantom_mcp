@@ -675,7 +675,7 @@ defmodule Conformance.MCP.Router do
 
       _ ->
         {:reply,
-         Tool.input_required(
+         Prompt.input_required(
            input_requests: %{
              "user_context" => elicit_request("What context should the prompt use?", "context")
            }

@@ -96,12 +96,25 @@ defmodule Phantom.Request do
   def header_mismatch(message),
     do: %{code: @header_mismatch, message: message}
 
-  @doc "A request omitted a client capability required to process it."
+  @doc """
+  A request omitted a client capability required to process it.
+
+  Capabilities are named by path, such as `"sampling"` or `"elicitation.url"`,
+  and reported to the client as a `ClientCapabilities` object.
+  """
   def missing_capability(capabilities) do
+    required =
+      capabilities
+      |> List.wrap()
+      |> Enum.reduce(%{}, fn capability, acc ->
+        path = String.split(capability, ".")
+        update_in(acc, Enum.map(path, &Access.key(&1, %{})), & &1)
+      end)
+
     %{
       code: @missing_capability,
       message: "Missing required client capability",
-      data: %{requiredCapabilities: List.wrap(capabilities)}
+      data: %{requiredCapabilities: required}
     }
   end
 
@@ -250,12 +263,12 @@ defmodule Phantom.Request do
            reason: "is required"
          })}
 
-      body_version != @modern_protocol ->
-        {:error, unsupported_protocol(body_version)}
-
       not is_nil(transport_version) and transport_version != body_version ->
         {:error,
          header_mismatch("Header mismatch: MCP-Protocol-Version does not match request metadata")}
+
+      body_version != @modern_protocol ->
+        {:error, unsupported_protocol(body_version)}
 
       not is_map(capabilities) ->
         {:error,

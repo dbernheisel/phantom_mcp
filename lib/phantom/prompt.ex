@@ -190,6 +190,17 @@ defmodule Phantom.Prompt do
   end
 
   def response(%{messages: _} = response, _prompt), do: response
+  def response(%{resultType: "input_required"} = response, _prompt), do: response
+
+  @doc """
+  Prompt response indicating the server needs more input from the client
+  before it can return the prompt (MCP `2026-07-28` stateless-core flow).
+
+  Takes the same options as `Phantom.Tool.input_required/1`. Responses to the
+  `:input_requests` arrive in the retried request's `inputResponses`, keyed
+  the same way.
+  """
+  defdelegate input_required(opts), to: Phantom.Tool
 
   @doc """
   Construct a prompt response with the provided messages for the given prompt

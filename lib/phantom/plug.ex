@@ -124,6 +124,9 @@ defmodule Phantom.Plug do
 
   @behaviour Plug
 
+  # JSON-RPC errors that MCP 2026-07-28 sends with an HTTP error status.
+  @error_http_statuses %{-32021 => 400}
+
   import Plug.Conn
 
   alias Phantom.Cache
@@ -280,7 +283,7 @@ defmodule Phantom.Plug do
   defp validate_protocol_request(%Plug.Conn{halted: true} = conn), do: conn
 
   defp validate_protocol_request(%Plug.Conn{method: "POST"} = conn) do
-    version = get_req_header(conn, "mcp-protocol-version") |> List.first()
+    version = mcp_header(conn, "mcp-protocol-version")
 
     cond do
       not conn.private.phantom.modern ->
@@ -425,7 +428,7 @@ defmodule Phantom.Plug do
         |> put_resp_header("cache-control", "no-cache")
         |> put_resp_content_type("text/event-stream")
         |> put_resp_header("x-accel-buffering", "no")
-        |> send_chunked(200)
+        |> start_stream()
         |> stream_loop(opts)
 
       {:error, error, id} ->
@@ -495,9 +498,9 @@ defmodule Phantom.Plug do
 
   defp do_validate_routing_headers(conn, %{"method" => body_method} = params) do
     id = params["id"]
-    header_method = get_req_header(conn, "mcp-method") |> List.first()
+    header_method = mcp_header(conn, "mcp-method")
     body_name = name_from_params(body_method, Map.get(params, "params"))
-    header_name = get_req_header(conn, "mcp-name") |> List.first() |> decode_header_value()
+    header_name = mcp_header(conn, "mcp-name") |> decode_header_value()
     needs_name? = body_method in ["tools/call", "prompts/get", "resources/read"]
 
     cond do
@@ -553,7 +556,7 @@ defmodule Phantom.Plug do
 
         value ->
           expected = primitive_header_value(value)
-          actual = get_req_header(conn, "mcp-param-#{String.downcase(header)}") |> List.first()
+          actual = mcp_header(conn, "mcp-param-#{String.downcase(header)}")
 
           with expected when is_binary(expected) <- expected,
                actual when is_binary(actual) <- actual,
@@ -620,20 +623,31 @@ defmodule Phantom.Plug do
 
   defp matching_header_value?(decoded, _value, expected, _type), do: decoded == expected
 
-  defp decode_header_value("=?base64?" <> encoded) do
-    with true <- String.ends_with?(encoded, "?="),
-         encoded <- String.trim_trailing(encoded, "?="),
-         {:ok, decoded} <- Base.decode64(encoded) do
-      decoded
+  # Field values exclude the optional whitespace around them (RFC 9110 §5.5).
+  defp mcp_header(conn, name) do
+    case get_req_header(conn, name) do
+      [value | _] -> String.replace(value, ~r/\A[ \t]+|[ \t]+\z/, "")
+      [] -> nil
+    end
+  end
+
+  # A value is Base64 only with both the `=?base64?` prefix and the `?=`
+  # suffix; anything else is literal.
+  defp decode_header_value("=?base64?" <> rest = value) do
+    if String.ends_with?(rest, "?=") do
+      case rest |> String.replace_suffix("?=", "") |> Base.decode64() do
+        {:ok, decoded} -> decoded
+        :error -> :invalid_base64_header
+      end
     else
-      _ -> :invalid_base64_header
+      value
     end
   end
 
   defp decode_header_value(value), do: value
 
   defp modern_request?(%Plug.Conn{} = conn) do
-    header_version = get_req_header(conn, "mcp-protocol-version") |> List.first()
+    header_version = mcp_header(conn, "mcp-protocol-version")
     body_version = body_protocol_version(conn.body_params)
 
     "2026-07-28" in [header_version, body_version] or stateless_body?(conn.body_params)
@@ -652,7 +666,7 @@ defmodule Phantom.Plug do
   defp body_protocol_version(_), do: nil
 
   defp maybe_put_session_header(conn, params, session_id) do
-    header_version = get_req_header(conn, "mcp-protocol-version") |> List.first()
+    header_version = mcp_header(conn, "mcp-protocol-version")
     meta_version = body_protocol_version(params)
 
     if "2026-07-28" in [header_version, meta_version],
@@ -869,6 +883,28 @@ defmodule Phantom.Plug do
     |> put_resp_header("access-control-max-age", "86400")
   end
 
+  # MCP 2026-07-28 maps some JSON-RPC errors to an HTTP status, so a modern
+  # POST sends its status with the first message instead of up front.
+  defp start_stream(%Plug.Conn{private: %{phantom: %{modern: true}}} = conn), do: conn
+  defp start_stream(conn), do: send_chunked(conn, 200)
+
+  defp stream_fun(%{conn: %{halted: false, state: :unset} = conn} = state, id, event, payload) do
+    case payload do
+      %{error: %{code: code}} when is_map_key(@error_http_statuses, code) ->
+        conn =
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(Map.fetch!(@error_http_statuses, code), JSON.encode!(payload))
+
+        put_in(state.conn, conn)
+
+      _ ->
+        stream_fun(put_in(state.conn, send_chunked(conn, 200)), id, event, payload)
+    end
+  end
+
+  defp stream_fun(%{conn: %{state: :sent}} = state, _id, _event, _payload), do: state
+
   defp stream_fun(%{conn: %{halted: false} = conn} = state, id, event, payload) do
     id = if Session.stateless?(state.session), do: nil, else: id
     conn = send_sse_event(conn, id, event, payload)
@@ -904,9 +940,9 @@ defmodule Phantom.Plug do
         stream_fun: do_stream_fun(&stream_fun/4, opts[:listener])
       )
     catch
-      :exit, :normal -> conn
-      :exit, :shutdown -> conn
-      :exit, {:shutdown, _} -> conn
+      :exit, :normal -> final_conn(conn)
+      :exit, :shutdown -> final_conn(conn)
+      :exit, {:shutdown, _} -> final_conn(conn)
     after
       untrack(opts)
 
@@ -916,6 +952,14 @@ defmodule Phantom.Plug do
       clear_inbox()
       send(self(), {:plug_conn, :sent})
       disconnect(conn)
+    end
+  end
+
+  defp final_conn(conn) do
+    receive do
+      {:phantom_final_conn, final} -> final
+    after
+      0 -> conn
     end
   end
 

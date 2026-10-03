@@ -1096,6 +1096,10 @@ defmodule Phantom.Session do
       Process.exit(pid, :shutdown)
     end)
 
+    # The HTTP transport runs this loop in its own process and returns the
+    # conn as it was last sent.
+    if conn = Map.get(state, :conn), do: send(self(), {:phantom_final_conn, conn})
+
     :ok
   end
 

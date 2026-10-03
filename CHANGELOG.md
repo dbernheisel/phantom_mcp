@@ -7,6 +7,17 @@
   default.
 - New: `Phantom.Tracker.notify_resources_updated/1` notifies a batch of
   updated resources with one authorization call per subscribed session.
+- New: `Phantom.Prompt.input_required/1`. Prompt handlers can return an
+  `input_required` result under MCP 2026-07-28.
+- `Phantom.Tracker` broadcasts to other nodes every second by default
+  (`broadcast_period`, previously Phoenix.Tracker's 1.5s).
+- MCP 2026-07-28 fixes found by the conformance suite:
+  - -32021 errors name `requiredCapabilities` as a ClientCapabilities object
+    and are sent with HTTP status 400.
+  - A `MCP-Protocol-Version` header that disagrees with `_meta` is a -32020
+    header mismatch, checked before the -32022 unsupported version.
+  - Whitespace around `Mcp-*` header values is ignored, and a value is only
+    decoded as Base64 when it has both the `=?base64?` prefix and `?=` suffix.
 - Initial support for MCP 2026-07-28 stateless core. `Phantom.Session.elicit/3`
   uses true stateless re-entry: the handler returns
   `{:noreply, Session.elicit(session, elicit, state: %{...})}`, Phantom

@@ -203,6 +203,8 @@ defmodule Test.MCP.Router do
   prompt :async_resource_prompt, AsyncModule,
     description: "A resource prompt that has an async read"
 
+  prompt :input_required_prompt, description: "A prompt that asks the client for context"
+
   prompt :text_prompt,
     description: "A text prompt",
     completion_function: :text_prompt_complete,
@@ -445,6 +447,31 @@ defmodule Test.MCP.Router do
        has_more: false,
        total: 2
      }, session}
+  end
+
+  def input_required_prompt(_params, %Session{request: request} = session) do
+    case request.params["inputResponses"] do
+      %{"context" => %{"content" => %{"context" => context}}} ->
+        {:reply, Prompt.response(user: Prompt.text("Context: #{context}")), session}
+
+      _ ->
+        {:reply,
+         Prompt.input_required(
+           input_requests: %{
+             "context" => %{
+               method: "elicitation/create",
+               params: %{
+                 message: "What context?",
+                 requestedSchema: %{
+                   type: "object",
+                   properties: %{context: %{type: "string"}},
+                   required: ["context"]
+                 }
+               }
+             }
+           }
+         ), session}
+    end
   end
 
   def text_prompt(params, session) do

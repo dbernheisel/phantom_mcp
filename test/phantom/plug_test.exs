@@ -1040,6 +1040,77 @@ defmodule Phantom.PlugTest do
       assert_receive {:conn, %{status: 200}}
     end
 
+    test "prompts can return input_required and resume with inputResponses" do
+      capabilities = %{"elicitation" => %{}}
+
+      meta = %{
+        "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities" => capabilities
+      }
+
+      headers = [{"mcp-method", "prompts/get"}, {"mcp-name", "input_required_prompt"}]
+
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 31,
+          method: "prompts/get",
+          params: %{name: "input_required_prompt", _meta: meta}
+        },
+        headers
+      )
+
+      assert_connected(_conn)
+
+      assert_receive {:response, 31, "message",
+                      %{
+                        result: %{
+                          resultType: "input_required",
+                          inputRequests: %{"context" => %{method: "elicitation/create"}}
+                        }
+                      }}
+
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 32,
+          method: "prompts/get",
+          params: %{
+            name: "input_required_prompt",
+            _meta: meta,
+            inputResponses: %{
+              "context" => %{"action" => "accept", "content" => %{"context" => "billing"}}
+            }
+          }
+        },
+        headers
+      )
+
+      assert_connected(_conn)
+
+      assert_receive {:response, 32, "message",
+                      %{result: %{messages: [%{content: %{text: "Context: billing"}}]}}}
+    end
+
+    test "a missing client capability is an HTTP 400 error" do
+      post_stateless(
+        %{jsonrpc: "2.0", id: 30, method: "tools/call", params: %{name: "resume_tool"}},
+        [{"mcp-method", "tools/call"}, {"mcp-name", "resume_tool"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert ["application/json" <> _] = get_resp_header(conn, "content-type")
+
+      assert %{
+               "id" => 30,
+               "error" => %{
+                 "code" => -32021,
+                 "data" => %{"requiredCapabilities" => %{"elicitation" => %{}}}
+               }
+             } = JSON.decode!(conn.resp_body)
+    end
+
     test "subscriptions/listen rejects an invalid resource subscription filter" do
       post_stateless(
         %{
@@ -1241,6 +1312,42 @@ defmodule Phantom.PlugTest do
 
       assert_connected(_conn)
       assert_receive {:response, 16, "message", %{result: %{content: [%{text: "encoded"}]}}}
+    end
+
+    test "ignores whitespace around routing header values" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 17,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{"message" => "padded"}}
+        },
+        [{"mcp-method", " tools/call\t"}, {"mcp-name", "  echo_tool  "}]
+      )
+
+      assert_connected(_conn)
+      assert_receive {:response, 17, "message", %{result: %{content: [%{text: "padded"}]}}}
+    end
+
+    test "compares a header value without the Base64 suffix literally" do
+      tenant = "=?base64?SGVsbG8="
+
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 18,
+          method: "tools/call",
+          params: %{"name" => "header_echo_tool", "arguments" => %{"tenant" => tenant}}
+        },
+        [
+          {"mcp-method", "tools/call"},
+          {"mcp-name", "header_echo_tool"},
+          {"mcp-param-tenant", tenant}
+        ]
+      )
+
+      assert_connected(_conn)
+      assert_receive {:response, 18, "message", %{result: %{content: [_ | _]}}}
     end
 
     test "validates declared Mcp-Param headers against nested tool arguments" do
