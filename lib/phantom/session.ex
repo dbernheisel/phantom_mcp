@@ -14,11 +14,6 @@ defmodule Phantom.Session do
     :allowed_resource_templates,
     :allowed_tools,
     :state,
-    # `:elicit` is reserved. Adapters (`Phantom.Stdio`, `Phantom.Test`) still
-    # populate it, but the dispatcher always spawns the handler in a Task, so
-    # the in-process fast path that called this closure is unreachable in
-    # production. Kept for adapters that may bypass `run_handler/5`.
-    :elicit,
     :id,
     :last_event_id,
     :pending_elicit,
@@ -50,10 +45,6 @@ defmodule Phantom.Session do
           allowed_resource_templates: [String.t()],
           allowed_tools: [String.t()],
           state: term() | nil,
-          elicit:
-            (Phantom.Elicit.t(), timeout :: pos_integer() ->
-               {:ok, map()} | :error | :timeout)
-            | nil,
           assigns: map(),
           close_after_complete: boolean(),
           id: binary(),
@@ -232,13 +223,7 @@ defmodule Phantom.Session do
   defp do_elicit(session, elicitation, opts) do
     timeout = Keyword.get(opts, :timeout, @elicitation_timeout)
 
-    capabilities =
-      case session.client_capabilities[:elicitation] do
-        false when is_function(session.elicit) -> %{}
-        other -> other
-      end
-
-    with_elicitation_support(capabilities, elicitation, fn ->
+    with_elicitation_support(session.client_capabilities[:elicitation], elicitation, fn ->
       # Handlers always run in a Task spawned by `Phantom.Router.run_handler/5`,
       # so the elicitation is initiated cross-process from the stream owner.
       # The session GenServer at `session.pid` owns the transport and is the

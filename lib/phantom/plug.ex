@@ -731,7 +731,6 @@ defmodule Phantom.Plug do
     session =
       state.conn.private.phantom.session
       |> hydrate_from_meta(request)
-      |> Map.put(:elicit, elicit_fun(state.conn, state.stream_fun, request))
 
     put_in(state.session, session)
   end
@@ -1166,32 +1165,6 @@ defmodule Phantom.Plug do
       end)
 
     "#{method} #{info}"
-  end
-
-  defp elicit_fun(%Plug.Conn{} = conn, stream_fun, tool_call_request) do
-    session_id = conn.private.phantom.session.id
-    tool_call_id = tool_call_request.id
-
-    fn elicitation, timeout ->
-      {request, ref} = Phantom.Elicit.prepare_request(session_id, tool_call_id, elicitation)
-
-      state = %{conn: conn}
-      stream_fun.(state, request.id, "message", Request.to_json(request))
-
-      await_elicitation_response(request.id, ref, timeout)
-    end
-  end
-
-  defp await_elicitation_response(request_id, ref, timeout) do
-    receive do
-      {:phantom_elicitation_response, ^ref, response} ->
-        Phantom.Tracker.untrack_request(request_id)
-        {:ok, response}
-    after
-      timeout ->
-        Phantom.Tracker.untrack_request(request_id)
-        :timeout
-    end
   end
 
   # Methods that dispatch to user-defined handlers and may have

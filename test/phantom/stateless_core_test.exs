@@ -389,15 +389,14 @@ defmodule Phantom.StatelessCoreTest do
 
     test "legacy: no opts blocks via inline path (preserves existing behavior)" do
       request = build_request(%{"protocolVersion" => "2025-11-25"})
-      # No transport, no elicit closure, no client capability — falls through
-      # to :not_supported. Critically, this is NOT a session struct, so
+      # No transport and no client capability — falls through to
+      # :not_supported. Critically, this is NOT a session struct, so
       # existing `{:ok, _} = Session.elicit(session, elicit)` callers keep
       # their original semantics.
       session = %{
         build_session()
         | request: request,
           pid: nil,
-          elicit: nil,
           client_capabilities: %{roots: false, sampling: false, elicitation: false, ui: false}
       }
 

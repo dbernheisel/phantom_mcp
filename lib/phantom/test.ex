@@ -99,8 +99,8 @@ defmodule Phantom.Test do
   @doc """
   Build a `Phantom.Session` for use with the blocking dispatchers below.
 
-  The session's `:pid` and `:elicit` are wired during dispatch — you do
-  not need to set them. Options:
+  The session's `:pid` is wired during dispatch — you do not need to set
+  it. Options:
 
     * `:id` - session id (default: a fresh UUIDv7)
     * `:assigns` - session assigns (default: `%{}`)
@@ -352,7 +352,6 @@ defmodule Phantom.Test do
     session = %{
       session
       | pid: self(),
-        elicit: build_elicit_fun(),
         request: request
     }
 
@@ -424,10 +423,6 @@ defmodule Phantom.Test do
           Map.merge(property, %{name: to_string(name), required: to_string(name) in required})
         end
     }
-  end
-
-  defp build_elicit_fun do
-    fn elicitation, _timeout -> invoke_elicit_responder(elicitation) end
   end
 
   defp handle_dispatch_result({:reply, payload, _session}, _request_id, _timeout), do: payload
