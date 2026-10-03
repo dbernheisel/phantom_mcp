@@ -355,6 +355,15 @@ defmodule Phantom.Tracker do
 
   @doc "Subscribe the process to resource notifications from the PubSub on topic #{inspect(@resources)}"
   if @available do
+    def subscribe_resource({uri, params, %Phantom.ResourceTemplate{name: template_name}}) do
+      Phoenix.Tracker.track(__MODULE__, self(), @resources, uri, %{
+        pid: self(),
+        resource: {uri, params, template_name}
+      })
+    rescue
+      _ -> {:error, :tracker_not_in_supervision_tree}
+    end
+
     def subscribe_resource(uri) do
       Phoenix.Tracker.track(__MODULE__, self(), @resources, uri, %{pid: self()})
     rescue
@@ -375,26 +384,68 @@ defmodule Phantom.Tracker do
     def unsubscribe_resource(_uri), do: {:error, :not_available}
   end
 
-  @doc "Notify any listening MCP sessions that the resource has updated"
-  if @available do
-    def notify_resource_updated(uri) do
-      tracked =
-        try do
-          Phoenix.Tracker.get_by_key(__MODULE__, @resources, uri)
-        rescue
-          _ -> []
-        end
+  @doc """
+  Notify listening MCP sessions that a batch of resources has updated.
 
-      {:ok,
-       Enum.count(tracked, fn {_key, %{pid: pid}} ->
-         GenServer.cast(pid, {:resource_updated, uri})
-       end)}
+  Prefer this function for write batches. Collect the changed resource URIs in application code
+  and call it once after the write succeeds. Phantom deduplicates the URIs, groups them by
+  subscribed session, and performs one authorization callback per session before emitting the
+  protocol's individual `notifications/resources/updated` messages.
+
+  This function intentionally does not collect calls over a hidden time window. Keeping collection
+  in application code preserves transaction boundaries and gives the authorization callback the
+  largest useful batch.
+
+  Returns the number of subscribed session processes that received the batch for authorization.
+  This is not the number of resource notifications ultimately authorized and emitted.
+  """
+  @spec notify_resources_updated([String.t()]) ::
+          {:ok, non_neg_integer()} | {:error, :tracker_not_in_supervision_tree}
+  if @available do
+    def notify_resources_updated(uris) when is_list(uris) do
+      listeners =
+        uris
+        |> Enum.filter(&is_binary/1)
+        |> Enum.uniq()
+        |> Enum.reduce(%{}, fn uri, listeners ->
+          tracked =
+            try do
+              Phoenix.Tracker.get_by_key(__MODULE__, @resources, uri)
+            rescue
+              _ -> []
+            end
+
+          Enum.reduce(tracked, listeners, fn {_key, %{pid: pid} = meta}, listeners ->
+            resource = Map.get(meta, :resource, uri)
+
+            Map.update(listeners, pid, [resource], &[resource | &1])
+          end)
+        end)
+
+      Enum.each(listeners, fn {pid, resources} ->
+        resources =
+          resources
+          |> Enum.reverse()
+          |> Enum.uniq_by(fn
+            {uri, _params, _template} -> uri
+            uri -> uri
+          end)
+
+        GenServer.cast(pid, {:resources_updated, resources})
+      end)
+
+      {:ok, map_size(listeners)}
     rescue
       _ -> {:error, :tracker_not_in_supervision_tree}
     end
   else
-    def notify_resource_updated(_), do: {:ok, 0}
+    def notify_resources_updated(_uris), do: {:ok, 0}
   end
+
+  @doc "Convenience wrapper for notifying sessions about one updated resource"
+  @spec notify_resource_updated(String.t()) ::
+          {:ok, non_neg_integer()} | {:error, :tracker_not_in_supervision_tree}
+  def notify_resource_updated(uri), do: notify_resources_updated([uri])
 
   @doc "Notify any listening MCP sessions that the list of tools has updated"
   if @available do

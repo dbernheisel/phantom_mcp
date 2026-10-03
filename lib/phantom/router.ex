@@ -25,6 +25,10 @@ defmodule Phantom.Router do
   alias Phantom.Tool
   alias Phantom.Tool.JSONSchema
 
+  require Logger
+
+  @type resolved_resource :: {String.t(), map(), ResourceTemplate.t()}
+
   @doc """
   When the connection is opening, this callback will be invoked.
   You will receive the session and the adapter's context, for example, when using `Phantom.Plug`, you'll get the
@@ -117,6 +121,24 @@ defmodule Phantom.Router do
               | {:noreply, Session.t()}
               | {:error, any(), Session.t()}
 
+  @doc """
+  Authorize subscriptions and update notifications for resolved resources.
+
+  Each resource is represented as `{uri, path_params, resource_template}`. Return either the
+  filtered resource tuples or their URI strings. Returning `nil` or an empty list rejects all
+  resources. Any unresolved URI is rejected before this callback is invoked.
+
+  Phantom invokes this callback with a one-element list when a client requests
+  `resources/subscribe`. It also invokes it once with all resources in an update batch before
+  notifying a subscribed session. Applications performing bulk writes should collect their
+  changed resource URIs and call `Phantom.Tracker.notify_resources_updated/1` once so this
+  callback can authorize them with one bulk query.
+
+  The default implementation authorizes every resolved resource.
+  """
+  @callback authorize_resource_subscriptions([resolved_resource()], Session.t()) ::
+              [resolved_resource() | String.t()] | nil
+
   @supported_protocol_versions ~w[2024-11-05 2025-03-26 2025-06-18 2025-11-25]
 
   @dialyzer {:nowarn_function, default_vsn: 1}
@@ -178,6 +200,7 @@ defmodule Phantom.Router do
 
       def connect(session, _auth_info), do: {:ok, session}
       def disconnect(session), do: {:ok, session}
+      def authorize_resource_subscriptions(resources, _session), do: resources
       def terminate(session), do: {:error, nil}
 
       def instructions(_session), do: {:ok, @instructions}
@@ -431,16 +454,24 @@ defmodule Phantom.Router do
         Phantom.Router.list_resource_templates(__MODULE__, session, params["cursor"])
       end
 
-      def dispatch_method("resources/subscribe", %{"uri" => uri} = _params, request, session) do
+      def dispatch_method("resources/subscribe", %{"uri" => uri} = _params, _request, session) do
         if is_nil(session.pubsub) do
           {:error, Request.not_found(), session}
         else
-          case Session.subscribe_to_resource(session, uri) do
-            :ok ->
-              {:reply, %{}, session}
+          resolved = Phantom.Router.resolve_resources(__MODULE__, session, [uri])
+
+          authorized =
+            Phantom.Router.authorize_resource_subscriptions(__MODULE__, resolved, session)
+
+          case {resolved, authorized} do
+            {[{^uri, _, _}], [{^uri, _, _} = resource]} ->
+              case Session.subscribe_to_resource(session, resource) do
+                :ok -> {:reply, %{}, session}
+                _ -> {:error, Request.not_found("SSE stream not open"), session}
+              end
 
             _ ->
-              {:error, Request.not_found("SSE stream not open"), session}
+              {:error, Request.resource_not_found(%{uri: uri}), session}
           end
         end
       end
@@ -528,6 +559,7 @@ defmodule Phantom.Router do
 
       @doc false
       defoverridable list_resources: 2,
+                     authorize_resource_subscriptions: 2,
                      server_info: 1,
                      disconnect: 1,
                      connect: 2,
@@ -1040,6 +1072,121 @@ defmodule Phantom.Router do
     else
       {:error, :router_not_found}
     end
+  end
+
+  @doc false
+  @spec resolve_resources(module(), Session.t(), [String.t()]) :: [resolved_resource()]
+  def resolve_resources(router, session, uris) when is_list(uris) do
+    uris
+    |> Enum.uniq()
+    |> Enum.reduce([], fn uri, resolved ->
+      case resolve_resource(router, session, uri) do
+        {:ok, {^uri, _params, _template} = resource} ->
+          [resource | resolved]
+
+        :error ->
+          resolved
+      end
+    end)
+    |> Enum.reverse()
+    |> available_resolved_resources(router, session)
+  end
+
+  @doc false
+  @spec available_resolved_resources([resolved_resource()], module(), Session.t()) ::
+          [resolved_resource()]
+  def available_resolved_resources(resources, router, session) do
+    available_templates = Cache.list(session, router, :resource_templates)
+    Enum.filter(resources, fn {_uri, _params, template} -> template in available_templates end)
+  end
+
+  @doc false
+  @spec authorize_resource_subscriptions(module(), [resolved_resource()], Session.t()) ::
+          [resolved_resource()]
+  def authorize_resource_subscriptions(_router, [], _session), do: []
+
+  def authorize_resource_subscriptions(router, resources, session) do
+    allowed = router.authorize_resource_subscriptions(resources, session)
+    normalize_authorized_resources(resources, allowed)
+  rescue
+    exception ->
+      Logger.error(
+        "Resource subscription authorization failed closed in #{inspect(router)}: " <>
+          Exception.message(exception)
+      )
+
+      []
+  catch
+    kind, reason ->
+      Logger.error(
+        "Resource subscription authorization failed closed in #{inspect(router)}: " <>
+          Exception.format_banner(kind, reason)
+      )
+
+      []
+  end
+
+  defp resolve_resource(router, session, uri) when is_binary(uri) do
+    with {:ok, %{path: path, scheme: scheme}} when is_binary(path) and is_binary(scheme) <-
+           URI.new(uri),
+         resource_router when not is_nil(resource_router) <-
+           get_resource_router(router, session, scheme) do
+      path_info =
+        for segment <- :binary.split(path, "/", [:global]),
+            segment != "",
+            do: URI.decode(segment)
+
+      fake_conn = %Plug.Conn{
+        assigns: %{resolve_resource: true, session: session, uri: uri, result: nil},
+        method: "GET",
+        request_path: path,
+        path_info: path_info
+      }
+
+      case resource_router.call(fake_conn, resource_router.init([])).assigns.result do
+        {:resolved_resource, params, template} -> {:ok, {uri, params, template}}
+        _ -> :error
+      end
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp resolve_resource(_router, _session, _uri), do: :error
+
+  defp normalize_authorized_resources(_resources, nil), do: []
+
+  defp normalize_authorized_resources(resources, allowed) when is_list(allowed) do
+    input_by_uri = Map.new(resources, &{elem(&1, 0), &1})
+
+    with {:ok, allowed_uris} <- authorized_uris(allowed, input_by_uri) do
+      Enum.filter(resources, &(elem(&1, 0) in allowed_uris))
+    else
+      :error -> []
+    end
+  end
+
+  defp normalize_authorized_resources(_resources, _invalid), do: []
+
+  defp authorized_uris(allowed, input_by_uri) do
+    Enum.reduce_while(allowed, {:ok, MapSet.new()}, fn
+      uri, {:ok, uris} when is_binary(uri) ->
+        if Map.has_key?(input_by_uri, uri),
+          do: {:cont, {:ok, MapSet.put(uris, uri)}},
+          else: {:halt, :error}
+
+      {uri, _params, %ResourceTemplate{}} = resource, {:ok, uris} when is_binary(uri) ->
+        if Map.get(input_by_uri, uri) == resource do
+          {:cont, {:ok, MapSet.put(uris, uri)}}
+        else
+          {:halt, :error}
+        end
+
+      _, _acc ->
+        {:halt, :error}
+    end)
   end
 
   @doc false

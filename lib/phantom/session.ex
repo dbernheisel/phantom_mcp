@@ -5,6 +5,7 @@ defmodule Phantom.Session do
   even if stateless.
   """
 
+  alias Phantom.Cache
   alias Phantom.Request
 
   @enforce_keys [:id]
@@ -199,10 +200,18 @@ defmodule Phantom.Session do
 
   This is used by the MCP Router when the client requests to subscribe to the provided resource.
   """
-  @spec subscribe_to_resource(t(), string_uri :: String.t()) :: :ok | :error
-  def subscribe_to_resource(%__MODULE__{pubsub: nil}, _uri), do: :error
+  @spec subscribe_to_resource(t(), Phantom.Router.resolved_resource() | String.t()) ::
+          :ok | :error
+  def subscribe_to_resource(%__MODULE__{pubsub: nil}, _resource), do: :error
 
-  def subscribe_to_resource(session, uri) do
+  def subscribe_to_resource(session, {_uri, _params, _template} = resource) do
+    case Phantom.Tracker.get_session(session) do
+      nil -> :error
+      pid -> GenServer.cast(pid, {:subscribe_resource, resource})
+    end
+  end
+
+  def subscribe_to_resource(session, uri) when is_binary(uri) do
     case Phantom.Tracker.get_session(session) do
       nil -> :error
       pid -> GenServer.cast(pid, {:subscribe_resource, uri})
@@ -432,9 +441,9 @@ defmodule Phantom.Session do
     maybe_finish(state)
   end
 
-  def handle_cast({:subscribe_resource, uri}, state) do
+  def handle_cast({:subscribe_resource, resource}, state) do
     cancel_inactivity(state)
-    Phantom.Tracker.subscribe_resource(uri)
+    Phantom.Tracker.subscribe_resource(resource)
     {:noreply, state |> set_activity() |> schedule_inactivity()}
   end
 
@@ -444,11 +453,67 @@ defmodule Phantom.Session do
     {:noreply, state |> set_activity() |> schedule_inactivity()}
   end
 
-  def handle_cast({:resource_updated, uri}, state) do
-    cancel_inactivity(state)
-    state = state.stream_fun.(state, nil, "message", Request.resource_updated(%{uri: uri}))
-    {:noreply, state |> set_activity() |> schedule_inactivity()}
+  def handle_cast({:resources_updated, updates}, state) do
+    templates_by_name =
+      state.session
+      |> Cache.list(state.session.router, :resource_templates)
+      |> Map.new(&{&1.name, &1})
+
+    {resolved, uris} =
+      Enum.reduce(updates, {[], []}, fn
+        {uri, params, %Phantom.ResourceTemplate{} = template}, {resources, uris}
+        when is_binary(uri) and is_map(params) ->
+          {[{uri, params, template} | resources], uris}
+
+        {uri, params, template_name}, {resources, uris}
+        when is_binary(uri) and is_map(params) and is_binary(template_name) ->
+          case Map.fetch(templates_by_name, template_name) do
+            {:ok, template} -> {[{uri, params, template} | resources], uris}
+            :error -> {resources, uris}
+          end
+
+        uri, {resources, uris} when is_binary(uri) ->
+          {resources, [uri | uris]}
+
+        _invalid, acc ->
+          acc
+      end)
+
+    resolved =
+      resolved
+      |> Enum.reverse()
+      |> Phantom.Router.available_resolved_resources(state.session.router, state.session)
+
+    resources =
+      (resolved ++
+         Phantom.Router.resolve_resources(state.session.router, state.session, Enum.reverse(uris)))
+      |> Enum.uniq_by(&elem(&1, 0))
+
+    authorized =
+      Phantom.Router.authorize_resource_subscriptions(
+        state.session.router,
+        resources,
+        state.session
+      )
+
+    case authorized do
+      [] ->
+        {:noreply, state}
+
+      resources ->
+        cancel_inactivity(state)
+
+        state =
+          Enum.reduce(resources, state, fn {uri, _params, _template}, state ->
+            state.stream_fun.(state, nil, "message", Request.resource_updated(%{uri: uri}))
+          end)
+
+        {:noreply, state |> set_activity() |> schedule_inactivity()}
+    end
   end
+
+  def handle_cast({:resource_updated, uri}, state),
+    do: handle_cast({:resources_updated, [uri]}, state)
 
   def handle_cast(:tools_updated, state) do
     notify? = state.session.allowed_tools == nil
