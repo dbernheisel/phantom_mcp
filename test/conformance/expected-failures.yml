@@ -23,3 +23,7 @@ server:
   - resources-read-binary
   # Same as above, for `test://template/{id}/data`.
   - resources-templates-read
+  # Same as above, for `test://watched-resource`. Subscriptions are rejected
+  # with "Resource not found" because unresolved URIs fail authorization.
+  - resources-subscribe
+  - resources-unsubscribe
