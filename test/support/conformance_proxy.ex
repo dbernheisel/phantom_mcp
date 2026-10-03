@@ -15,7 +15,8 @@ defmodule Phantom.Test.ConformanceProxy do
 
   import Plug.Conn
 
-  @hop_by_hop ~w[connection content-length host keep-alive transfer-encoding]
+  # `host` is forwarded so the nodes validate the Host the client sent.
+  @hop_by_hop ~w[connection content-length keep-alive transfer-encoding]
 
   @impl Plug
   def init(opts) do

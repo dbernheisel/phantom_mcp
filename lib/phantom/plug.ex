@@ -3,6 +3,7 @@ defmodule Phantom.Plug do
     pubsub: nil,
     origins: ["http://localhost:4000"],
     validate_origin: true,
+    hosts: :all,
     session_timeout: :timer.seconds(30),
     max_request_size: 1_048_576
   ]
@@ -137,6 +138,7 @@ defmodule Phantom.Plug do
           router: module(),
           origins: [String.t()] | :all | mfa(),
           validate_origin: boolean(),
+          hosts: [String.t()] | :all | mfa(),
           session_timeout: pos_integer(),
           max_request_size: pos_integer()
         ]
@@ -148,7 +150,13 @@ defmodule Phantom.Plug do
 
   - `:router` - The MCP router module (required)
   - `:origins` - List of allowed origins or `:all` (default: localhost)
-  - `:validate_origin` - Whether to validate Origin header (default: true)
+  - `:validate_origin` - Whether to validate the Origin header (default: true). Requests
+    without one are allowed: only browsers send it, and only browsers can be used for DNS
+    rebinding.
+  - `:hosts` - List of allowed hosts (from the `Host` header, without the port), `:all`, or an
+    MFA called with the host prepended to its arguments (default: `:all`). A server bound to
+    localhost should set `hosts: ["localhost", "127.0.0.1", "[::1]"]` to reject DNS
+    rebinding requests that a browser sends with an attacker's `Host`.
   - `:session_timeout` - Session timeout in milliseconds (default: 30s)
   - `:max_request_size` - Maximum request size in bytes (default: 1MB)
   """
@@ -254,6 +262,11 @@ defmodule Phantom.Plug do
 
   defp validate_request(conn, opts) do
     cond do
+      not valid_host?(conn.host, opts[:hosts]) ->
+        conn
+        |> put_status(403)
+        |> request_error(Request.closed("Host not allowed"))
+
       opts[:validate_origin] && not valid_origin?(get_origin(conn), opts) ->
         conn
         |> put_status(403)
@@ -1027,7 +1040,7 @@ defmodule Phantom.Plug do
 
   defp valid_origin?(_origin, %{validate_origin: false}), do: true
   defp valid_origin?(_origin, %{origins: :all}), do: true
-  defp valid_origin?(nil, _opts), do: false
+  defp valid_origin?(nil, _opts), do: true
 
   defp valid_origin?(origin, opts) do
     case opts[:origins] do
@@ -1037,6 +1050,16 @@ defmodule Phantom.Plug do
       _ -> false
     end
   end
+
+  defp valid_host?(_host, :all), do: true
+  defp valid_host?(host, {m, f, a}), do: apply(m, f, [host | a])
+
+  defp valid_host?(host, hosts) when is_list(hosts),
+    do: normalize_host(host) in Enum.map(hosts, &normalize_host/1)
+
+  # Hosts are case-insensitive, and adapters differ on keeping IPv6 brackets.
+  defp normalize_host(host),
+    do: host |> String.downcase() |> String.trim_leading("[") |> String.trim_trailing("]")
 
   defp get_origin(conn) do
     get_req_header(conn, "origin") |> List.first()

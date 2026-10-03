@@ -60,5 +60,5 @@ npx conformance server --url http://127.0.0.1:4110/mcp --scenario ping    # dist
 `Conformance.MCP.Router` mirrors the suite's reference
 ["everything" server](https://github.com/modelcontextprotocol/conformance/blob/main/examples/servers/typescript/everything-server.ts)
 using Phantom's public API. Where Phantom cannot express a fixture, the
-closest equivalent is used and the gap is noted in a comment. Origin
-validation is off because the conformance client sends no `Origin` header.
+closest equivalent is used and the gap is noted in a comment. The nodes only
+accept localhost `Host` and `Origin` headers, like a local server should.

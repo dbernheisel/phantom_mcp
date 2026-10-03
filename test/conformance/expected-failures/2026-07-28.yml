@@ -1,7 +1,4 @@
 # Scenarios the 2026-07-28 requirement set scores that Phantom is known to
 # fail, on every topology. The run fails when a scenario or check outside this
 # list fails, or when a listed one passes; remove the entry once it is fixed.
-server:
-  # The suite runs with Origin validation off because the client sends no
-  # Origin header, which Phantom rejects when validation is on.
-  - dns-rebinding-protection:localhost-host-rebinding-rejected
+server: []

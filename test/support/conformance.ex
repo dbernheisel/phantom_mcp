@@ -79,7 +79,7 @@ defmodule Phantom.Test.Conformance do
           do: line
 
     path = Path.join(System.tmp_dir!(), "phantom-conformance-#{topology}-#{revision}.yml")
-    File.write!(path, ["server:\n" | entries])
+    File.write!(path, if(entries == [], do: "server: []\n", else: ["server:\n" | entries]))
     path
   end
 
@@ -89,7 +89,13 @@ defmodule Phantom.Test.Conformance do
     plug_opts = [
       router: Conformance.MCP.Router,
       pubsub: Phantom.Test.PubSub,
-      validate_origin: false
+      hosts: ["localhost", "127.0.0.1", "[::1]"],
+      origins:
+        for(
+          host <- ["localhost", "127.0.0.1", "[::1]"],
+          {_node, port} <- [{nil, @proxy_port} | @nodes],
+          do: "http://#{host}:#{port}"
+        )
     ]
 
     {:ok, _} =

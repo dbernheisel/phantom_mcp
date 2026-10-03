@@ -169,6 +169,59 @@ defmodule Phantom.PlugTest do
       assert_receive {:conn, conn}
       assert conn.status == 200
     end
+
+    test "rejects a disallowed origin" do
+      request_ping(
+        origins: ["http://localhost:4000"],
+        validate_origin: true,
+        before_call: &put_req_header(&1, "origin", "http://evil.example.com")
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 403
+    end
+
+    # Only browsers send Origin, and DNS rebinding needs a browser.
+    test "accepts a request without an Origin header" do
+      request_ping(origins: ["http://localhost:4000"], validate_origin: true)
+
+      assert_receive {:conn, conn}
+      assert conn.status == 200
+    end
+  end
+
+  describe "host validation" do
+    @local_hosts ["localhost", "127.0.0.1", "[::1]"]
+
+    test "rejects a disallowed Host" do
+      request_ping(
+        hosts: @local_hosts,
+        validate_origin: false,
+        before_call: &%{&1 | host: "evil.example.com"}
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 403
+      assert JSON.decode!(conn.resp_body)["error"]["message"] == "Host not allowed"
+    end
+
+    test "accepts allowed hosts, ignoring case and IPv6 brackets" do
+      for host <- ["localhost", "LOCALHOST", "127.0.0.1", "[::1]", "::1"] do
+        request_ping(
+          hosts: @local_hosts,
+          validate_origin: false,
+          before_call: &%{&1 | host: host}
+        )
+
+        assert_receive {:conn, %{status: 200}}
+      end
+    end
+
+    test "accepts any Host by default" do
+      request_ping(validate_origin: false, before_call: &%{&1 | host: "mcp.example.com"})
+
+      assert_receive {:conn, %{status: 200}}
+    end
   end
 
   describe "content length validation" do

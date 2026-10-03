@@ -73,6 +73,8 @@ defmodule MyAppWeb.Router do
       # origins: :all,
       # Uncomment for remote access from a specified list:
       # origins: ["https://myapp.example"],
+      # Uncomment for a server bound to localhost, to reject DNS rebinding:
+      # hosts: ["localhost", "127.0.0.1", "[::1]"],
       validate_origin: Mix.env() == :prod,
       router: MyApp.MCPRouter
   end

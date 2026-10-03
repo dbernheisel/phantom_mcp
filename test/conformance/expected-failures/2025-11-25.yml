@@ -7,6 +7,7 @@ server:
   # `Phantom.Elicit` has no way to send the deprecated `enum` + `enumNames`
   # form of a titled enum; titled enums use `oneOf`.
   - elicitation-sep1330-enums:elicitation-sep1330-legacy-enumnames
-  # Times out: the client reads the `initialize` response to the end, but
-  # Phantom keeps that SSE stream open as the session stream.
+  # Times out on the valid-Host request: the client reads the `initialize`
+  # response to the end, but Phantom keeps that SSE stream open as the
+  # session stream. Disallowed Host and Origin headers are rejected.
   - dns-rebinding-protection

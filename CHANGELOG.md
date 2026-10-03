@@ -20,6 +20,12 @@
   an empty `{}` event to the session stream.
 - An HTTP `DELETE` closes the session's open streams on every node; it
   previously only untracked streams on the node that received it.
+- New: `Phantom.Plug` `:hosts` option rejects requests whose `Host` header is
+  not allowed (403), protecting servers bound to localhost from DNS
+  rebinding. Defaults to `:all`.
+- Origin validation accepts requests without an `Origin` header. Only
+  browsers send one, so validation previously rejected every non-browser
+  client unless it was turned off.
 - Map-based `input_schema` and `output_schema` reach clients as given, so
   `$schema`, `$defs`, `$ref`, `allOf`, `if`/`then`/`else`,
   `additionalProperties`, and other JSON Schema keywords are kept. They
