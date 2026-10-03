@@ -125,8 +125,15 @@ defmodule Phantom.Plug do
 
   @behaviour Plug
 
-  # JSON-RPC errors that MCP 2026-07-28 sends with an HTTP error status.
-  @error_http_statuses %{-32021 => 400}
+  # HTTP statuses for JSON-RPC errors. A request rejected before dispatch
+  # gets its code's status, or 400. A handler's error only changes the status
+  # of a 2026-07-28 response when its code is listed.
+  @error_http_statuses %{
+    -32601 => 404,
+    -32020 => 400,
+    -32021 => 400,
+    -32022 => 400
+  }
 
   import Plug.Conn
 
@@ -307,20 +314,19 @@ defmodule Phantom.Plug do
         conn
 
       match?(%{"_json" => _}, conn.body_params) ->
-        protocol_error(conn, nil, Request.invalid("Batch requests are not supported"), 400)
+        protocol_error(conn, nil, Request.invalid("Batch requests are not supported"))
 
       not is_map(conn.body_params) ->
-        protocol_error(conn, nil, Request.invalid(), 400)
+        protocol_error(conn, nil, Request.invalid())
 
       is_map_key(conn.body_params, "result") and not is_map_key(conn.body_params, "method") ->
-        protocol_error(conn, conn.body_params["id"], Request.invalid(), 400)
+        protocol_error(conn, conn.body_params["id"], Request.invalid())
 
       is_nil(version) ->
         protocol_error(
           conn,
           conn.body_params["id"],
-          Request.header_mismatch("Missing required header: MCP-Protocol-Version"),
-          400
+          Request.header_mismatch("Missing required header: MCP-Protocol-Version")
         )
 
       true ->
@@ -328,21 +334,20 @@ defmodule Phantom.Plug do
           {:ok, request} ->
             case Request.validate(request, version) do
               :ok -> conn
-              {:error, %{code: -32601} = error} -> protocol_error(conn, request.id, error, 404)
-              {:error, error} -> protocol_error(conn, request.id, error, 400)
+              {:error, error} -> protocol_error(conn, request.id, error)
             end
 
           {:error, error} ->
-            protocol_error(conn, error.id, error.response.error, 400)
+            protocol_error(conn, error.id, error.response.error)
         end
     end
   end
 
   defp validate_protocol_request(conn), do: conn
 
-  defp protocol_error(conn, id, error, status) do
+  defp protocol_error(conn, id, %{code: code} = error) do
     conn
-    |> put_status(status)
+    |> put_status(Map.get(@error_http_statuses, code, 400))
     |> json_error(Request.error(id, error))
   end
 
@@ -422,15 +427,8 @@ defmodule Phantom.Plug do
       |> maybe_put_session_header(params, session.id)
       |> send_resp(202, "")
     else
-      {:error, error, id} ->
-        conn
-        |> put_status(400)
-        |> json_error(Request.error(id, error))
-
-      {:error, _request} ->
-        conn
-        |> put_status(400)
-        |> json_error(Request.error(Request.invalid()))
+      {:error, error, id} -> protocol_error(conn, id, error)
+      {:error, _request} -> protocol_error(conn, nil, Request.invalid())
     end
   end
 
@@ -449,9 +447,7 @@ defmodule Phantom.Plug do
         |> stream_loop(opts)
 
       {:error, error, id} ->
-        conn
-        |> put_status(400)
-        |> json_error(Request.error(id, error))
+        protocol_error(conn, id, error)
     end
   end
 
@@ -479,11 +475,8 @@ defmodule Phantom.Plug do
     conn
   end
 
-  defp dispatch(%Plug.Conn{method: "POST"} = conn, _opts) do
-    conn
-    |> put_status(400)
-    |> json_error(Request.error(Request.invalid()))
-  end
+  defp dispatch(%Plug.Conn{method: "POST"} = conn, _opts),
+    do: protocol_error(conn, nil, Request.invalid())
 
   defp dispatch(conn, _opts) do
     conn
