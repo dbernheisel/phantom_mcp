@@ -427,4 +427,26 @@ defmodule Phantom.RouterTest do
       refute response_body["id"]
     end
   end
+
+  describe "session termination" do
+    defmodule Test.TerminatedSessionRouter do
+      use Phantom.Router, name: "TerminatedSessionTest", vsn: "1.0"
+
+      def connect(%{id: "terminated"}, _conn), do: {:not_found, "Session terminated"}
+      def connect(session, _conn), do: {:ok, session}
+    end
+
+    test "connect callback responds with not found for a terminated session" do
+      Phantom.Cache.register(Test.TerminatedSessionRouter)
+
+      :post
+      |> conn("/mcp", %{jsonrpc: "2.0", method: "tools/list", id: 3, params: %{}})
+      |> put_req_header("content-type", "application/json")
+      |> call(router: Test.TerminatedSessionRouter, session_id: "terminated")
+
+      assert_receive {:conn, conn}
+      assert conn.status == 404
+      assert JSON.decode!(conn.resp_body)["error"]["message"] == "Session terminated"
+    end
+  end
 end

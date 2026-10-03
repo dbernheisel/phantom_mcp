@@ -39,24 +39,32 @@ defmodule Phantom.Test.Conformance do
   any. Returns `{exit_status, output}`.
   """
   def run(topology, revision) do
-    System.cmd(
-      "npx",
-      [
-        "conformance",
-        "server",
-        "--url",
-        url(topology),
-        "--requirements",
-        revision,
-        "--expected-failures",
-        baseline(topology, revision),
-        "--timeout",
-        "15000"
-      ],
-      stderr_to_stdout: true,
-      env: [{"NO_COLOR", "1"}, {"FORCE_COLOR", "0"}]
-    )
-    |> then(fn {output, status} -> {status, output} end)
+    npx([
+      "--url",
+      url(topology),
+      "--requirements",
+      revision,
+      "--expected-failures",
+      baseline(topology, revision)
+    ])
+  end
+
+  @doc """
+  Run one scenario at a spec version, for scenarios a requirement set runs
+  without scoring. Returns `{exit_status, output}`.
+  """
+  def run_scenario(topology, scenario, spec_version) do
+    npx(["--url", url(topology), "--scenario", scenario, "--spec-version", spec_version])
+  end
+
+  defp npx(args) do
+    {output, status} =
+      System.cmd("npx", ["conformance", "server", "--timeout", "15000" | args],
+        stderr_to_stdout: true,
+        env: [{"NO_COLOR", "1"}, {"FORCE_COLOR", "0"}]
+      )
+
+    {status, output}
   end
 
   # The CLI takes one baseline file, so the topology's additions are appended

@@ -426,6 +426,21 @@ defmodule Phantom.DistributedTest do
     end
   end
 
+  describe "session termination" do
+    test "DELETE on node 2 closes the session stream on node 1" do
+      {session_id, init_resp, ref, buffer} = initialize_with_stream(@node1_port)
+
+      delete =
+        Req.delete!("http://127.0.0.1:#{@node2_port}/",
+          headers: [{"mcp-session-id", session_id}],
+          retry: false
+        )
+
+      assert delete.status in 200..299
+      assert {:closed, _ref, _buffer} = receive_sse_event(init_resp, ref, buffer, 5_000)
+    end
+  end
+
   describe "stateless core (2026-07-28) — no Tracker, no sticky session" do
     # Node A returns `inputRequired` with an encrypted `requestState`.
     # Node B — with no prior knowledge of the original call — decodes the

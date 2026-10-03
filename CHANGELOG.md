@@ -18,6 +18,11 @@
   go through a per-session PubSub topic in that case.
 - `logging/setLevel` replies once the level is applied, and no longer writes
   an empty `{}` event to the session stream.
+- An HTTP `DELETE` closes the session's open streams on every node; it
+  previously only untracked streams on the node that received it.
+- New: `connect/2` may return `{:not_found | 404, message}` to answer with
+  HTTP 404. Record terminated sessions in `terminate/1` and reject them this
+  way, as the MCP spec requires 404 for a terminated session ID.
 - Resource URIs keep their host. `resource "https://example.com/x/:id", ...`
   now advertises `https://example.com/x/{id}` and `resource_uri/3` builds
   `https://example.com/x/1` (both previously dropped the host), and only

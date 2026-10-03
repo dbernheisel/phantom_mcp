@@ -25,7 +25,28 @@ defmodule Conformance.MCP.Router do
          )
   @audio Base.decode64!("UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAAB9AAACABAAZGF0YQIAAAA=")
 
-  def connect(session, _conn), do: {:ok, session}
+  # Remembers terminated sessions on one node for the whole cluster, so
+  # every node rejects them. An app would use its own storage.
+  @terminated_sessions {:global, Conformance.TerminatedSessions}
+
+  def connect(session, _conn) do
+    if session.id in terminated_sessions(),
+      do: {:not_found, "Session terminated"},
+      else: {:ok, session}
+  end
+
+  def terminate(session) do
+    terminated_sessions()
+    Agent.update(@terminated_sessions, &MapSet.put(&1, session.id))
+    {:ok, session}
+  end
+
+  defp terminated_sessions do
+    case Agent.start(fn -> MapSet.new() end, name: @terminated_sessions) do
+      {:ok, _pid} -> MapSet.new()
+      {:error, {:already_started, pid}} -> Agent.get(pid, & &1)
+    end
+  end
 
   ## Tools
 

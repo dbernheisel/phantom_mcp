@@ -709,7 +709,7 @@ defmodule MyApp.MCP.Router do
 There are several optional callbacks to help you hook into the lifecycle of the connections.
 
 - `c:Phantom.Router.disconnect/1` means the request has closed, not that the session is finished.
-- `c:Phantom.Router.terminate/1` means the session has finished and the client doesn't intend to resume it.
+- `c:Phantom.Router.terminate/1` means the session has finished and the client doesn't intend to resume it. Phantom closes the session's streams but doesn't remember the session; to answer later requests with HTTP 404 as the spec requires, record it here and return `{:not_found, message}` from `c:Phantom.Router.connect/2`.
 
 For Telemetry, please see `m:Phantom.Plug#module-telemetry` and `m:Phantom.Router#module-telemetry` for emitted telemetry hooks.
 

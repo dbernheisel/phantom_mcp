@@ -32,7 +32,9 @@ as fixes land.
 
 Scenarios a requirement set runs without scoring (extensions such as tasks,
 and scenarios added after the revision shipped) are reported but never fail
-the run, so they are not listed.
+the run, so they are not listed. To enforce one, add it to
+`@unscored_scenarios` in `conformance_test.exs`; it then runs on its own and
+must pass.
 
 ## Running scenarios by hand
 

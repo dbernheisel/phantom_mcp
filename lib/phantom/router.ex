@@ -57,12 +57,15 @@ defmodule Phantom.Router do
   that is passed into `Phantom.Plug.www_authenticate/1` to build the header.
   - `{:forbidden | 403, message}` - The session is not authorized. For example, the user is authenticated,
   but lacks the account permissions to access the MCP server.
+  - `{:not_found | 404, message}` - The session was terminated. Clients respond by starting a new
+  session. See `c:terminate/1`.
   - `{:error, message}` - The connection should be rejected for any other reason.
   """
   @callback connect(Session.t(), term()) ::
               {:ok, Session.t()}
               | {:unauthorized | 401, www_authenticate_header :: Phantom.Plug.www_authenticate()}
               | {:forbidden | 403, message :: String.t()}
+              | {:not_found | 404, message :: String.t()}
               | {:error, any()}
   @doc """
   When the connection is closing, this callback will be invoked.
@@ -81,6 +84,21 @@ defmodule Phantom.Router do
   The callback will be invoked and should return `{:ok, _}` or `{:error, _}` to indicate
   success or not in terminating the session. Consider hooking into the
   `[:phantom, :plug, :request, :terminate]` telemetry event for side-effects.
+
+  Phantom closes the session's open streams, but it does not remember terminated sessions.
+  The MCP specification requires later requests with a terminated session ID to get HTTP
+  404, so record the session here and reject it in `c:connect/2`:
+
+      def terminate(session) do
+        MyApp.Sessions.mark_terminated(session.id)
+        {:ok, session}
+      end
+
+      def connect(session, _conn) do
+        if MyApp.Sessions.terminated?(session.id),
+          do: {:not_found, "Session terminated"},
+          else: {:ok, session}
+      end
   """
   @callback terminate(Session.t()) :: {:ok, any()} | {:error, any()}
 

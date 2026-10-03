@@ -229,6 +229,10 @@ defmodule Phantom.Plug do
         when forbidden in [403, :forbidden] and is_binary(message) ->
           conn |> put_status(403) |> request_error(Request.closed(message))
 
+        {not_found, message}
+        when not_found in [404, :not_found] and is_binary(message) ->
+          conn |> put_status(404) |> request_error(Request.closed(message))
+
         {:error, error} when is_map(error) ->
           request_error(conn, error |> JSON.encode!() |> Request.closed())
 
@@ -440,6 +444,7 @@ defmodule Phantom.Plug do
 
   defp dispatch(%Plug.Conn{method: "DELETE"} = conn, _opts) do
     session = conn.private.phantom.session
+    Phantom.Tracker.cast_session(session.pubsub, session.id, :finish)
     Phantom.Tracker.untrack_session(session.id)
 
     conn =
