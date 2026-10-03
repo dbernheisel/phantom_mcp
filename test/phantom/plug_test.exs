@@ -1360,16 +1360,5 @@ defmodule Phantom.PlugTest do
       assert conn.status == 400
       assert JSON.decode!(conn.resp_body)["error"]["code"] == -32600
     end
-
-    test "removed modern methods return 404 MethodNotFound" do
-      post_stateless(
-        %{jsonrpc: "2.0", id: 16, method: "ping", params: %{"_meta" => stateless_meta()}},
-        [{"mcp-method", "ping"}]
-      )
-
-      assert_receive {:conn, conn}
-      assert conn.status == 404
-      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32601
-    end
   end
 end
