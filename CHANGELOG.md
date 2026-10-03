@@ -1,6 +1,8 @@
 ## Unreleased
 
 - New: `Phantom.Test` for unit-testing MCP routers without an HTTP transport.
+  `build_session(router, protocol_version: "2026-07-28")` tests the stateless
+  protocol; `expect_elicit/1` answers its `input_required` results.
 - New: `c:Phantom.Router.authorize_resource_subscriptions/2` authorizes
   resource subscriptions (`resources/subscribe` and `subscriptions/listen`)
   and is re-checked before each update notification. Resources are allowed by

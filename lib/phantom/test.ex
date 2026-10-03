@@ -110,20 +110,35 @@ defmodule Phantom.Test do
     * `:client_capabilities` - override the default capabilities map.
       Defaults to `%{elicitation: %{"url" => %{}}, sampling: %{}, roots: %{}}`
       so both form-mode and url-mode elicitation are supported in tests.
+    * `:protocol_version` - a stateless protocol version such as
+      `"2026-07-28"`. Requests then carry the per-request `_meta` that
+      protocol requires. Omit it to use the `initialize`-based protocol.
+    * `:log_level` - with `:protocol_version`, the client log level each
+      request asks for (default: none, so no client logs are sent).
   """
   @spec build_session(module(), keyword()) :: Session.t()
   def build_session(router, opts \\ []) do
     capabilities = Keyword.get(opts, :client_capabilities, default_capabilities())
 
-    Session.new(opts[:id],
-      router: router,
-      pubsub: opts[:pubsub],
-      assigns: opts[:assigns] || %{},
-      allowed_tools: opts[:allowed_tools],
-      allowed_prompts: opts[:allowed_prompts],
-      allowed_resource_templates: opts[:allowed_resource_templates],
-      client_capabilities: capabilities
-    )
+    session =
+      Session.new(opts[:id],
+        router: router,
+        pubsub: opts[:pubsub],
+        assigns: opts[:assigns] || %{},
+        allowed_tools: opts[:allowed_tools],
+        allowed_prompts: opts[:allowed_prompts],
+        allowed_resource_templates: opts[:allowed_resource_templates],
+        client_capabilities: capabilities
+      )
+
+    case opts[:protocol_version] do
+      nil ->
+        session
+
+      version ->
+        meta = stateless_meta(version, capabilities, opts[:log_level])
+        %{session | request: %Request{meta: meta, params: %{"_meta" => meta}}}
+    end
   end
 
   @doc """
@@ -298,9 +313,41 @@ defmodule Phantom.Test do
     }
   end
 
-  defp dispatch_blocking(session, method, params, opts) do
+  # A stateless call that needs input is answered by the registered
+  # responders and retried, as a client would, until it completes.
+  @max_input_rounds 10
+
+  defp dispatch_blocking(session, method, params, opts),
+    do: dispatch_blocking(session, method, params, opts, @max_input_rounds)
+
+  defp dispatch_blocking(_session, method, _params, _opts, 0),
+    do: raise("Phantom.Test: #{method} still required input after #{@max_input_rounds} rounds")
+
+  defp dispatch_blocking(session, method, params, opts, rounds) do
+    result = dispatch_once(session, method, params, opts)
+
+    with %{} <- result,
+         "input_required" <- result[:resultType] || result["resultType"],
+         {:ok, responses} <-
+           answer_input_requests(result[:inputRequests] || result["inputRequests"]) do
+      params =
+        params
+        |> Map.put("inputResponses", responses)
+        |> put_request_state(result[:requestState] || result["requestState"])
+
+      dispatch_blocking(session, method, params, opts, rounds - 1)
+    else
+      _ -> result
+    end
+  end
+
+  defp put_request_state(params, nil), do: params
+  defp put_request_state(params, state), do: Map.put(params, "requestState", state)
+
+  defp dispatch_once(session, method, params, opts) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
-    request = build_request(method, params: maybe_with_progress(opts))
+    meta = Map.merge(session_meta(session), progress_meta(opts))
+    request = %{build_request(method, params: Map.put(params, "_meta", meta)) | meta: meta}
 
     session = %{
       session
@@ -321,11 +368,62 @@ defmodule Phantom.Test do
     end
   end
 
-  defp maybe_with_progress(opts) do
+  defp session_meta(%Session{request: %Request{meta: meta}}) when is_map(meta), do: meta
+  defp session_meta(_session), do: %{}
+
+  defp progress_meta(opts) do
     case Keyword.get(opts, :progress_token) do
       nil -> %{}
-      token -> %{"_meta" => %{"progressToken" => token}}
+      token -> %{"progressToken" => token}
     end
+  end
+
+  defp stateless_meta(version, capabilities, log_level) do
+    capabilities =
+      for {key, value} <- capabilities, value not in [nil, false], into: %{} do
+        {to_string(key), value}
+      end
+
+    meta = %{
+      "io.modelcontextprotocol/protocolVersion" => version,
+      "io.modelcontextprotocol/clientCapabilities" => capabilities
+    }
+
+    if log_level, do: Map.put(meta, "io.modelcontextprotocol/logLevel", log_level), else: meta
+  end
+
+  # Only elicitations have responders; any other input request is left for
+  # the test to assert on.
+  defp answer_input_requests(requests) when is_map(requests) and map_size(requests) > 0 do
+    Enum.reduce_while(requests, {:ok, %{}}, fn {key, request}, {:ok, responses} ->
+      with "elicitation/create" <- request[:method] || request["method"],
+           %Phantom.Elicit{mode: mode} = elicit <-
+             elicit_from_json(request[:params] || request["params"]),
+           fun when is_function(fun, 1) <- Process.get({__MODULE__, :elicit_responder, mode}),
+           {:ok, response} <- fun.(elicit) do
+        {:cont, {:ok, Map.put(responses, to_string(key), response)}}
+      else
+        _ -> {:halt, :unanswered}
+      end
+    end)
+  end
+
+  defp answer_input_requests(_requests), do: :unanswered
+
+  defp elicit_from_json(params) do
+    get = fn key -> params[key] || params[to_string(key)] end
+    schema = get.(:requestedSchema) || %{}
+    required = schema[:required] || schema["required"] || []
+
+    %Phantom.Elicit{
+      mode: if(get.(:mode) == "url", do: :url, else: :form),
+      message: get.(:message),
+      url: get.(:url),
+      requested_schema:
+        for {name, property} <- schema[:properties] || schema["properties"] || %{} do
+          Map.merge(property, %{name: to_string(name), required: to_string(name) in required})
+        end
+    }
   end
 
   defp build_elicit_fun do
@@ -387,6 +485,11 @@ defmodule Phantom.Test do
         send(self(), {:phantom_test_client_log, level, level_name, domain, payload})
         await_response(request_id, timeout, deadline)
 
+      {:"$gen_cast", {:log, level_name, domain, payload}} ->
+        level = Keyword.fetch!(Phantom.ClientLogger.log_levels(), level_name)
+        send(self(), {:phantom_test_client_log, level, level_name, domain, payload})
+        await_response(request_id, timeout, deadline)
+
       {:"$gen_cast", msg}
       when msg in @session_internal_atoms
       when is_tuple(msg) and elem(msg, 0) in @session_internal_tags ->
@@ -423,6 +526,11 @@ defmodule Phantom.Test do
         drain_session_casts(request_id)
 
       {:"$gen_cast", {:log_legacy, level, level_name, domain, payload}} ->
+        send(self(), {:phantom_test_client_log, level, level_name, domain, payload})
+        drain_session_casts(request_id)
+
+      {:"$gen_cast", {:log, level_name, domain, payload}} ->
+        level = Keyword.fetch!(Phantom.ClientLogger.log_levels(), level_name)
         send(self(), {:phantom_test_client_log, level, level_name, domain, payload})
         drain_session_casts(request_id)
 

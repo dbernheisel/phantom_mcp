@@ -197,4 +197,40 @@ defmodule Phantom.TestTest do
       end
     end
   end
+
+  describe "MCP 2026-07-28 sessions" do
+    setup do
+      {:ok,
+       session:
+         build_session(Test.MCP.Router,
+           pubsub: TestFramework.PubSub,
+           protocol_version: "2026-07-28",
+           log_level: "debug"
+         )}
+    end
+
+    test "requests use the stateless protocol", %{session: session} do
+      assert Phantom.Session.stateless?(session)
+    end
+
+    test "re-entry elicitation is answered by expect_elicit", %{session: session} do
+      expect_elicit(fn %Phantom.Elicit{message: "Your name?"} ->
+        {:ok, %{"action" => "accept", "content" => %{"name" => "Ada"}}}
+      end)
+
+      session
+      |> call_tool(:resume_tool, %{origin: "stateless"})
+      |> assert_tool_text("resumed name=Ada origin=stateless")
+    end
+
+    test "input_required is returned when no responder is registered", %{session: session} do
+      assert %{resultType: "input_required", inputRequests: %{"elicitation" => _}} =
+               call_tool(session, :resume_tool, %{})
+    end
+
+    test "client logs are captured", %{session: session} do
+      call_tool(session, :client_log_tool, %{message: "modern"})
+      assert_client_log_seen(level: :info, data: %{message: "modern"})
+    end
+  end
 end
