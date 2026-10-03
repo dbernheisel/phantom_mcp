@@ -318,19 +318,8 @@ defmodule Phantom.Session do
           :ok | :error
   def subscribe_to_resource(%__MODULE__{pubsub: nil}, _resource), do: :error
 
-  def subscribe_to_resource(session, {_uri, _params, _template} = resource) do
-    case Phantom.Tracker.get_session(session) do
-      nil -> :error
-      pid -> GenServer.call(pid, {:subscribe_resource, resource})
-    end
-  end
-
-  def subscribe_to_resource(session, uri) when is_binary(uri) do
-    case Phantom.Tracker.get_session(session) do
-      nil -> :error
-      pid -> GenServer.call(pid, {:subscribe_resource, uri})
-    end
-  end
+  def subscribe_to_resource(session, resource),
+    do: session_call(session, {:subscribe_resource, resource})
 
   @doc """
   Unsubscribe the session to a resource.
@@ -340,12 +329,8 @@ defmodule Phantom.Session do
   @spec unsubscribe_to_resource(t(), string_uri :: String.t()) :: :ok | :error
   def unsubscribe_to_resource(%__MODULE__{pubsub: nil}, _uri), do: :error
 
-  def unsubscribe_to_resource(session, uri) do
-    case Phantom.Tracker.get_session(session) do
-      nil -> :error
-      pid -> GenServer.call(pid, {:unsubscribe_resource, uri})
-    end
-  end
+  def unsubscribe_to_resource(session, uri),
+    do: session_call(session, {:unsubscribe_resource, uri})
 
   @doc false
   @spec listen(t(), String.t() | integer(), map()) :: {:ok, t()} | :error
@@ -355,6 +340,7 @@ defmodule Phantom.Session do
       when (is_binary(subscription_id) or is_integer(subscription_id)) and is_map(filter) do
     with {:ok, filter} <- normalize_subscription_filter(filter) do
       Phantom.Tracker.track_session(self(), session.id, session.client_info)
+      Phantom.Tracker.subscribe_session(session.pubsub, session.id)
 
       session.router
       |> Phantom.Router.resolve_resources(session, Map.get(filter, "resourceSubscriptions", []))
@@ -381,9 +367,9 @@ defmodule Phantom.Session do
   def listen(%__MODULE__{}, _subscription_id, _filter), do: :error
 
   def list_resource_subscriptions(session) do
-    case Phantom.Tracker.get_session(session) do
-      nil -> []
-      pid -> GenServer.call(pid, :list_resource_subscriptions)
+    case session_call(session, :list_resource_subscriptions) do
+      :error -> []
+      subscriptions -> subscriptions
     end
   end
 
@@ -391,11 +377,19 @@ defmodule Phantom.Session do
   Sets the log level for the SSE stream.
   Sets both for the current request for async tasks and the SSE stream
   """
-  @spec set_log_level(t(), Request.t(), String.t()) :: :ok
-  def set_log_level(%__MODULE__{} = session, request, level) do
-    case Phantom.Tracker.get_session(session) || session.pid do
-      nil -> :error
-      pid -> GenServer.cast(pid, {:set_log_level, request, level})
+  @spec set_log_level(t(), Request.t(), String.t()) :: :ok | :error
+  def set_log_level(%__MODULE__{pubsub: nil, pid: pid}, _request, level) when is_pid(pid),
+    do: GenServer.cast(pid, {:set_log_level, level})
+
+  def set_log_level(%__MODULE__{} = session, _request, level),
+    do: session_call(session, {:set_log_level, level})
+
+  # Calls the session's stream process, wherever it runs. A node that has not
+  # learned of the stream from `Phantom.Tracker` yet reaches it through PubSub.
+  defp session_call(%__MODULE__{} = session, message) do
+    case Phantom.Tracker.get_session(session) do
+      nil -> Phantom.Tracker.call_session(session.pubsub, session.id, message)
+      pid -> GenServer.call(pid, message)
     end
   end
 
@@ -565,6 +559,9 @@ defmodule Phantom.Session do
     Phantom.Tracker.subscribe_resource(resource)
     {:reply, :ok, state |> set_activity() |> schedule_inactivity()}
   end
+
+  def handle_call({:set_log_level, log_level}, _from, state),
+    do: {:reply, :ok, put_log_level(state, log_level)}
 
   def handle_call({:unsubscribe_resource, uri}, _from, state) do
     Phantom.Tracker.unsubscribe_resource(uri)
@@ -857,15 +854,12 @@ defmodule Phantom.Session do
     end
   end
 
-  def handle_cast({:set_log_level, request, log_level}, state) do
-    level_num =
-      Keyword.fetch!(
-        Phantom.ClientLogger.log_levels(),
-        String.to_existing_atom(log_level)
-      )
+  def handle_cast({:set_log_level, log_level}, state),
+    do: {:noreply, put_log_level(state, log_level)}
 
-    state = state.stream_fun.(state, request.id, "message", %{})
-    {:noreply, %{state | log_level: level_num}}
+  defp put_log_level(state, log_level) do
+    level = Keyword.fetch!(Phantom.ClientLogger.log_levels(), String.to_existing_atom(log_level))
+    %{state | log_level: level}
   end
 
   defp normalize_response_payload(%{result: result} = payload, %Request{} = request, session)

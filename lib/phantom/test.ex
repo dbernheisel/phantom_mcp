@@ -309,6 +309,10 @@ defmodule Phantom.Test do
         request: request
     }
 
+    # This process stands in for the session stream, so it receives what is
+    # sent to the session through PubSub.
+    Phantom.Tracker.subscribe_session(session.pubsub, session.id)
+
     try do
       result = session.router.dispatch_method([method, params, request, session])
       handle_dispatch_result(result, request.id, timeout)

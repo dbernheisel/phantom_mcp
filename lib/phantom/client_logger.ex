@@ -40,7 +40,7 @@ defmodule Phantom.ClientLogger do
         end)
 
       if threshold && level_num <= threshold do
-        cast_log(session, {:log_modern, level_name, domain, payload})
+        GenServer.cast(session.pid, {:log_modern, level_name, domain, payload})
       end
     else
       cast_log(session, {:log, level_num, level_name, domain, payload})
@@ -49,9 +49,16 @@ defmodule Phantom.ClientLogger do
     :ok
   end
 
-  defp cast_log(%Session{pid: pid, id: id}, message) do
-    pid = Phantom.Tracker.get_session(id) || pid
-    GenServer.cast(pid, message)
+  # Logs go to the session stream, which holds the session's log level. A
+  # node that has not learned of it from `Phantom.Tracker` yet reaches it
+  # through PubSub.
+  defp cast_log(%Session{pubsub: nil, pid: pid}, message), do: GenServer.cast(pid, message)
+
+  defp cast_log(%Session{} = session, message) do
+    case Phantom.Tracker.get_session(session) do
+      nil -> Phantom.Tracker.cast_session(session.pubsub, session.id, message)
+      pid -> GenServer.cast(pid, message)
+    end
   end
 
   @doc "Notify the client for the provided session and domain at level with a payload"

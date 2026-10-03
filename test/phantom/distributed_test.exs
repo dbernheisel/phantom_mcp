@@ -314,16 +314,8 @@ defmodule Phantom.DistributedTest do
 
       assert log_level_resp.status == 200
 
-      # Drain the setLevel POST SSE response
-      receive_sse_event(log_level_resp, 5_000)
-
-      # Wait for the empty result on the init stream — confirms the
-      # set_log_level cast was processed by the init stream GenServer
-      {_, ref, buffer} =
-        case receive_sse_event(init_resp, ref, buffer, 5_000) do
-          {msgs, r, b} when is_list(msgs) -> {msgs, r, b}
-          {:timeout, r, b} -> {nil, r, b}
-        end
+      # The response arrives once the init stream has applied the level.
+      assert {[%{"id" => 20, "result" => %{}}], _, _} = receive_sse_event(log_level_resp, 5_000)
 
       # Step 3: Call client_log_tool on node 2 with the same session.
       # ClientLogger.do_log sends the log cast to Tracker.get_session(id),
@@ -356,6 +348,81 @@ defmodule Phantom.DistributedTest do
 
       assert log_notification["params"]["level"] == "info"
       assert log_notification["params"]["data"]["message"] == "hello from node2"
+    end
+  end
+
+  # These requests reach node 2 before `Phantom.Tracker` has replicated the
+  # session stream that `initialize` registered on node 1.
+  describe "cross-node session messages before Tracker replication" do
+    test "logging/setLevel on node 2 applies to the session stream on node 1" do
+      {session_id, init_resp, ref, buffer} = initialize_with_stream(@node1_port)
+
+      set_level =
+        post_mcp(
+          @node2_port,
+          %{jsonrpc: "2.0", id: 30, method: "logging/setLevel", params: %{level: "info"}},
+          session_id: session_id
+        )
+
+      assert %{"result" => %{}} =
+               poll_for_sse_event(set_level, 5_000, &(&1["id"] == 30))
+
+      tool =
+        post_mcp(
+          @node1_port,
+          %{
+            jsonrpc: "2.0",
+            id: 31,
+            method: "tools/call",
+            params: %{name: "client_log_tool", arguments: %{message: "logged"}}
+          },
+          session_id: session_id
+        )
+
+      assert poll_for_sse_event(tool, 5_000, &(&1["id"] == 31))
+
+      log =
+        poll_for_sse_event(init_resp, ref, buffer, 5_000, fn msg ->
+          msg["method"] == "notifications/message"
+        end)
+
+      assert log["params"]["data"]["message"] == "logged"
+    end
+
+    test "resources/subscribe and unsubscribe on node 2 reach the session stream on node 1" do
+      {session_id, init_resp, ref, buffer} = initialize_with_stream(@node1_port)
+
+      {:ok, uri} =
+        :rpc.call(@node1, Phantom.Router, :resource_uri, [
+          Test.MCP.Router,
+          :text_resource,
+          [id: 7]
+        ])
+
+      subscribe =
+        post_mcp(
+          @node2_port,
+          %{jsonrpc: "2.0", id: 40, method: "resources/subscribe", params: %{uri: uri}},
+          session_id: session_id
+        )
+
+      assert %{"result" => %{}} = poll_for_sse_event(subscribe, 5_000, &(&1["id"] == 40))
+
+      :rpc.call(@node1, Phantom.Tracker, :notify_resource_updated, [uri])
+
+      assert %{"params" => %{"uri" => ^uri}} =
+               poll_for_sse_event(init_resp, ref, buffer, 5_000, fn msg ->
+                 msg["method"] == "notifications/resources/updated"
+               end)
+
+      unsubscribe =
+        post_mcp(
+          @node2_port,
+          %{jsonrpc: "2.0", id: 41, method: "resources/unsubscribe", params: %{uri: uri}},
+          session_id: session_id
+        )
+
+      assert %{"result" => %{}} = poll_for_sse_event(unsubscribe, 5_000, &(&1["id"] == 41))
     end
   end
 

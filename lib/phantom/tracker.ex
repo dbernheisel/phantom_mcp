@@ -304,6 +304,55 @@ defmodule Phantom.Tracker do
     def get_session(_session_id), do: nil
   end
 
+  # The Tracker replicates a session stream to other nodes eventually. Its
+  # PubSub topic reaches the stream on every node immediately, so messages
+  # for a session that this node cannot find yet are sent through it.
+
+  @doc false
+  def session_topic(session_id), do: "phantom:session:#{session_id}"
+
+  if @available do
+    @doc false
+    def subscribe_session(nil, _session_id), do: :ok
+
+    # Subscribing twice would deliver every message twice.
+    def subscribe_session(pubsub, session_id) do
+      topic = session_topic(session_id)
+      Phoenix.PubSub.unsubscribe(pubsub, topic)
+      Phoenix.PubSub.subscribe(pubsub, topic)
+    end
+
+    @doc false
+    def call_session(pubsub, session_id, message, timeout \\ 5_000)
+    def call_session(nil, _session_id, _message, _timeout), do: :error
+
+    def call_session(pubsub, session_id, message, timeout) do
+      # A `:reply` alias accepts only the first reply, should more than one
+      # stream answer.
+      reply_to = Process.alias([:reply])
+      call = {:"$gen_call", {reply_to, reply_to}, message}
+      Phoenix.PubSub.broadcast_from(pubsub, self(), session_topic(session_id), call)
+
+      receive do
+        {^reply_to, reply} -> reply
+      after
+        timeout ->
+          Process.unalias(reply_to)
+          :error
+      end
+    end
+
+    @doc false
+    def cast_session(nil, _session_id, _message), do: :ok
+
+    def cast_session(pubsub, session_id, message),
+      do: Phoenix.PubSub.broadcast(pubsub, session_topic(session_id), {:"$gen_cast", message})
+  else
+    def subscribe_session(_pubsub, _session_id), do: :ok
+    def call_session(_pubsub, _session_id, _message, _timeout \\ 5_000), do: :error
+    def cast_session(_pubsub, _session_id, _message), do: :ok
+  end
+
   @doc "Untrack the processe for everything"
   if @available do
     def untrack(pid), do: Phoenix.Tracker.untrack(__MODULE__, pid)

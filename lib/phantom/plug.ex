@@ -1219,6 +1219,8 @@ defmodule Phantom.Plug do
           conn.body_params["params"]["clientInfo"] || %{}
         )
 
+        Phantom.Tracker.subscribe_session(session.pubsub, session.id)
+
         put_in(conn.private.phantom.session, session)
 
       # GET SSE: only if no existing stream (on any node)
@@ -1230,6 +1232,8 @@ defmodule Phantom.Plug do
           session.id,
           %{}
         )
+
+        Phantom.Tracker.subscribe_session(session.pubsub, session.id)
 
         put_in(conn.private.phantom.session, session)
 

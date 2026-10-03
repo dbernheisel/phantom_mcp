@@ -11,6 +11,13 @@
   `input_required` result under MCP 2026-07-28.
 - `Phantom.Tracker` broadcasts to other nodes every second by default
   (`broadcast_period`, previously Phoenix.Tracker's 1.5s).
+- Session messages reach the session's stream on any node immediately.
+  `logging/setLevel`, `resources/subscribe`, `resources/unsubscribe`, and
+  client logs used to fail or be lost when they reached a node before
+  `Phantom.Tracker` had replicated the session from another node; they now
+  go through a per-session PubSub topic in that case.
+- `logging/setLevel` replies once the level is applied, and no longer writes
+  an empty `{}` event to the session stream.
 - Resource URIs keep their host. `resource "https://example.com/x/:id", ...`
   now advertises `https://example.com/x/{id}` and `resource_uri/3` builds
   `https://example.com/x/1` (both previously dropped the host), and only
