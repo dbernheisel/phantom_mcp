@@ -885,6 +885,9 @@ To make Phantom distributed, start the `Phantom.Tracker` and pass in your pubsub
 {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: MyApp.PubSub]},
 ```
 
+`Phantom.Tracker` accepts `Phoenix.Tracker` options. Nodes learn about each
+other's sessions every `broadcast_period` milliseconds (default `1_000`).
+
 Adjust the Phoenix router or Plug.Router options to include the PubSub server
 
 <!-- tabs-open -->

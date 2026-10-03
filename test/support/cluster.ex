@@ -83,7 +83,8 @@ defmodule Phantom.Test.Cluster do
     rpc(node, Supervisor, :start_link, [
       [
         {Phoenix.PubSub, name: pubsub_name},
-        {Phantom.Tracker, name: Phantom.Tracker, pubsub_server: pubsub_name},
+        {Phantom.Tracker,
+         name: Phantom.Tracker, pubsub_server: pubsub_name, broadcast_period: 500},
         {Bandit,
          plug: {Phantom.Test.ClusterPlug, phantom_opts: plug_opts}, port: port, scheme: :http}
       ],
