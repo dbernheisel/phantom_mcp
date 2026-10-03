@@ -12,10 +12,18 @@ defmodule Phantom.Plug do
 
   This module provides a complete MCP server implementation with:
   - JSON-RPC 2.0 message handling
-  - Server-Sent Events (SSE) streaming
+  - Server-Sent Events (SSE) streaming (legacy protocols)
+  - Stateless transactional request/response (MCP `2026-07-28`)
   - CORS handling and security features
   - Session management integration
   - Origin validation
+
+  Legacy clients (`≤ 2025-11-25`) carry an `mcp-session-id` header and may
+  hold a persistent `GET` SSE stream for server-initiated traffic. Stateless
+  core clients (`2026-07-28`) send no session header — every `POST` is
+  self-contained and any node behind a round-robin load balancer can serve
+  the call. Both modes run from the same router; the protocol version on
+  each request determines the dispatch path.
 
   <!-- tabs-open -->
 
@@ -152,8 +160,14 @@ defmodule Phantom.Plug do
     config = Map.merge(opts, app_config)
 
     conn
-    |> put_private(:phantom, %{router: config.router, session: nil, requests: %{}})
+    |> put_private(:phantom, %{
+      router: config.router,
+      session: nil,
+      requests: %{},
+      modern: modern_request?(conn)
+    })
     |> validate_request(config)
+    |> validate_protocol_request()
     |> cors_preflight(config)
     |> cors_headers(config)
     |> connect(config)
@@ -164,8 +178,13 @@ defmodule Phantom.Plug do
     router = opts[:router]
     if not Cache.initialized?(router), do: Cache.register(router)
 
+    session_id =
+      if conn.private.phantom.modern,
+        do: nil,
+        else: get_req_header(conn, "mcp-session-id") |> List.first()
+
     session =
-      Session.new(get_req_header(conn, "mcp-session-id") |> List.first(),
+      Session.new(session_id,
         pubsub: opts.pubsub,
         transport_pid: conn.owner,
         pid: self(),
@@ -258,6 +277,55 @@ defmodule Phantom.Plug do
     end
   end
 
+  defp validate_protocol_request(%Plug.Conn{halted: true} = conn), do: conn
+
+  defp validate_protocol_request(%Plug.Conn{method: "POST"} = conn) do
+    version = get_req_header(conn, "mcp-protocol-version") |> List.first()
+
+    cond do
+      not conn.private.phantom.modern ->
+        conn
+
+      match?(%{"_json" => _}, conn.body_params) ->
+        protocol_error(conn, nil, Request.invalid("Batch requests are not supported"), 400)
+
+      not is_map(conn.body_params) ->
+        protocol_error(conn, nil, Request.invalid(), 400)
+
+      is_map_key(conn.body_params, "result") and not is_map_key(conn.body_params, "method") ->
+        protocol_error(conn, conn.body_params["id"], Request.invalid(), 400)
+
+      is_nil(version) ->
+        protocol_error(
+          conn,
+          conn.body_params["id"],
+          Request.header_mismatch("Missing required header: MCP-Protocol-Version"),
+          400
+        )
+
+      true ->
+        case Request.build(conn.body_params) do
+          {:ok, request} ->
+            case Request.validate_modern(request, version) do
+              :ok -> conn
+              {:error, %{code: -32601} = error} -> protocol_error(conn, request.id, error, 404)
+              {:error, error} -> protocol_error(conn, request.id, error, 400)
+            end
+
+          {:error, error} ->
+            protocol_error(conn, error.id, error.response.error, 400)
+        end
+    end
+  end
+
+  defp validate_protocol_request(conn), do: conn
+
+  defp protocol_error(conn, id, error, status) do
+    conn
+    |> put_status(status)
+    |> json_error(Request.error(id, error))
+  end
+
   defp request_error(conn, error), do: json_error(conn, Request.error(error))
 
   defp dispatch(%Plug.Conn{halted: true} = conn, _opts), do: conn
@@ -315,7 +383,7 @@ defmodule Phantom.Plug do
     end
 
     conn
-    |> put_resp_header("mcp-session-id", session.id)
+    |> maybe_put_session_header(params, session.id)
     |> send_resp(202, "")
   end
 
@@ -325,30 +393,46 @@ defmodule Phantom.Plug do
               not is_map_key(params, "id") do
     session = conn.private.phantom.session
 
-    case Request.build(params) do
-      {:ok, request} ->
-        session.router.dispatch_method([request.method, request.params, request, session])
+    with :ok <- validate_routing_headers(conn, params),
+         {:ok, request} <- Request.build(params) do
+      session = hydrate_from_meta(session, request)
+      session.router.dispatch_method([request.method, request.params, request, session])
 
-      {:error, _} ->
-        :ok
+      conn
+      |> maybe_put_session_header(params, session.id)
+      |> send_resp(202, "")
+    else
+      {:error, error, id} ->
+        conn
+        |> put_status(400)
+        |> json_error(Request.error(id, error))
+
+      {:error, _request} ->
+        conn
+        |> put_status(400)
+        |> json_error(Request.error(Request.invalid()))
     end
-
-    conn
-    |> put_resp_header("mcp-session-id", session.id)
-    |> send_resp(202, "")
   end
 
   defp dispatch(%Plug.Conn{body_params: params, method: "POST"} = conn, opts)
        when is_map(params) or is_map_key(params, "_json") do
-    session = conn.private.phantom.session
+    case validate_routing_headers(conn, params) do
+      :ok ->
+        session = conn.private.phantom.session
 
-    conn
-    |> put_resp_header("mcp-session-id", session.id)
-    |> put_resp_header("cache-control", "no-cache")
-    |> put_resp_content_type("text/event-stream")
-    |> put_resp_header("x-accel-buffering", "no")
-    |> send_chunked(200)
-    |> stream_loop(opts)
+        conn
+        |> maybe_put_session_header(params, session.id)
+        |> put_resp_header("cache-control", "no-cache")
+        |> put_resp_content_type("text/event-stream")
+        |> put_resp_header("x-accel-buffering", "no")
+        |> send_chunked(200)
+        |> stream_loop(opts)
+
+      {:error, error, id} ->
+        conn
+        |> put_status(400)
+        |> json_error(Request.error(id, error))
+    end
   end
 
   defp dispatch(%Plug.Conn{method: "DELETE"} = conn, _opts) do
@@ -390,6 +474,192 @@ defmodule Phantom.Plug do
     )
   end
 
+  # SEP-2243: MCP 2026-07-28 mandates `Mcp-Method` and (where applicable)
+  # `Mcp-Name` routing headers and that servers reject requests where the
+  # headers and body disagree. Legacy clients on older protocol versions
+  # are exempt — they predate the requirement.
+  defp validate_routing_headers(_conn, %{"_json" => _}), do: :ok
+
+  defp validate_routing_headers(conn, params) when is_map(params) do
+    cond do
+      not Map.has_key?(params, "method") ->
+        :ok
+
+      modern_request?(conn) ->
+        do_validate_routing_headers(conn, params)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp do_validate_routing_headers(conn, %{"method" => body_method} = params) do
+    id = params["id"]
+    header_method = get_req_header(conn, "mcp-method") |> List.first()
+    body_name = name_from_params(body_method, Map.get(params, "params"))
+    header_name = get_req_header(conn, "mcp-name") |> List.first() |> decode_header_value()
+    needs_name? = body_method in ["tools/call", "prompts/get", "resources/read"]
+
+    cond do
+      is_nil(header_method) ->
+        {:error, Request.header_mismatch("Missing required header: Mcp-Method"), id}
+
+      header_method != body_method ->
+        {:error,
+         Request.header_mismatch(
+           "Header mismatch: Mcp-Method header value '#{header_method}' does not match body value '#{body_method}'"
+         ), id}
+
+      needs_name? and is_nil(header_name) ->
+        {:error, Request.header_mismatch("Missing required header: Mcp-Name"), id}
+
+      needs_name? and header_name != body_name ->
+        {:error,
+         Request.header_mismatch(
+           "Header mismatch: Mcp-Name header value '#{header_name}' does not match body value '#{body_name}'"
+         ), id}
+
+      true ->
+        validate_param_headers(conn, params)
+    end
+  end
+
+  defp name_from_params("resources/read", params) when is_map(params), do: params["uri"]
+  defp name_from_params(_method, params) when is_map(params), do: params["name"]
+  defp name_from_params(_method, _params), do: nil
+
+  defp validate_param_headers(conn, %{
+         "id" => id,
+         "method" => "tools/call",
+         "params" => %{"name" => name} = method_params
+       }) do
+    session = conn.private.phantom.session
+
+    declarations =
+      session
+      |> Cache.list(session.router, :tools)
+      |> Enum.find(&(&1.name == name))
+      |> case do
+        nil -> []
+        tool -> scan_param_headers(Phantom.Tool.JSONSchema.to_json(tool.input_schema))
+      end
+
+    args = Map.get(method_params, "arguments", %{})
+
+    Enum.find_value(declarations, :ok, fn {path, header, type} ->
+      case value_at_path(args, path) do
+        nil ->
+          false
+
+        value ->
+          expected = primitive_header_value(value)
+          actual = get_req_header(conn, "mcp-param-#{String.downcase(header)}") |> List.first()
+
+          with expected when is_binary(expected) <- expected,
+               actual when is_binary(actual) <- actual,
+               decoded when is_binary(decoded) <- decode_header_value(actual),
+               true <- matching_header_value?(decoded, value, expected, type) do
+            false
+          else
+            _ ->
+              {:error,
+               Request.header_mismatch(
+                 "Header mismatch: Mcp-Param-#{header} does not match body argument #{Enum.join(path, ".")}"
+               ), id}
+          end
+      end
+    end)
+  end
+
+  defp validate_param_headers(_conn, _params), do: :ok
+
+  defp scan_param_headers(schema), do: scan_param_headers(schema, [])
+
+  defp scan_param_headers(schema, path) when is_map(schema) do
+    own =
+      case {schema["x-mcp-header"] || schema[:"x-mcp-header"], schema[:type] || schema["type"]} do
+        {header, type}
+        when is_binary(header) and type in ["string", "integer", "number", "boolean"] and
+               path != [] ->
+          [{path, header, type}]
+
+        _ ->
+          []
+      end
+
+    properties = schema[:properties] || schema["properties"] || %{}
+
+    Enum.reduce(properties, own, fn {key, child}, acc ->
+      acc ++ scan_param_headers(child, path ++ [to_string(key)])
+    end)
+  end
+
+  defp scan_param_headers(_schema, _path), do: []
+
+  defp value_at_path(value, []), do: value
+
+  defp value_at_path(value, [key | rest]) when is_map(value),
+    do: value_at_path(value[key], rest)
+
+  defp value_at_path(_value, _path), do: nil
+
+  defp primitive_header_value(value) when is_binary(value), do: value
+  defp primitive_header_value(true), do: "true"
+  defp primitive_header_value(false), do: "false"
+  defp primitive_header_value(value) when is_integer(value), do: Integer.to_string(value)
+  defp primitive_header_value(value) when is_float(value), do: Float.to_string(value)
+  defp primitive_header_value(_), do: nil
+
+  defp matching_header_value?(decoded, value, _expected, type)
+       when type in ["integer", "number"] and is_number(value) do
+    case Float.parse(decoded) do
+      {number, ""} -> number == value
+      _ -> false
+    end
+  end
+
+  defp matching_header_value?(decoded, _value, expected, _type), do: decoded == expected
+
+  defp decode_header_value("=?base64?" <> encoded) do
+    with true <- String.ends_with?(encoded, "?="),
+         encoded <- String.trim_trailing(encoded, "?="),
+         {:ok, decoded} <- Base.decode64(encoded) do
+      decoded
+    else
+      _ -> :invalid_base64_header
+    end
+  end
+
+  defp decode_header_value(value), do: value
+
+  defp modern_request?(%Plug.Conn{} = conn) do
+    header_version = get_req_header(conn, "mcp-protocol-version") |> List.first()
+    body_version = body_protocol_version(conn.body_params)
+
+    "2026-07-28" in [header_version, body_version] or stateless_body?(conn.body_params)
+  end
+
+  defp stateless_body?(%{"params" => %{"_meta" => meta}}) when is_map(meta),
+    do: Map.has_key?(meta, "io.modelcontextprotocol/protocolVersion")
+
+  defp stateless_body?(_), do: false
+
+  defp body_protocol_version(%{"params" => %{"_meta" => meta}}) when is_map(meta),
+    do:
+      meta["io.modelcontextprotocol/protocolVersion"] ||
+        meta["protocolVersion"]
+
+  defp body_protocol_version(_), do: nil
+
+  defp maybe_put_session_header(conn, params, session_id) do
+    header_version = get_req_header(conn, "mcp-protocol-version") |> List.first()
+    meta_version = body_protocol_version(params)
+
+    if "2026-07-28" in [header_version, meta_version],
+      do: conn,
+      else: put_resp_header(conn, "mcp-session-id", session_id)
+  end
+
   defp continue(state) do
     {state, exceptions} =
       state
@@ -425,12 +695,39 @@ defmodule Phantom.Plug do
   defp prepare_for_dispatch(state, request) do
     state = maybe_track_response(state, request)
     state = put_in(state.conn, maybe_track_session_stream(state.conn))
+    state = put_request_log_level(state, request)
 
-    put_in(state.session, %{
+    session =
       state.conn.private.phantom.session
-      | elicit: elicit_fun(state.conn, state.stream_fun, request)
-    })
+      |> hydrate_from_meta(request)
+      |> Map.put(:elicit, elicit_fun(state.conn, state.stream_fun, request))
+
+    put_in(state.session, session)
   end
+
+  defp put_request_log_level(state, %Request{} = request) do
+    if Request.protocol_version(request) == "2026-07-28" do
+      log_level =
+        Enum.find_value(Phantom.ClientLogger.log_levels(), 0, fn {name, grade} ->
+          if Atom.to_string(name) == Request.log_level(request), do: grade
+        end)
+
+      Map.put(state, :log_level, log_level)
+    else
+      state
+    end
+  end
+
+  # Under MCP 2026-07-28 every request is self-contained; the `_meta`
+  # carries what `initialize` used to set on the session. Under legacy the
+  # session has already been hydrated from Tracker meta (see
+  # `inherit_session_meta/1`), so `_meta.clientInfo` and
+  # `_meta.capabilities` will be absent and this is a no-op.
+  defp hydrate_from_meta(session, %Phantom.Request{meta: meta} = request) when is_map(meta) do
+    Session.hydrate_from_request(session, request)
+  end
+
+  defp hydrate_from_meta(session, _), do: session
 
   defp dispatch_or_reject(state, request, exceptions) do
     session_id = state.session.id
@@ -469,11 +766,12 @@ defmodule Phantom.Plug do
   defp handle_dispatch_result({:noreply, %Session{} = session}, state, request, exceptions) do
     # Async tool — in-flight claim stays held until `Session.respond/2`
     # eventually casts to the session GenServer and untracks.
-    requests = Map.put(session.requests, request.id, request.response)
+    requests = Map.put(session.requests, request.id, request)
     {put_in(state.session, %{session | requests: requests}), exceptions}
   end
 
   defp handle_dispatch_result({:reply, result, %Session{} = session}, state, request, exceptions) do
+    result = Request.normalize_result(result, request, session)
     request = Request.result(request, "message", result)
     state = put_in(state.session, session)
     state = state.stream_fun.(state, request.id, request.type, request.response)
@@ -535,19 +833,44 @@ defmodule Phantom.Plug do
   end
 
   defp put_cors_headers(conn, origin) do
+    param_headers =
+      conn
+      |> get_req_header("access-control-request-headers")
+      |> Enum.flat_map(&String.split(&1, ","))
+      |> Enum.map(&String.trim/1)
+      |> Enum.filter(&String.starts_with?(String.downcase(&1), "mcp-param-"))
+
+    allowed_headers =
+      [
+        "content-type",
+        "authorization",
+        "mcp-session-id",
+        "last-event-id",
+        "mcp-protocol-version",
+        "mcp-method",
+        "mcp-name"
+        | param_headers
+      ]
+      |> Enum.uniq()
+      |> Enum.join(", ")
+
     conn
-    |> put_resp_header("access-control-expose-headers", "last-event-id, mcp-session-id")
+    |> put_resp_header(
+      "access-control-expose-headers",
+      "last-event-id, mcp-session-id, mcp-protocol-version, mcp-method, mcp-name"
+    )
     |> put_resp_header("access-control-allow-origin", origin || "*")
     |> put_resp_header("access-control-allow-credentials", "true")
     |> put_resp_header("access-control-allow-methods", "GET, POST, OPTIONS")
     |> put_resp_header(
       "access-control-allow-headers",
-      "content-type, authorization, mcp-session-id, last-event-id"
+      allowed_headers
     )
     |> put_resp_header("access-control-max-age", "86400")
   end
 
   defp stream_fun(%{conn: %{halted: false} = conn} = state, id, event, payload) do
+    id = if Session.stateless?(state.session), do: nil, else: id
     conn = send_sse_event(conn, id, event, payload)
     put_in(state.conn, conn)
   end
@@ -610,13 +933,28 @@ defmodule Phantom.Plug do
     end
   end
 
+  defp send_sse_event(conn, _id, "comment", _data) do
+    case chunk(conn, ": keepalive\n\n") do
+      {:ok, conn} ->
+        conn
+
+      {:error, reason} ->
+        disconnect(conn)
+        exit({:shutdown, {:stream_closed, reason}})
+    end
+  end
+
   defp send_sse_event(conn, id, _event_type, nil) do
     id = if id, do: ["id: #{id}\n"], else: []
     data = id ++ ["event: message\n", "data: \"\"\n\n"]
 
     case chunk(conn, data) do
-      {:ok, conn} -> conn
-      {:error, _} -> disconnect(conn)
+      {:ok, conn} ->
+        conn
+
+      {:error, reason} ->
+        disconnect(conn)
+        exit({:shutdown, {:stream_closed, reason}})
     end
   end
 
@@ -629,8 +967,12 @@ defmodule Phantom.Plug do
     data = id ++ ["event: #{event_type}\n", "data: #{data}\n\n"]
 
     case chunk(conn, data) do
-      {:ok, conn} -> conn
-      {:error, _} -> disconnect(conn)
+      {:ok, conn} ->
+        conn
+
+      {:error, reason} ->
+        disconnect(conn)
+        exit({:shutdown, {:stream_closed, reason}})
     end
   end
 

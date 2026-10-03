@@ -785,4 +785,591 @@ defmodule Phantom.PlugTest do
       refute {"content-type", "text/event-stream"} in resp_conn.resp_headers
     end
   end
+
+  describe "MCP 2026-07-28 routing header validation (SEP-2243)" do
+    defp post_stateless(body, headers) do
+      params = Map.get(body, :params) || Map.get(body, "params") || %{}
+      existing_meta = Map.get(params, :_meta) || Map.get(params, "_meta") || %{}
+      meta = Map.merge(stateless_meta(), existing_meta)
+      params = params |> Map.delete(:_meta) |> Map.put("_meta", meta)
+      body = body |> Map.delete(:params) |> Map.put("params", params)
+
+      headers =
+        if Enum.any?(headers, fn {name, _} -> name == "mcp-protocol-version" end),
+          do: headers,
+          else: [{"mcp-protocol-version", "2026-07-28"} | headers]
+
+      conn =
+        :post
+        |> conn("/mcp", body)
+        |> put_req_header("content-type", "application/json")
+
+      Enum.reduce(headers, conn, fn {k, v}, c -> put_req_header(c, k, v) end)
+      |> call()
+    end
+
+    defp stateless_meta do
+      %{
+        "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities" => %{}
+      }
+    end
+
+    test "legacy protocol requests without routing headers still dispatch" do
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: %{"name" => "echo_tool", "arguments" => %{message: "x"}}
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call()
+
+      assert_connected(_conn)
+      assert_receive {:response, 1, "message", %{result: %{content: _}}}
+    end
+
+    test "matching Mcp-Method + Mcp-Name dispatches normally" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: %{
+            "name" => "echo_tool",
+            "arguments" => %{message: "ok"},
+            "_meta" => stateless_meta()
+          }
+        },
+        [{"mcp-method", "tools/call"}, {"mcp-name", "echo_tool"}]
+      )
+
+      assert_connected(_conn)
+      assert_receive {:response, 1, "message", %{result: %{content: _}}}
+    end
+
+    test "MCP-Protocol-Version header selects stateless core after discovery" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{message: "modern"}}
+        },
+        [
+          {"mcp-protocol-version", "2026-07-28"},
+          {"mcp-method", "tools/call"},
+          {"mcp-name", "echo_tool"}
+        ]
+      )
+
+      assert_connected(conn)
+      assert get_resp_header(conn, "mcp-session-id") == []
+
+      assert_receive {:response, 2, "message", %{result: %{content: _, resultType: "complete"}}}
+    end
+
+    test "server/discover returns the modern negotiation and cache envelope" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 3,
+          method: "server/discover",
+          params: %{
+            "_meta" => %{
+              "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+              "io.modelcontextprotocol/clientInfo" => %{
+                "name" => "Inspector",
+                "version" => "2.4.0"
+              },
+              "io.modelcontextprotocol/clientCapabilities" => %{}
+            }
+          }
+        },
+        [{"mcp-method", "server/discover"}]
+      )
+
+      assert_connected(conn)
+      assert get_resp_header(conn, "mcp-session-id") == []
+
+      assert_receive {:response, 3, "message",
+                      %{
+                        result: %{
+                          supportedVersions: ["2026-07-28"],
+                          resultType: "complete",
+                          ttlMs: 0,
+                          cacheScope: "private"
+                        }
+                      }}
+    end
+
+    test "modern elicitation_required tuples become input_required results" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 4,
+          method: "tools/call",
+          params: %{
+            "name" => "elicitation_required_tool",
+            "arguments" => %{},
+            "_meta" => %{
+              "io.modelcontextprotocol/clientCapabilities" => %{
+                "elicitation" => %{"url" => %{}}
+              }
+            }
+          }
+        },
+        [
+          {"mcp-method", "tools/call"},
+          {"mcp-name", "elicitation_required_tool"}
+        ]
+      )
+
+      assert_connected(_conn)
+
+      assert_receive {:response, 4, "message",
+                      %{
+                        result: %{
+                          resultType: "input_required",
+                          inputRequests: %{
+                            "elicitation-0" => %{
+                              method: "elicitation/create",
+                              params: %{mode: "url"}
+                            }
+                          }
+                        }
+                      }}
+    end
+
+    test "modern notifications remain stateless" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          method: "notifications/cancelled",
+          params: %{"requestId" => 123, "reason" => "test"}
+        },
+        [
+          {"mcp-protocol-version", "2026-07-28"},
+          {"mcp-method", "notifications/cancelled"}
+        ]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 202
+      assert get_resp_header(conn, "mcp-session-id") == []
+    end
+
+    test "subscriptions/listen acknowledges and filters modern notifications" do
+      uri = "test:///text/1"
+      subscription_id = "listen:0"
+
+      stream_pid =
+        post_stateless(
+          %{
+            jsonrpc: "2.0",
+            id: subscription_id,
+            method: "subscriptions/listen",
+            params: %{
+              notifications: %{
+                toolsListChanged: true,
+                promptsListChanged: false,
+                resourcesListChanged: true,
+                resourceSubscriptions: [uri]
+              }
+            }
+          },
+          [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "subscriptions/listen"}
+          ]
+        )
+
+      assert_notify(%{
+        jsonrpc: "2.0",
+        method: "notifications/subscriptions/acknowledged",
+        params: %{
+          notifications: %{
+            "toolsListChanged" => true,
+            "resourcesListChanged" => true,
+            "resourceSubscriptions" => [^uri]
+          },
+          _meta: %{"io.modelcontextprotocol/subscriptionId" => ^subscription_id}
+        }
+      })
+
+      Phantom.Tracker.notify_tool_list()
+
+      assert_notify(%{
+        jsonrpc: "2.0",
+        method: "notifications/tools/list_changed",
+        params: %{_meta: %{"io.modelcontextprotocol/subscriptionId" => ^subscription_id}}
+      })
+
+      Phantom.Tracker.notify_prompt_list()
+      refute_receive {:response, nil, "message", %{method: "notifications/prompts/list_changed"}}
+
+      Phantom.Tracker.notify_resource_list()
+
+      assert_notify(%{
+        jsonrpc: "2.0",
+        method: "notifications/resources/list_changed",
+        params: %{_meta: %{"io.modelcontextprotocol/subscriptionId" => ^subscription_id}}
+      })
+
+      Phantom.Tracker.notify_resource_updated(uri)
+
+      assert_notify(%{
+        jsonrpc: "2.0",
+        method: "notifications/resources/updated",
+        params: %{
+          uri: ^uri,
+          _meta: %{"io.modelcontextprotocol/subscriptionId" => ^subscription_id}
+        }
+      })
+
+      Phantom.Tracker.notify_resource_updated("test:///text/2")
+
+      refute_receive {:response, nil, "message",
+                      %{
+                        method: "notifications/resources/updated",
+                        params: %{uri: "test:///text/2"}
+                      }}
+
+      Phantom.Session.finish(stream_pid)
+      assert_receive {:conn, %{status: 200}}
+    end
+
+    test "subscriptions/listen rejects an invalid resource subscription filter" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: "listen:invalid",
+          method: "subscriptions/listen",
+          params: %{notifications: %{resourceSubscriptions: "test:///text/1"}}
+        },
+        [
+          {"mcp-protocol-version", "2026-07-28"},
+          {"mcp-method", "subscriptions/listen"}
+        ]
+      )
+
+      assert_connected(_conn)
+
+      assert_receive {:response, "listen:invalid", "message",
+                      %{error: %{code: -32602, message: "Invalid Params"}}}
+    end
+
+    test "modern logging is enabled by the per-request log level metadata" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 21,
+          method: "tools/call",
+          params: %{
+            name: "client_log_tool",
+            arguments: %{message: "modern log"},
+            _meta: %{"io.modelcontextprotocol/logLevel" => "debug"}
+          }
+        },
+        [
+          {"mcp-protocol-version", "2026-07-28"},
+          {"mcp-method", "tools/call"},
+          {"mcp-name", "client_log_tool"}
+        ]
+      )
+
+      assert_notify(%{
+        method: "notifications/message",
+        params: %{data: %{message: "modern log"}, logger: "test", level: :info}
+      })
+
+      assert_receive {:response, 21, "message", %{result: %{resultType: "complete"}}}
+      refute_receive {:response, nil, "closed", _}
+    end
+
+    test "modern logging stays silent when the request does not opt in" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 22,
+          method: "tools/call",
+          params: %{name: "client_log_tool", arguments: %{message: "do not emit"}}
+        },
+        [
+          {"mcp-protocol-version", "2026-07-28"},
+          {"mcp-method", "tools/call"},
+          {"mcp-name", "client_log_tool"}
+        ]
+      )
+
+      assert_receive {:response, 22, "message", %{result: %{resultType: "complete"}}}
+      refute_receive {:response, nil, "closed", _}
+      refute_receive {:response, nil, "message", %{method: "notifications/message"}}
+    end
+
+    test "missing Mcp-Method rejects with 400 + -32020 HeaderMismatch" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 9,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{}, "_meta" => stateless_meta()}
+        },
+        [{"mcp-name", "echo_tool"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      error = JSON.decode!(conn.resp_body)
+      assert error["error"]["code"] == -32020
+      assert error["error"]["message"] =~ "Mcp-Method"
+      assert error["id"] == 9
+    end
+
+    test "Mcp-Method value mismatch rejects with 400 + -32020" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 10,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{}, "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "prompts/get"}, {"mcp-name", "echo_tool"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32020
+    end
+
+    test "Mcp-Method is case-sensitive: TOOLS/CALL vs tools/call rejects" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 11,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{}, "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "TOOLS/CALL"}, {"mcp-name", "echo_tool"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32020
+    end
+
+    test "tools/call without Mcp-Name rejects" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 12,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{}, "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "tools/call"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32020
+    end
+
+    test "tools/call with mismatched Mcp-Name rejects" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 13,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{}, "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "tools/call"}, {"mcp-name", "wrong_tool"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32020
+    end
+
+    test "resources/read Mcp-Name mirrors params.uri" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 14,
+          method: "resources/read",
+          params: %{"uri" => "test:///nonexistent/path", "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "resources/read"}, {"mcp-name", "test:///nonexistent/path"}]
+      )
+
+      # The URI doesn't resolve to a real resource, but it should at least pass
+      # header validation and reach the dispatcher (which then returns resource_not_found).
+      assert_connected(_conn)
+      assert_receive {:response, 14, "message", %{error: %{code: code}}}
+      # Under stateless protocol, resource_not_found returns -32602 (SEP-2164).
+      assert code == -32602
+    end
+
+    test "resources/read with mismatched Mcp-Name (different URI) rejects" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 15,
+          method: "resources/read",
+          params: %{"uri" => "test:///a", "_meta" => stateless_meta()}
+        },
+        [{"mcp-method", "resources/read"}, {"mcp-name", "test:///b"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32020
+    end
+
+    test "decodes an encoded Mcp-Name before comparing it" do
+      encoded_name = "=?base64?#{Base.encode64("echo_tool")}?="
+
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 16,
+          method: "tools/call",
+          params: %{"name" => "echo_tool", "arguments" => %{"message" => "encoded"}}
+        },
+        [{"mcp-method", "tools/call"}, {"mcp-name", encoded_name}]
+      )
+
+      assert_connected(_conn)
+      assert_receive {:response, 16, "message", %{result: %{content: [%{text: "encoded"}]}}}
+    end
+
+    test "validates declared Mcp-Param headers against nested tool arguments" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 161,
+          method: "tools/call",
+          params: %{"name" => "header_echo_tool", "arguments" => %{"tenant" => "acme"}}
+        },
+        [
+          {"mcp-method", "tools/call"},
+          {"mcp-name", "header_echo_tool"},
+          {"mcp-param-tenant", "=?base64?#{Base.encode64("acme")}?="}
+        ]
+      )
+
+      assert_connected(_conn)
+      assert_receive {:response, 161, "message", %{result: %{content: [%{text: "acme"}]}}}
+
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 162,
+          method: "tools/call",
+          params: %{"name" => "header_echo_tool", "arguments" => %{"tenant" => "acme"}}
+        },
+        [{"mcp-method", "tools/call"}, {"mcp-name", "header_echo_tool"}]
+      )
+
+      assert_receive {:conn, mismatch}
+      assert mismatch.status == 400
+      assert JSON.decode!(mismatch.resp_body)["error"]["code"] == -32020
+    end
+
+    test "requires namespaced metadata and a matching protocol header" do
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 17,
+        method: "tools/list",
+        params: %{"_meta" => %{"io.modelcontextprotocol/protocolVersion" => "2026-07-28"}}
+      })
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("mcp-protocol-version", "2026-07-28")
+      |> put_req_header("mcp-method", "tools/list")
+      |> call()
+
+      assert_receive {:conn, missing_capabilities}
+      assert missing_capabilities.status == 400
+      assert JSON.decode!(missing_capabilities.resp_body)["error"]["code"] == -32602
+
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 18,
+        method: "tools/list",
+        params: %{"_meta" => stateless_meta()}
+      })
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("mcp-protocol-version", "2025-11-25")
+      |> put_req_header("mcp-method", "tools/list")
+      |> call()
+
+      assert_receive {:conn, mismatch}
+      assert mismatch.status == 400
+      assert JSON.decode!(mismatch.resp_body)["error"]["code"] == -32020
+    end
+
+    test "returns UnsupportedProtocolVersion and 404 for unknown modern methods" do
+      unsupported_meta = %{
+        "io.modelcontextprotocol/protocolVersion" => "2099-01-01",
+        "io.modelcontextprotocol/clientCapabilities" => %{}
+      }
+
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 19,
+        method: "tools/list",
+        params: %{"_meta" => unsupported_meta}
+      })
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("mcp-protocol-version", "2099-01-01")
+      |> put_req_header("mcp-method", "tools/list")
+      |> call()
+
+      assert_receive {:conn, unsupported}
+      assert unsupported.status == 400
+      unsupported_error = JSON.decode!(unsupported.resp_body)["error"]
+      assert unsupported_error["code"] == -32022
+      assert unsupported_error["data"]["requested"] == "2099-01-01"
+
+      post_stateless(
+        %{jsonrpc: "2.0", id: 20, method: "example/unknown", params: %{}},
+        [{"mcp-method", "example/unknown"}]
+      )
+
+      assert_receive {:conn, unknown}
+      assert unknown.status == 404
+      assert JSON.decode!(unknown.resp_body)["error"]["code"] == -32601
+    end
+
+    test "rejects modern JSON-RPC batches" do
+      :post
+      |> conn(
+        "/mcp",
+        JSON.encode!([
+          %{jsonrpc: "2.0", id: 1, method: "tools/list", params: %{"_meta" => stateless_meta()}}
+        ])
+      )
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("mcp-protocol-version", "2026-07-28")
+      |> call()
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32600
+    end
+
+    test "removed modern methods return 404 MethodNotFound" do
+      post_stateless(
+        %{jsonrpc: "2.0", id: 16, method: "ping", params: %{"_meta" => stateless_meta()}},
+        [{"mcp-method", "ping"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 404
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32601
+    end
+  end
 end

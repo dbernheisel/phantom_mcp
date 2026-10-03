@@ -1,6 +1,10 @@
 defmodule Phantom.ClientLogger do
   @moduledoc """
   Notify the client of logs.
+
+  Under MCP `2026-07-28`, clients opt into these notifications per request
+  with the `io.modelcontextprotocol/logLevel` metadata key. Legacy clients
+  configure the session-wide threshold with `logging/setLevel`.
   """
 
   alias Phantom.Session
@@ -26,10 +30,28 @@ defmodule Phantom.ClientLogger do
   @doc false
   def do_log(%Session{pubsub: nil, pid: nil}, _level_num, _name, _domain, _payload), do: :ok
 
-  def do_log(%Session{pid: pid, id: id}, level_num, level_name, domain, payload) do
+  def do_log(%Session{} = session, level_num, level_name, domain, payload) do
     payload = if is_binary(payload), do: %{message: payload}, else: payload
+
+    if Session.stateless?(session) do
+      threshold =
+        Enum.find_value(@log_grades, fn {name, grade} ->
+          if Atom.to_string(name) == Phantom.Request.log_level(session.request), do: grade
+        end)
+
+      if threshold && level_num <= threshold do
+        cast_log(session, {:log_modern, level_name, domain, payload})
+      end
+    else
+      cast_log(session, {:log, level_num, level_name, domain, payload})
+    end
+
+    :ok
+  end
+
+  defp cast_log(%Session{pid: pid, id: id}, message) do
     pid = Phantom.Tracker.get_session(id) || pid
-    GenServer.cast(pid, {:log, level_num, level_name, domain, payload})
+    GenServer.cast(pid, message)
   end
 
   @doc "Notify the client for the provided session and domain at level with a payload"

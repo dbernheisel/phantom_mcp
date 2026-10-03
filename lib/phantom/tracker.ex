@@ -227,6 +227,8 @@ defmodule Phantom.Tracker do
       Phoenix.Tracker.list(__MODULE__, @sessions)
     rescue
       _ -> []
+    catch
+      :exit, _ -> []
     end
   else
     def list_sessions, do: []

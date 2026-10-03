@@ -158,6 +158,7 @@ defmodule Phantom.Stdio do
   """
 
   alias Phantom.Cache
+  alias Phantom.Request
   alias Phantom.Session
 
   def child_spec(opts) do
@@ -177,6 +178,7 @@ defmodule Phantom.Stdio do
     router = Keyword.fetch!(opts, :router)
     input = Keyword.get(opts, :input, :stdio)
     output = Keyword.get(opts, :output, :stdio)
+    pubsub = Keyword.get(opts, :pubsub)
     timeout = Keyword.get(opts, :session_timeout, :infinity)
 
     configure_logger(Keyword.get(opts, :log, :stderr))
@@ -189,6 +191,7 @@ defmodule Phantom.Stdio do
       Session.new(nil,
         router: router,
         pid: self(),
+        pubsub: pubsub,
         close_after_complete: false,
         elicit: elicit_fun(output)
       )
@@ -247,7 +250,7 @@ defmodule Phantom.Stdio do
         if line != "" do
           case JSON.decode(line) do
             {:ok, request} when is_list(request) ->
-              send(parent, {:phantom_dispatch, request})
+              send(parent, {:phantom_dispatch_error, :batch_not_supported})
 
             {:ok, request} when is_map(request) ->
               send(parent, {:phantom_dispatch, [request]})
@@ -285,14 +288,14 @@ defmodule Phantom.Stdio do
   defp elicit_fun(output) do
     fn elicitation, timeout ->
       {:ok, request} =
-        Phantom.Request.build(%{
+        Request.build(%{
           "id" => UUIDv7.generate(),
           "jsonrpc" => "2.0",
           "method" => "elicitation/create",
           "params" => Phantom.Elicit.to_json(elicitation)
         })
 
-      IO.write(output, [encode_ascii(Phantom.Request.to_json(request)), ?\n])
+      IO.write(output, [encode_ascii(Request.to_json(request)), ?\n])
       await_elicitation(request.id, timeout)
     end
   end

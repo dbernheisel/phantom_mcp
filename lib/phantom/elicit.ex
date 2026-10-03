@@ -50,7 +50,7 @@ defmodule Phantom.Elicit do
       })
 
       def my_tool(params, session) do
-        case Phantom.Session.elicit(session, @elicit_name) do
+        case Phantom.Session.elicit(session, @elicit_name, await: true) do
           {:ok, %{"action" => "accept", "content" => content}} ->
             {:reply, Tool.text("Hello \#{content["name"]}"), session}
 
@@ -74,6 +74,27 @@ defmodule Phantom.Elicit do
   - `:enum` — options: `:enum` (list of values or `{value, title}` tuples), `:multi` (boolean), `:min`, `:max`
 
   All property types accept `:name`, `:required`, `:title`, and `:description`.
+
+  ### Re-entry form elicitation
+
+  As an alternative to inline blocking with `await: true`, call
+  `Phantom.Session.elicit/3` without `:await` and pass `:state`. The
+  handler is *re-entered* on continuation with `session.state` populated:
+
+      def my_tool(%{"name" => name},
+                  %Session{state: %{step: :got_name, params: orig}} = session) do
+        {:reply, Tool.text("Hello \#{name}"), session}
+      end
+
+      def my_tool(params, session) do
+        {:noreply,
+         Session.elicit(session, @elicit_name, state: %{step: :got_name, params: params})}
+      end
+
+  The dispatcher converts the call to an `input_required` result under
+  stateless or to an SSE elicit round-trip + handler re-invocation under
+  legacy. See `Phantom.Tool.input_required/1` for the lower-level result
+  builder.
 
   ## URL mode
 
@@ -126,7 +147,7 @@ defmodule Phantom.Elicit do
           elicitation_id: elicitation_id
         })
 
-        case Phantom.Session.elicit(session, elicitation) do
+        case Phantom.Session.elicit(session, elicitation, await: true) do
           {:ok, %{"action" => "accept", "content" => content}} ->
             {:reply, Tool.text("Authenticated"), session}
 
@@ -340,7 +361,7 @@ defmodule Phantom.Elicit do
     attrs =
       Map.take(
         attrs,
-        ~w[name required type title description min_length max_length pattern format]a
+        ~w[name required type title description min_length max_length pattern format default]a
       )
 
     if format = attrs[:format] do
@@ -351,7 +372,7 @@ defmodule Phantom.Elicit do
   end
 
   defp build_property(%{type: :enum} = attrs) do
-    Map.take(attrs, ~w[name required type title description enum multi min max]a)
+    Map.take(attrs, ~w[name required type title description enum multi min max default]a)
   end
 
   defp build_property(%{type: :boolean} = attrs) do
@@ -365,8 +386,25 @@ defmodule Phantom.Elicit do
   defp build_property(%{type: type} = attrs) when type in @integer do
     Map.take(
       attrs,
-      ~w[name required type title description minimum maximum]a
+      ~w[name required type title description minimum maximum default]a
     )
+  end
+
+  @doc """
+  Render an `Elicit` struct as the MCP `2026-07-28` `inputRequests` map.
+
+  Under the stateless core, the server returns its outstanding input
+  requirements directly in the tool reply rather than over an SSE-pushed
+  `elicitation/create` round-trip. This adapter packages the same Elicit
+  struct your handler already builds into the new shape.
+  """
+  def to_input_requests(%__MODULE__{} = elicit) do
+    %{
+      "elicitation" => %{
+        method: "elicitation/create",
+        params: Map.delete(to_json(elicit), :elicitationId)
+      }
+    }
   end
 
   def to_json(%__MODULE__{mode: :url} = elicit) do

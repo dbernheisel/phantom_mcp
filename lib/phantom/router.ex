@@ -5,18 +5,33 @@ defmodule Phantom.Router do
 
   See `Phantom` for usage examples.
 
+  ## Options
+
+  - `:name` — server name advertised to the client
+  - `:vsn` — server version string (defaults to the OTP app version)
+  - `:instructions` — server instructions, typically the moduledoc
+  - `:icons`, `:website_url` — server metadata
+  - `:secret_key_base` — required to support MCP `2026-07-28`. Used by
+    `Phantom.RequestState` to encrypt the multi-round-trip `requestState`
+    blob; nodes serving the same router must share this value.
+
   ## Telemetry
 
   Telemetry is provided with these events:
 
-  - `[:phantom, :dispatch, :start]` with meta: `~w[method params request session]a`
-  - `[:phantom, :dispatch, :stop]` with meta: `~w[method params request result session]a`
+  - `[:phantom, :dispatch, :start]` with meta: `~w[method params request session trace_context]a`
+  - `[:phantom, :dispatch, :stop]` with meta: `~w[method params request result session trace_context]a`
   - `[:phantom, :dispatch, :exception]` with meta: `~w[method kind reason stacktrace params request session]a`
+
+  The `:trace_context` value is `Phantom.Request.trace_context/1` applied to
+  the incoming request — a map of W3C `traceparent`, `tracestate`, and
+  `baggage` when the client provided them in `_meta`.
   """
 
   import Plug.Router.Utils, only: [build_path_match: 1]
 
   alias Phantom.Cache
+  alias Phantom.Elicit
   alias Phantom.Prompt
   alias Phantom.Request
   alias Phantom.Resource
@@ -129,7 +144,7 @@ defmodule Phantom.Router do
   resources. Any unresolved URI is rejected before this callback is invoked.
 
   Phantom invokes this callback with a one-element list when a client requests
-  `resources/subscribe`. It also invokes it once with all resources in an update batch before
+  `resources/subscribe`, and with the requested `resourceSubscriptions` on `subscriptions/listen`. It also invokes it once with all resources in an update batch before
   notifying a subscribed session. Applications performing bulk writes should collect their
   changed resource URIs and call `Phantom.Tracker.notify_resources_updated/1` once so this
   callback can authorize them with one bulk query.
@@ -139,7 +154,13 @@ defmodule Phantom.Router do
   @callback authorize_resource_subscriptions([resolved_resource()], Session.t()) ::
               [resolved_resource() | String.t()] | nil
 
-  @supported_protocol_versions ~w[2024-11-05 2025-03-26 2025-06-18 2025-11-25]
+  @supported_protocol_versions ~w[
+    2024-11-05
+    2025-03-26
+    2025-06-18
+    2025-11-25
+    2026-07-28
+  ]
 
   @dialyzer {:nowarn_function, default_vsn: 1}
   defp default_vsn(nil) do
@@ -163,6 +184,8 @@ defmodule Phantom.Router do
     instructions = Keyword.get(opts, :instructions, "")
     icons = Keyword.get(opts, :icons, nil)
     website_url = Keyword.get(opts, :website_url, nil)
+    secret_key_base = Keyword.get(opts, :secret_key_base, nil)
+    request_state_salt = Keyword.get(opts, :request_state_salt, nil)
 
     quote location: :keep, generated: true do
       @behaviour Phantom.Router
@@ -193,6 +216,8 @@ defmodule Phantom.Router do
       @instructions unquote(instructions)
       @icons unquote(icons)
       @website_url unquote(website_url)
+      @secret_key_base unquote(secret_key_base)
+      @request_state_salt unquote(request_state_salt)
 
       Module.register_attribute(__MODULE__, :phantom_tools, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_prompts, accumulate: true)
@@ -347,7 +372,13 @@ defmodule Phantom.Router do
       def dispatch_method([method, params, request, session] = args) do
         :telemetry.span(
           [:phantom, :dispatch],
-          %{method: method, params: params, request: request, session: session},
+          %{
+            method: method,
+            params: params,
+            request: request,
+            session: session,
+            trace_context: Phantom.Request.trace_context(request)
+          },
           fn ->
             result = apply(__MODULE__, :dispatch_method, args)
             {result, %{}, %{result: result}}
@@ -407,8 +438,61 @@ defmodule Phantom.Router do
         end
       end
 
+      def dispatch_method("server/discover", _params, _request, session) do
+        instructions =
+          case instructions(session) do
+            {:ok, result} -> result
+            _ -> ""
+          end
+
+        server_info =
+          case server_info(session) do
+            {:ok, result} -> result
+            _ -> %{}
+          end
+
+        capabilities =
+          %{elicitation: %{}}
+          |> Phantom.Router.tool_capability(__MODULE__, session)
+          |> Phantom.Router.prompt_capability(__MODULE__, session)
+          |> Phantom.Router.resource_capability(__MODULE__, session)
+          |> Phantom.Router.completion_capability(__MODULE__, session)
+          |> Phantom.Router.logging_capability(__MODULE__, session)
+          |> Phantom.Router.ui_capability(__MODULE__, session)
+
+        {:reply,
+         %{
+           supportedVersions: ["2026-07-28"],
+           capabilities: capabilities,
+           instructions: instructions,
+           _meta: %{"io.modelcontextprotocol/serverInfo" => server_info}
+         }, session}
+      end
+
       def dispatch_method("ping", _params, _request, session) do
         {:reply, %{}, session}
+      end
+
+      def dispatch_method(
+            "notifications/cancelled",
+            %{"requestId" => request_id},
+            _request,
+            session
+          ) do
+        Session.cancel_request(session, request_id)
+        {:reply, nil, session}
+      end
+
+      def dispatch_method(
+            "subscriptions/listen",
+            %{"notifications" => notifications},
+            request,
+            session
+          ) do
+        case Session.listen(session, request.id, notifications) do
+          {:ok, session} -> {:noreply, session}
+          :error -> {:error, Request.invalid_params(), session}
+        end
       end
 
       def dispatch_method("tools/list", params, _request, session) do
@@ -471,7 +555,7 @@ defmodule Phantom.Router do
               end
 
             _ ->
-              {:error, Request.resource_not_found(%{uri: uri}), session}
+              {:error, Request.resource_not_found(%{uri: uri}, session), session}
           end
         end
       end
@@ -491,32 +575,7 @@ defmodule Phantom.Router do
       end
 
       def dispatch_method("resources/read", %{"uri" => uri} = _params, request, session) do
-        {:ok, %{path: path, scheme: scheme}} = URI.new(uri)
-
-        case Phantom.Router.get_resource_router(__MODULE__, session, scheme) do
-          nil ->
-            {:error, Request.invalid_params(), session}
-
-          router ->
-            path_info =
-              for segment <- :binary.split(path, "/", [:global]),
-                  segment != "",
-                  do: URI.decode(segment)
-
-            fake_conn = %Plug.Conn{
-              assigns: %{
-                session: %{session | request: request},
-                uri: uri,
-                result: nil
-              },
-              method: "POST",
-              request_path: path,
-              path_info: path_info
-            }
-
-            result = router.call(fake_conn, router.init([])).assigns.result
-            Request.resource_response(result, uri, session)
-        end
+        Phantom.Router.read_resource_request(__MODULE__, session, uri, request)
       end
 
       def dispatch_method("prompts/list", params, _request, session) do
@@ -974,6 +1033,86 @@ defmodule Phantom.Router do
     Cache.validate!(info.prompts)
     Cache.validate!(info.tools)
     Cache.validate!(info.resource_templates)
+    validate_secret_key_base!(mod, info)
+  end
+
+  defp validate_secret_key_base!(mod, info) do
+    has_handlers? = info.tools != [] or info.prompts != []
+    secret = info.secret_key_base
+    salt = info.request_state_salt
+
+    cond do
+      is_binary(secret) and byte_size(secret) < 64 ->
+        raise ArgumentError, """
+        #{inspect(mod)}: :secret_key_base must be at least 64 bytes (got \
+        #{byte_size(secret)}).
+
+        Used by Phantom.RequestState to encrypt the multi-round-trip
+        requestState blob under MCP 2026-07-28. A short key degrades the
+        security guarantee — the blob carries continuation state; an attacker
+        who guesses the key could forge resume requests.
+
+        Generate a strong key with `:crypto.strong_rand_bytes(64) |> Base.encode64()`.
+        """
+
+      is_binary(secret) and is_nil(salt) ->
+        raise ArgumentError, """
+        #{inspect(mod)}: :secret_key_base is configured but :request_state_salt is not.
+
+        Both must be set together. The salt is the HKDF salt used to derive a
+        key specifically for requestState blobs; it doesn't have to be secret
+        but it must be stable. Rotating it invalidates all in-flight blobs.
+
+            use Phantom.Router,
+              ...,
+              secret_key_base: ...,
+              request_state_salt: "myapp request_state v1"
+        """
+
+      is_nil(secret) and is_binary(salt) ->
+        raise ArgumentError, """
+        #{inspect(mod)}: :request_state_salt is configured but :secret_key_base is not.
+
+        Both must be set together.
+        """
+
+      is_nil(secret) and has_handlers? and not suppress_missing_secret_warning?() ->
+        IO.warn("""
+        #{inspect(mod)} has tools or prompts but no :secret_key_base /
+        :request_state_salt configured.
+
+        Tools/prompts that elicit input from the client will work under legacy
+        MCP protocols (≤ 2025-11-25) but fail under MCP 2026-07-28 (stateless
+        core), because Phantom needs both values to encrypt the requestState
+        continuation blob.
+
+        To support modern clients:
+
+            use Phantom.Router,
+              ...,
+              secret_key_base: Application.compile_env(:my_app, :secret_key_base),
+              request_state_salt: "myapp request_state v1"
+
+        The key must be at least 64 bytes. Generate one with:
+
+            :crypto.strong_rand_bytes(64) |> Base.encode64()
+
+        The salt is a stable string of your choosing — see `Phantom.RequestState`.
+        """)
+
+      true ->
+        :ok
+    end
+  end
+
+  # Suppress the missing-secret warning only when compiling Phantom's own
+  # test suite. Checking the current Mix project's app name (instead of
+  # `Mix.env()`) avoids silencing the warning for downstream users running
+  # their own test environments.
+  defp suppress_missing_secret_warning? do
+    Mix.Project.config()[:app] == :phantom_mcp
+  rescue
+    _ -> false
   end
 
   defmacro __before_compile__(env) do
@@ -986,7 +1125,9 @@ defmodule Phantom.Router do
             version: @vsn,
             tools: @phantom_tools,
             resource_templates: @phantom_resource_templates,
-            prompts: @phantom_prompts
+            prompts: @phantom_prompts,
+            secret_key_base: @secret_key_base,
+            request_state_salt: @request_state_salt
           }
         end
       end,
@@ -1377,67 +1518,117 @@ defmodule Phantom.Router do
   end
 
   def wrap(:tool, {:reply, result, %Session{} = session}, _session) do
-    {:reply, Tool.response(result), session}
+    {:reply, encode_request_state(Tool.response(result), session), session}
   end
 
-  defp paginate(entities, cursor, fun) do
-    entities
-    |> Enum.chunk_while(
-      {0, []},
-      fn
-        _entity, %{} = cursor ->
-          {:halt, cursor}
+  @doc false
+  def encode_request_state(result, session) when is_map(result) do
+    result_type = result[:resultType] || result["resultType"]
+    state_key = if Map.has_key?(result, :requestState), do: :requestState, else: "requestState"
+    raw = result[state_key]
 
-        %{name: name}, acc when name < cursor ->
-          {:cont, acc}
+    if result_type in ["input_required", "inputRequired"] and
+         Map.has_key?(result, state_key) and not is_binary(raw) do
+      info = session.router.__phantom__(:info)
 
-        %{name: name}, {100, page} ->
-          {:cont, Enum.reverse(page), %{nextCursor: name}}
+      case {info[:secret_key_base], info[:request_state_salt]} do
+        {secret, salt} when is_binary(secret) and is_binary(salt) ->
+          binding = Phantom.RequestState.binding(session.request, session)
+          Map.put(result, state_key, Phantom.RequestState.encode(raw, binding, secret, salt))
 
-        %{name: name} = entity, {count, page} when name >= cursor ->
-          {:cont, {count + 1, [fun.(entity) | page]}}
-      end,
-      fn
-        %{} = cursor -> {:cont, cursor, []}
-        {_count, page} -> {:cont, Enum.reverse(page), []}
+        _ ->
+          raise ArgumentError,
+                "Tool returned input_required but #{inspect(session.router)} has no :secret_key_base / :request_state_salt configured"
       end
-    )
-    |> case do
-      [page, cursor] -> {page, cursor}
-      [page] -> {page, nil}
-      [] -> {[], nil}
+    else
+      result
+    end
+  end
+
+  def encode_request_state(result, _session), do: result
+
+  defp paginate(entities, cursor, fun) do
+    if not is_nil(cursor) and not Enum.any?(entities, &(&1.name == cursor)) do
+      {:error, Request.invalid_params(%{cursor: "Invalid cursor"})}
+    else
+      result =
+        entities
+        |> Enum.chunk_while(
+          {0, []},
+          fn
+            _entity, %{} = cursor ->
+              {:halt, cursor}
+
+            %{name: name}, acc when name < cursor ->
+              {:cont, acc}
+
+            %{name: name}, {100, page} ->
+              {:cont, Enum.reverse(page), %{nextCursor: name}}
+
+            %{name: name} = entity, {count, page} when name >= cursor ->
+              {:cont, {count + 1, [fun.(entity) | page]}}
+          end,
+          fn
+            %{} = cursor -> {:cont, cursor, []}
+            {_count, page} -> {:cont, Enum.reverse(page), []}
+          end
+        )
+
+      case result do
+        [page, next_cursor] -> {:ok, page, next_cursor}
+        [page] -> {:ok, page, nil}
+        [] -> {:ok, [], nil}
+      end
     end
   end
 
   @doc false
   def list_tools(router, session, cursor) do
-    {page, next_cursor} =
+    result =
       session
       |> Cache.list(router, :tools)
       |> Enum.filter(&Phantom.UI.model_visible?/1)
       |> paginate(cursor, &Tool.to_json/1)
 
-    {:reply, Map.merge(%{tools: page}, next_cursor || %{}), session}
+    case result do
+      {:ok, page, next_cursor} ->
+        {:reply, Map.merge(%{tools: page}, next_cursor || %{}), session}
+
+      {:error, error} ->
+        {:error, error, session}
+    end
   end
 
   @doc false
   def list_resource_templates(router, session, cursor) do
-    {page, next_cursor} =
+    result =
       session
       |> Cache.list(router, :resource_templates)
       |> paginate(cursor, &ResourceTemplate.to_json/1)
 
-    {:reply, Map.merge(%{resourceTemplates: page}, next_cursor || %{}), session}
+    case result do
+      {:ok, page, next_cursor} ->
+        {:reply, Map.merge(%{resourceTemplates: page}, next_cursor || %{}), session}
+
+      {:error, error} ->
+        {:error, error, session}
+    end
   end
 
   @doc false
   def list_prompts(router, session, cursor) do
-    {page, next_cursor} =
+    result =
       session
       |> Cache.list(router, :prompts)
       |> paginate(cursor, &Prompt.to_json/1)
 
-    {:reply, Map.merge(%{prompts: page}, next_cursor || %{}), session}
+    case result do
+      {:ok, page, next_cursor} ->
+        {:reply, Map.merge(%{prompts: page}, next_cursor || %{}), session}
+
+      {:error, error} ->
+        {:error, error, session}
+    end
   end
 
   @doc false
@@ -1452,25 +1643,327 @@ defmodule Phantom.Router do
         {:error, Request.invalid_params(), session}
 
       tool ->
-        params = Map.get(params, "arguments", %{})
+        args = Map.get(params, "arguments", %{})
+        input_response_args = input_response_args(request)
 
-        case JSONSchema.maybe_validate(tool.input_schema, params) do
-          {:ok, params} ->
-            wrap(
-              :tool,
-              apply(
-                tool.handler,
-                tool.function,
-                [params, %{session | request: %{request | spec: tool}}]
-              ),
-              session
-            )
+        case decode_request_state(router, session, request) do
+          {:ok, session} ->
+            with {:ok, validated} <- JSONSchema.maybe_validate(tool.input_schema, args) do
+              run_handler(
+                :tool,
+                tool,
+                Map.merge(validated, input_response_args),
+                session,
+                request
+              )
+            else
+              {:error, reasons} ->
+                if Request.modern?(request) do
+                  {:reply, Tool.error("Invalid tool arguments: #{Enum.join(reasons, "; ")}"),
+                   session}
+                else
+                  {:error, Request.invalid_params(%{validation_errors: reasons}), session}
+                end
+            end
 
-          {:error, reasons} ->
-            {:error, Request.invalid_params(%{validation_errors: reasons}), session}
+          {:error, :invalid_request_state} ->
+            {:error, Request.invalid_params(%{requestState: "Invalid request state"}), session}
+
+          {:error, :expired_request_state} ->
+            {:error,
+             %{
+               code: -32001,
+               message: "Request state expired",
+               data: %{requestState: "expired"}
+             }, session}
         end
     end
   end
+
+  defp run_handler(kind, spec, params, session, request) do
+    request_id = request.id
+    parent_pid = session.pid
+    task_session = %{session | request: %{request | spec: spec}}
+
+    worker =
+      spawn(fn ->
+        # The isolated handler uses these process keys to return its eventual
+        # result to the transport process that owns the current request.
+        Process.put(:phantom_adopter, parent_pid)
+        Process.put(:phantom_tool_request_id, request_id)
+
+        try do
+          handler_result = apply(spec.handler, spec.function, [params, task_session])
+          process_handler_result(kind, handler_result, spec, params, task_session)
+        rescue
+          exception ->
+            :telemetry.execute([:phantom, :dispatch, :exception], %{}, %{
+              kind: :error,
+              reason: exception,
+              stacktrace: __STACKTRACE__,
+              method: telemetry_method(kind),
+              params: params,
+              request: request,
+              session: task_session
+            })
+
+            respond_error_to_caller(Request.internal_error(Exception.message(exception)))
+        end
+      end)
+
+    send(parent_pid, {:phantom_worker_started, request_id, worker})
+
+    {:noreply, session}
+  end
+
+  defp telemetry_method(:tool), do: "tools/call"
+  defp telemetry_method(:prompt), do: "prompts/get"
+
+  # Stateless handlers serialize the supplied state into `requestState` and exit.
+  # A retry decrypts that state and re-enters the handler. Legacy transports keep
+  # their historical inline elicitation behavior over the open session stream.
+  defp process_handler_result(
+         kind,
+         {:noreply, %Session{pending_elicit: {elicit, state}} = session},
+         spec,
+         params,
+         _session
+       ) do
+    session = %{session | pending_elicit: nil}
+
+    if Session.stateless?(session) do
+      if Session.elicitation_supported?(session, elicit) do
+        elicit
+        |> Tool.input_required(state)
+        |> encode_request_state(session)
+        |> respond_to_caller()
+      else
+        required =
+          if elicit.mode == :url,
+            do: ["elicitation", "elicitation.url"],
+            else: ["elicitation"]
+
+        respond_error_to_caller(Request.missing_capability(required))
+      end
+    else
+      process_legacy_reentry(kind, elicit, state, session, spec, params)
+    end
+  end
+
+  defp process_handler_result(kind, result, spec, params, session) do
+    finalize_result(kind, result, spec, params, session)
+  end
+
+  defp process_legacy_reentry(kind, elicit, state, session, spec, params) do
+    case Session.elicit(session, elicit, await: true) do
+      {:ok, response} ->
+        new_session = %{session | state: state}
+        new_params = Map.merge(params, response)
+        handler_result = apply(spec.handler, spec.function, [new_params, new_session])
+        process_handler_result(kind, handler_result, spec, new_params, new_session)
+
+      :not_supported ->
+        respond_error_to_caller(
+          Request.invalid_params(%{elicit: "Client does not support elicitation"})
+        )
+
+      :timeout ->
+        respond_error_to_caller(Request.internal_error("Elicitation timed out"))
+
+      :error ->
+        respond_error_to_caller(Request.internal_error("Elicitation failed"))
+
+      other ->
+        respond_error_to_caller(
+          Request.internal_error("Unexpected Session.elicit/3 return: #{inspect(other)}")
+        )
+    end
+  end
+
+  defp finalize_result(kind, {:reply, result, %Session{}}, spec, _params, session) do
+    formatted = format_response(kind, result, session)
+
+    with :ok <- validate_output(kind, spec, formatted),
+         :ok <- validate_input_required(formatted, session) do
+      respond_to_caller(encode_request_state(formatted, session))
+    else
+      {:error, errors} when is_list(errors) ->
+        respond_to_caller(Tool.error("Invalid tool output: #{Enum.join(errors, "; ")}"))
+
+      {:error, error} when is_map(error) ->
+        respond_error_to_caller(error)
+    end
+  end
+
+  defp finalize_result(_kind, {:error, error, %Session{}}, _spec, _params, _session) do
+    respond_error_to_caller(error)
+  end
+
+  defp finalize_result(_kind, {:noreply, %Session{}}, _spec, _params, _session) do
+    :ok
+  end
+
+  defp finalize_result(_kind, {:elicitation_required, elicitations}, _spec, _params, session)
+       when is_list(elicitations) do
+    if Session.stateless?(session) do
+      input_requests =
+        elicitations
+        |> Enum.with_index()
+        |> Map.new(fn {elicit, index} ->
+          request = elicit |> Elicit.to_input_requests() |> Map.fetch!("elicitation")
+          {"elicitation-#{index}", request}
+        end)
+
+      result = %{resultType: "input_required", inputRequests: input_requests}
+
+      case validate_input_required(result, session) do
+        :ok -> respond_to_caller(result)
+        {:error, error} -> respond_error_to_caller(error)
+      end
+    else
+      respond_error_to_caller(Request.url_elicitation_required(elicitations))
+    end
+  end
+
+  defp finalize_result(kind, other, _spec, _params, session) do
+    respond_to_caller(format_response(kind, other, session))
+  end
+
+  defp format_response(:tool, result, _session), do: Tool.response(result)
+
+  defp format_response(:prompt, result, session),
+    do: Prompt.response(result, session.request.spec)
+
+  defp validate_output(:tool, %{output_schema: nil}, _formatted), do: :ok
+
+  defp validate_output(:tool, %{output_schema: schema}, formatted) do
+    content = formatted[:structuredContent] || formatted["structuredContent"]
+
+    case Phantom.Tool.JSONSchema.maybe_validate(schema, content) do
+      {:ok, _} -> :ok
+      {:error, errors} -> {:error, errors}
+    end
+  end
+
+  defp validate_output(_kind, _spec, _formatted), do: :ok
+
+  defp validate_input_required(result, session) when is_map(result) do
+    type = result[:resultType] || result["resultType"]
+    requests = result[:inputRequests] || result["inputRequests"]
+
+    state? =
+      Map.has_key?(result, :requestState) or
+        Map.has_key?(result, "requestState")
+
+    if type in ["input_required", "inputRequired"] do
+      cond do
+        not state? and not (is_map(requests) and map_size(requests) > 0) ->
+          {:error,
+           Request.invalid_params(%{inputRequired: "requestState or inputRequests is required"})}
+
+        state? and is_nil(requests) ->
+          :ok
+
+        not is_map(requests) ->
+          {:error, Request.invalid_params(%{inputRequests: "must be an object"})}
+
+        invalid = Enum.find(requests, fn {_key, request} -> not valid_input_request?(request) end) ->
+          {key, _request} = invalid
+          {:error, Request.invalid_params(%{inputRequests: "invalid embedded request #{key}"})}
+
+        missing = missing_input_capabilities(requests, session) ->
+          {:error, Request.missing_capability(missing)}
+
+        true ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp valid_input_request?(%{method: method, params: params}),
+    do:
+      method in ["elicitation/create", "sampling/createMessage", "roots/list"] and is_map(params)
+
+  defp valid_input_request?(%{"method" => method, "params" => params}),
+    do:
+      method in ["elicitation/create", "sampling/createMessage", "roots/list"] and is_map(params)
+
+  defp valid_input_request?(_), do: false
+
+  defp missing_input_capabilities(requests, session) do
+    caps = session.client_capabilities || %{}
+
+    requests
+    |> Enum.reduce([], fn {_key, request}, acc ->
+      method = request[:method] || request["method"]
+
+      case method do
+        "elicitation/create" ->
+          if is_map(caps[:elicitation]), do: acc, else: ["elicitation" | acc]
+
+        "sampling/createMessage" ->
+          if is_map(caps[:sampling]), do: acc, else: ["sampling" | acc]
+
+        "roots/list" ->
+          if is_map(caps[:roots]), do: acc, else: ["roots" | acc]
+      end
+    end)
+    |> Enum.uniq()
+    |> case do
+      [] -> nil
+      missing -> missing
+    end
+  end
+
+  # These process keys let the isolated handler task respond to its transport owner.
+  defp respond_to_caller(payload) do
+    Session.respond(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      payload
+    )
+  end
+
+  defp respond_error_to_caller(error) do
+    Session.respond_error(
+      Process.get(:phantom_adopter),
+      Process.get(:phantom_tool_request_id),
+      error
+    )
+  end
+
+  @doc false
+  def decode_request_state(router, session, request) do
+    meta = request.meta || %{}
+    info = router.__phantom__(:info)
+    request_state = request.params["requestState"] || meta["requestState"]
+
+    with token when is_binary(token) <- request_state || :none,
+         secret when is_binary(secret) <- info[:secret_key_base],
+         salt when is_binary(salt) <- info[:request_state_salt],
+         binding <- Phantom.RequestState.binding(request, session),
+         {:ok, term} <-
+           Phantom.RequestState.decode(token, secret, salt, binding: binding) do
+      {:ok, %{session | state: term}}
+    else
+      :none -> {:ok, session}
+      {:error, :expired} -> {:error, :expired_request_state}
+      _ -> {:error, :invalid_request_state}
+    end
+  end
+
+  defp input_response_args(%Request{params: %{"inputResponses" => responses}})
+       when is_map(responses) do
+    case responses["elicitation"] do
+      %{"content" => content} when is_map(content) -> content
+      response when is_map(response) -> response
+      _ -> %{}
+    end
+  end
+
+  defp input_response_args(%Request{}), do: %{}
 
   @doc false
   def get_prompt(router, session, name) do
@@ -1485,15 +1978,23 @@ defmodule Phantom.Router do
 
       prompt ->
         args = Map.get(params, "arguments", %{})
+        input_response_args = input_response_args(request)
 
-        wrap(
-          :prompt,
-          apply(prompt.handler, prompt.function, [
-            args,
-            %{session | request: %{request | spec: prompt}}
-          ]),
-          session
-        )
+        case decode_request_state(router, session, request) do
+          {:ok, session} ->
+            run_handler(:prompt, prompt, Map.merge(args, input_response_args), session, request)
+
+          {:error, :invalid_request_state} ->
+            {:error, Request.invalid_params(%{requestState: "Invalid request state"}), session}
+
+          {:error, :expired_request_state} ->
+            {:error,
+             %{
+               code: -32001,
+               message: "Request state expired",
+               data: %{requestState: "expired"}
+             }, session}
+        end
     end
   end
 
@@ -1522,7 +2023,7 @@ defmodule Phantom.Router do
   end
 
   defp do_complete(%{completion_function: {m, f}}, arg, value, session) do
-    Request.completion_response(apply(m, f, [arg, value, session]), session)
+    Request.completion_response(call_completion(m, f, arg, value, session), session)
   end
 
   defp do_complete(%{completion_function: {m, f, a}}, arg, value, session) do
@@ -1530,7 +2031,51 @@ defmodule Phantom.Router do
   end
 
   defp do_complete(%{handler: m, completion_function: f}, arg, value, session) do
-    Request.completion_response(apply(m, f, [arg, value, session]), session)
+    Request.completion_response(call_completion(m, f, arg, value, session), session)
+  end
+
+  defp call_completion(module, function, arg, value, session) do
+    context = session.request.params["context"] || %{}
+
+    if function_exported?(module, function, 4),
+      do: apply(module, function, [arg, value, context, session]),
+      else: apply(module, function, [arg, value, session])
+  end
+
+  @doc false
+  def read_resource_request(router, session, uri, request) do
+    with {:ok, session} <- decode_request_state(router, session, request),
+         {:ok, %{path: path, scheme: scheme}} <- URI.new(uri),
+         resource_router when not is_nil(resource_router) <-
+           get_resource_router(router, session, scheme) do
+      path_info =
+        for segment <- :binary.split(path, "/", [:global]),
+            segment != "",
+            do: URI.decode(segment)
+
+      fake_conn = %Plug.Conn{
+        assigns: %{
+          session: %{session | request: request},
+          uri: uri,
+          result: nil
+        },
+        method: "POST",
+        request_path: path,
+        path_info: path_info
+      }
+
+      result = resource_router.call(fake_conn, resource_router.init([])).assigns.result
+      Request.resource_response(result, uri, session)
+    else
+      {:error, :invalid_request_state} ->
+        {:error, Request.invalid_params(%{requestState: "Invalid request state"}), session}
+
+      {:error, :expired_request_state} ->
+        {:error, Request.invalid_params(%{requestState: "Expired request state"}), session}
+
+      _ ->
+        {:error, Request.invalid_params(), session}
+    end
   end
 
   @doc false

@@ -13,14 +13,22 @@ defmodule Phantom.Session do
     :allowed_prompts,
     :allowed_resource_templates,
     :allowed_tools,
+    :state,
+    # `:elicit` is reserved. Adapters (`Phantom.Stdio`, `Phantom.Test`) still
+    # populate it, but the dispatcher always spawns the handler in a Task, so
+    # the in-process fast path that called this closure is unreachable in
+    # production. Kept for adapters that may bypass `run_handler/5`.
     :elicit,
     :id,
     :last_event_id,
+    :pending_elicit,
     :pid,
     :pubsub,
     :request,
     :router,
     :stream_fun,
+    :subscription_filter,
+    :subscription_id,
     :tracker,
     :transport_pid,
     assigns: %{},
@@ -32,13 +40,16 @@ defmodule Phantom.Session do
       ui: false
     },
     close_after_complete: true,
-    requests: %{}
+    acknowledged_subscriptions: MapSet.new(),
+    requests: %{},
+    subscriptions: %{}
   ]
 
   @type t :: %__MODULE__{
           allowed_prompts: [String.t()],
           allowed_resource_templates: [String.t()],
           allowed_tools: [String.t()],
+          state: term() | nil,
           elicit:
             (Phantom.Elicit.t(), timeout :: pos_integer() ->
                {:ok, map()} | :error | :timeout)
@@ -47,12 +58,17 @@ defmodule Phantom.Session do
           close_after_complete: boolean(),
           id: binary(),
           last_event_id: String.t() | nil,
+          pending_elicit: {Phantom.Elicit.t(), term()} | nil,
           pid: pid() | nil,
           pubsub: module(),
           request: Phantom.Request.t() | nil,
           requests: map(),
+          acknowledged_subscriptions: MapSet.t(),
+          subscriptions: map(),
           router: module(),
           stream_fun: fun(),
+          subscription_filter: map() | nil,
+          subscription_id: String.t() | integer() | nil,
           client_info: map(),
           client_capabilities: %{
             elicitation: false | map(),
@@ -93,25 +109,127 @@ defmodule Phantom.Session do
 
   @doc "Fetch the current progress token if provided by the client"
   def progress_token(%__MODULE__{request: %{params: params}}) do
-    params["_meta"]["progressToken"]
+    get_in(params, ["_meta", "progressToken"])
   end
+
+  @doc false
+  def hydrate_from_request(%__MODULE__{} = session, %Request{} = request) do
+    caps = Request.client_capabilities(request)
+
+    client_capabilities =
+      if is_map(caps) do
+        %{
+          roots: caps["roots"],
+          sampling: caps["sampling"],
+          elicitation: caps["elicitation"],
+          ui: get_in(caps, ["extensions", "io.modelcontextprotocol/ui"]) || false
+        }
+      end
+
+    session
+    |> maybe_put(:client_info, Request.client_info(request))
+    |> maybe_put(:client_capabilities, client_capabilities)
+    |> Map.put(:request, request)
+  end
+
+  defp maybe_put(session, _key, nil), do: session
+  defp maybe_put(session, key, value), do: Map.put(session, key, value)
 
   @doc """
   Elicit input from the client.
 
-  Blocks until the client responds or timeout is reached. Returns
-  `{:ok, response}` where response is the client's JSON response map
-  (with `"action"` and `"content"` keys).
+  Two call patterns, with protocol-aware defaults that preserve historical
+  behavior:
+
+  - **Inline blocking** (`:await` true, or default under legacy) — returns
+    `{:ok, response}` where `response` is the client's JSON map (`"action"`
+    and `"content"` keys), or `:not_supported` / `:timeout` / `:error`.
+    Under legacy MCP protocols the call blocks via the open SSE stream.
+    Stateless core cannot safely serialize a running BEAM continuation, so
+    `await: true` returns `:not_supported` there; use re-entry instead.
+
+  - **Re-entry** (`:state` set, or default under stateless) — returns the
+    `session` struct with the pending elicit attached. The handler wraps
+    it in the standard `{:noreply, session}` reply shape:
+
+        {:noreply, Session.elicit(session, elicit, state: %{step: :got_input})}
+
+    The dispatcher then converts to an `input_required` result (stateless)
+    or runs through the SSE elicit round-trip + handler re-invocation
+    (legacy). On resume, the handler is re-entered with `session.state`
+    populated to whatever you passed as `:state`. Structure the handler
+    with a function-head clause that matches on `%Session{state: %{...}}`.
+
+  Protocol-aware defaults — when neither `:await` nor `:state` is set:
+
+  - Under legacy protocols (`≤ 2025-11-25`) the call defaults to inline
+    blocking. Existing legacy code that pattern-matches `{:ok, response}`
+    against `Session.elicit(session, elicit)` continues to work unchanged.
+  - Under MCP `2026-07-28` (stateless core) the call defaults to re-entry
+    with `state: nil`.
+
+  Pick based on style preference:
+
+      # Inline — legacy transports only
+      def my_tool(_params, session) do
+        {:ok, %{"choice" => c}} = Session.elicit(session, elicit, await: true)
+        {:reply, Tool.text("got \#{c}"), session}
+      end
+
+      # Re-entry — the handler is invoked again with session.state populated
+      def my_tool(%{"choice" => c}, %Session{state: %{step: :got_choice}} = session) do
+        {:reply, Tool.text("got \#{c}"), session}
+      end
+
+      def my_tool(params, session) do
+        {:noreply, Session.elicit(session, elicit, state: %{step: :got_choice})}
+      end
 
   Options:
-    - `:timeout` - max time to wait in ms (default: 5 minutes)
+    - `:await` — `true` to force inline blocking on legacy transports
+    - `:state` — value placed on `session.state` on re-entry; forces re-entry
+      mode regardless of protocol
+    - `:timeout` — max blocking time in ms (`:await` mode only; default: 5 minutes)
   """
   @spec elicit(t, Phantom.Elicit.t(), keyword()) ::
           {:ok, response :: map()}
+          | t
           | :not_supported
           | :error
           | :timeout
   def elicit(session, elicitation, opts \\ []) do
+    cond do
+      # A running BEAM continuation is not serializable request state.
+      Keyword.get(opts, :await, false) ->
+        if stateless?(session) do
+          :not_supported
+        else
+          do_elicit(session, elicitation, opts)
+        end
+
+      # Explicit :state — force re-entry on either protocol.
+      Keyword.has_key?(opts, :state) ->
+        %{session | pending_elicit: {elicitation, opts[:state]}}
+
+      # Protocol-aware default: stateless → re-entry, legacy → inline blocking.
+      stateless?(session) ->
+        %{session | pending_elicit: {elicitation, nil}}
+
+      true ->
+        do_elicit(session, elicitation, opts)
+    end
+  end
+
+  @doc """
+  Whether the session's current request is using the MCP `2026-07-28`
+  stateless-core protocol.
+  """
+  def stateless?(%__MODULE__{request: request}),
+    do: Request.protocol_version(request) == "2026-07-28"
+
+  def stateless?(_), do: false
+
+  defp do_elicit(session, elicitation, opts) do
     timeout = Keyword.get(opts, :timeout, @elicitation_timeout)
 
     capabilities =
@@ -121,35 +239,25 @@ defmodule Phantom.Session do
       end
 
     with_elicitation_support(capabilities, elicitation, fn ->
-      cond do
-        # Fast path: called from within the stream-owner process
-        # (e.g. a synchronous tool handler). The adapter-provided
-        # `session.elicit` closure writes to the transport directly
-        # and blocks in a receive.
-        is_function(session.elicit) and self() == session.pid ->
-          session.elicit.(elicitation, timeout)
+      # Handlers always run in a Task spawned by `Phantom.Router.run_handler/5`,
+      # so the elicitation is initiated cross-process from the stream owner.
+      # The session GenServer at `session.pid` owns the transport and is the
+      # only process Bandit will accept writes from, so delegate there.
+      if is_pid(session.pid) do
+        tool_call_id = session.request && session.request.id
 
-        # Cross-process path: called from a Task spawned after the
-        # tool returned `{:noreply, session}`. The captured conn in
-        # the closure can only be written from the stream owner
-        # (Bandit enforces this), so delegate to the session
-        # GenServer which owns the stream.
-        is_pid(session.pid) ->
-          tool_call_id = session.request && session.request.id
-
-          try do
-            GenServer.call(
-              session.pid,
-              {:elicit, elicitation, tool_call_id},
-              timeout + 1_000
-            )
-          catch
-            :exit, {:timeout, _} -> :timeout
-            :exit, _ -> :error
-          end
-
-        true ->
-          :error
+        try do
+          GenServer.call(
+            session.pid,
+            {:elicit, elicitation, tool_call_id},
+            timeout + 1_000
+          )
+        catch
+          :exit, {:timeout, _} -> :timeout
+          :exit, _ -> :error
+        end
+      else
+        :error
       end
     end)
   end
@@ -167,6 +275,12 @@ defmodule Phantom.Session do
 
   defp elicitation_mode_supported?(:form, _capabilities), do: true
   defp elicitation_mode_supported?(:url, capabilities), do: is_map_key(capabilities, "url")
+
+  @doc false
+  def elicitation_supported?(%__MODULE__{} = session, %Phantom.Elicit{} = elicitation) do
+    capabilities = session.client_capabilities[:elicitation]
+    is_map(capabilities) and elicitation_mode_supported?(elicitation.mode, capabilities)
+  end
 
   @doc "Convenience to elicit a URL mode interaction. Blocks until the client responds."
   @spec elicit_url(t, url :: String.t(), message :: String.t(), keyword()) ::
@@ -207,14 +321,14 @@ defmodule Phantom.Session do
   def subscribe_to_resource(session, {_uri, _params, _template} = resource) do
     case Phantom.Tracker.get_session(session) do
       nil -> :error
-      pid -> GenServer.cast(pid, {:subscribe_resource, resource})
+      pid -> GenServer.call(pid, {:subscribe_resource, resource})
     end
   end
 
   def subscribe_to_resource(session, uri) when is_binary(uri) do
     case Phantom.Tracker.get_session(session) do
       nil -> :error
-      pid -> GenServer.cast(pid, {:subscribe_resource, uri})
+      pid -> GenServer.call(pid, {:subscribe_resource, uri})
     end
   end
 
@@ -229,9 +343,42 @@ defmodule Phantom.Session do
   def unsubscribe_to_resource(session, uri) do
     case Phantom.Tracker.get_session(session) do
       nil -> :error
-      pid -> GenServer.cast(pid, {:unsubscribe_resource, uri})
+      pid -> GenServer.call(pid, {:unsubscribe_resource, uri})
     end
   end
+
+  @doc false
+  @spec listen(t(), String.t() | integer(), map()) :: {:ok, t()} | :error
+  def listen(%__MODULE__{pubsub: nil}, _subscription_id, _filter), do: :error
+
+  def listen(%__MODULE__{} = session, subscription_id, filter)
+      when (is_binary(subscription_id) or is_integer(subscription_id)) and is_map(filter) do
+    with {:ok, filter} <- normalize_subscription_filter(filter) do
+      Phantom.Tracker.track_session(self(), session.id, session.client_info)
+
+      session.router
+      |> Phantom.Router.resolve_resources(session, Map.get(filter, "resourceSubscriptions", []))
+      |> then(&Phantom.Router.authorize_resource_subscriptions(session.router, &1, session))
+      |> Enum.each(&Phantom.Tracker.subscribe_resource/1)
+
+      session = %{
+        session
+        | close_after_complete: false,
+          subscription_filter: filter,
+          subscription_id: subscription_id,
+          subscriptions: Map.put(session.subscriptions, subscription_id, filter)
+      }
+
+      GenServer.cast(
+        session.pid,
+        {:subscription_ack, subscription_id, filter}
+      )
+
+      {:ok, session}
+    end
+  end
+
+  def listen(%__MODULE__{}, _subscription_id, _filter), do: :error
 
   def list_resource_subscriptions(session) do
     case Phantom.Tracker.get_session(session) do
@@ -256,6 +403,13 @@ defmodule Phantom.Session do
   @spec finish(t() | pid) :: :ok
   def finish(%__MODULE__{pid: pid}), do: finish(pid)
   def finish(pid) when is_pid(pid), do: GenServer.cast(pid, :finish)
+
+  @doc false
+  def cancel_request(%__MODULE__{pid: pid}, request_id) when is_pid(pid) do
+    GenServer.cast(pid, {:cancel_request, request_id})
+  end
+
+  def cancel_request(_session, _request_id), do: :ok
 
   @doc """
   Sends response back to the stream
@@ -303,6 +457,30 @@ defmodule Phantom.Session do
     )
   end
 
+  @doc """
+  Send a JSON-RPC error response for a pending request.
+
+  Used by async tool handlers (running in a Task) to finalize a request
+  with a protocol-level error rather than a Tool.error result.
+  """
+  @spec respond_error(pid() | t(), Request.t() | String.t() | integer(), map()) :: :ok
+  def respond_error(%__MODULE__{pid: pid}, request_id, error),
+    do: respond_error(pid, request_id, error)
+
+  def respond_error(pid, %Request{id: id}, error), do: respond_error(pid, id, error)
+
+  def respond_error(pid, request_id, error) when is_pid(pid) do
+    GenServer.cast(
+      pid,
+      {:respond, request_id,
+       %{
+         id: request_id,
+         jsonrpc: "2.0",
+         error: error
+       }}
+    )
+  end
+
   @doc "Send a notification to the client"
   @spec notify(t | pid(), payload :: any()) :: :ok
   def notify(%__MODULE__{pid: pid}, payload), do: notify(pid, payload)
@@ -324,17 +502,24 @@ defmodule Phantom.Session do
 
   https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/progress
   """
-  @spec notify_progress(t, number(), nil | number()) :: :ok
-  def notify_progress(session, progress, total \\ nil)
+  @spec notify_progress(t, number(), nil | number(), String.t() | nil) :: :ok
+  def notify_progress(session, progress, total \\ nil, message \\ nil)
 
-  def notify_progress(%__MODULE__{pid: pid} = session, progress, total) do
-    notify_progress(pid, progress_token(session), progress, total)
+  def notify_progress(%__MODULE__{} = session, progress, total, message) do
+    token = progress_token(session)
+
+    cond do
+      is_nil(token) and stateless?(session) -> :ok
+      is_nil(token) -> ping(session.pid)
+      true -> notify_progress(session.pid, token, progress, total, message)
+    end
   end
 
-  def notify_progress(pid, nil, _progress, _total), do: ping(pid)
+  def notify_progress(pid, progress_token, progress, total),
+    do: notify_progress(pid, progress_token, progress, total, nil)
 
-  def notify_progress(pid, progress_token, progress, total) do
-    GenServer.cast(pid, {:send, Request.notify_progress(progress_token, progress, total)})
+  def notify_progress(pid, progress_token, progress, total, message) do
+    GenServer.cast(pid, {:progress, progress_token, progress, total, message})
   end
 
   @doc false
@@ -376,6 +561,16 @@ defmodule Phantom.Session do
     {:reply, {:ok, Map.keys(state.subscriptions)}, state}
   end
 
+  def handle_call({:subscribe_resource, resource}, _from, state) do
+    Phantom.Tracker.subscribe_resource(resource)
+    {:reply, :ok, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  def handle_call({:unsubscribe_resource, uri}, _from, state) do
+    Phantom.Tracker.unsubscribe_resource(uri)
+    {:reply, :ok, state |> set_activity() |> schedule_inactivity()}
+  end
+
   def handle_call({:elicit, elicitation, tool_call_id}, from, state) do
     cancel_inactivity(state)
 
@@ -395,7 +590,25 @@ defmodule Phantom.Session do
 
   @doc false
   def handle_cast(:finish, state) do
-    state = state.stream_fun.(state, nil, "closed", "finished")
+    state =
+      cond do
+        stateless?(state.session) and map_size(state.session.subscriptions) > 0 ->
+          Enum.reduce(Map.keys(state.session.subscriptions), state, fn subscription_id, acc ->
+            acc.stream_fun.(
+              acc,
+              nil,
+              "message",
+              Request.subscription_cancelled(subscription_id)
+            )
+          end)
+
+        stateless?(state.session) ->
+          state
+
+        true ->
+          state.stream_fun.(state, nil, "closed", "finished")
+      end
+
     {:stop, {:shutdown, :closed}, state}
   end
 
@@ -419,10 +632,50 @@ defmodule Phantom.Session do
     {:noreply, state}
   end
 
+  def handle_cast({:log_modern, level_name, domain, payload}, state) do
+    cancel_inactivity(state)
+
+    {:noreply,
+     state
+     |> state.stream_fun.(
+       nil,
+       "message",
+       Request.notify(%{level: level_name, logger: domain, data: payload})
+     )
+     |> set_activity()
+     |> schedule_inactivity()}
+  end
+
   def handle_cast(:ping, state) do
     cancel_inactivity(state)
-    state = state.stream_fun.(state, nil, "message", Request.ping())
+
+    state =
+      if stateless?(state.session),
+        do: state.stream_fun.(state, nil, "comment", nil),
+        else: state.stream_fun.(state, nil, "message", Request.ping())
+
     {:noreply, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  def handle_cast({:progress, token, progress, total, message}, state) do
+    previous = Map.get(state, :progress, %{})[token]
+
+    if is_number(progress) and (is_nil(previous) or progress >= previous) do
+      state =
+        state.stream_fun.(
+          state,
+          nil,
+          "message",
+          Request.notify_progress(token, progress, total, message)
+        )
+
+      progress_state = Map.put(Map.get(state, :progress, %{}), token, progress)
+
+      {:noreply,
+       state |> Map.put(:progress, progress_state) |> set_activity() |> schedule_inactivity()}
+    else
+      {:noreply, state}
+    end
   end
 
   def handle_cast({:send, payload}, state) do
@@ -431,14 +684,44 @@ defmodule Phantom.Session do
     {:noreply, state |> set_activity() |> schedule_inactivity()}
   end
 
+  def handle_cast({:subscription_ack, subscription_id, filter}, state) do
+    cancel_inactivity(state)
+    payload = Request.subscriptions_acknowledged(subscription_id, filter)
+    state = state.stream_fun.(state, nil, "message", payload)
+
+    session = %{
+      state.session
+      | acknowledged_subscriptions:
+          MapSet.put(state.session.acknowledged_subscriptions, subscription_id)
+    }
+
+    {:noreply, %{state | session: session} |> set_activity() |> schedule_inactivity()}
+  end
+
   def handle_cast({:respond, request_id, payload}, state) do
     cancel_inactivity(state)
+    request = state.session.requests[request_id]
+    payload = normalize_response_payload(payload, request, state.session)
     state = state.stream_fun.(state, request_id, "message", payload)
     requests = Map.delete(state.session.requests, request_id)
     state = put_in(state.session.requests, requests)
     Phantom.Tracker.untrack_in_flight(state.session.id, request_id)
     state = release_in_flight(state, request_id)
     maybe_finish(state)
+  end
+
+  def handle_cast({:cancel_request, request_id}, state) do
+    case Map.pop(Map.get(state, :workers, %{}), request_id) do
+      {nil, _workers} ->
+        {:noreply, state}
+
+      {{pid, monitor_ref}, workers} ->
+        Process.demonitor(monitor_ref, [:flush])
+        Process.exit(pid, :shutdown)
+        requests = Map.delete(state.session.requests, request_id)
+        state = %{state | session: %{state.session | requests: requests}}
+        {:noreply, Map.put(state, :workers, workers)}
+    end
   end
 
   def handle_cast({:subscribe_resource, resource}, state) do
@@ -496,19 +779,22 @@ defmodule Phantom.Session do
         state.session
       )
 
-    case authorized do
-      [] ->
-        {:noreply, state}
+    notifications =
+      Enum.flat_map(authorized, fn {uri, _params, _template} ->
+        subscription_notifications(
+          state.session,
+          "resourceSubscriptions",
+          uri,
+          Request.resource_updated(%{uri: uri})
+        )
+      end)
 
-      resources ->
-        cancel_inactivity(state)
-
-        state =
-          Enum.reduce(resources, state, fn {uri, _params, _template}, state ->
-            state.stream_fun.(state, nil, "message", Request.resource_updated(%{uri: uri}))
-          end)
-
-        {:noreply, state |> set_activity() |> schedule_inactivity()}
+    if notifications != [] do
+      cancel_inactivity(state)
+      state = stream_notifications(state, notifications)
+      {:noreply, state |> set_activity() |> schedule_inactivity()}
+    else
+      {:noreply, state}
     end
   end
 
@@ -516,11 +802,15 @@ defmodule Phantom.Session do
     do: handle_cast({:resources_updated, [uri]}, state)
 
   def handle_cast(:tools_updated, state) do
-    notify? = state.session.allowed_tools == nil
+    notifications =
+      if state.session.allowed_tools == nil,
+        do:
+          subscription_notifications(state.session, "toolsListChanged", Request.tools_updated()),
+        else: []
 
-    if notify? do
+    if notifications != [] do
       cancel_inactivity(state)
-      state = state.stream_fun.(state, nil, "message", Request.tools_updated())
+      state = stream_notifications(state, notifications)
       {:noreply, state |> set_activity() |> schedule_inactivity()}
     else
       {:noreply, state}
@@ -528,11 +818,19 @@ defmodule Phantom.Session do
   end
 
   def handle_cast(:prompts_updated, state) do
-    notify? = state.session.allowed_prompts == nil
+    notifications =
+      if state.session.allowed_prompts == nil,
+        do:
+          subscription_notifications(
+            state.session,
+            "promptsListChanged",
+            Request.prompts_updated()
+          ),
+        else: []
 
-    if notify? do
+    if notifications != [] do
       cancel_inactivity(state)
-      state = state.stream_fun.(state, nil, "message", Request.prompts_updated())
+      state = stream_notifications(state, notifications)
       {:noreply, state |> set_activity() |> schedule_inactivity()}
     else
       {:noreply, state}
@@ -540,11 +838,19 @@ defmodule Phantom.Session do
   end
 
   def handle_cast(:resources_updated, state) do
-    notify? = state.session.allowed_resource_templates == nil
+    notifications =
+      if state.session.allowed_resource_templates == nil,
+        do:
+          subscription_notifications(
+            state.session,
+            "resourcesListChanged",
+            Request.resources_updated()
+          ),
+        else: []
 
-    if notify? do
+    if notifications != [] do
       cancel_inactivity(state)
-      state = state.stream_fun.(state, nil, "message", Request.resources_updated())
+      state = stream_notifications(state, notifications)
       {:noreply, state |> set_activity() |> schedule_inactivity()}
     else
       {:noreply, state}
@@ -562,6 +868,102 @@ defmodule Phantom.Session do
     {:noreply, %{state | log_level: level_num}}
   end
 
+  defp normalize_response_payload(%{result: result} = payload, %Request{} = request, session)
+       when is_map(result) do
+    %{payload | result: Request.normalize_result(result, request, session)}
+  end
+
+  defp normalize_response_payload(payload, _request, _session), do: payload
+
+  defp normalize_subscription_filter(filter) do
+    resource_subscriptions = Map.get(filter, "resourceSubscriptions", [])
+
+    if is_list(resource_subscriptions) and Enum.all?(resource_subscriptions, &is_binary/1) do
+      normalized =
+        %{}
+        |> maybe_put_subscription("toolsListChanged", filter["toolsListChanged"] == true)
+        |> maybe_put_subscription("promptsListChanged", filter["promptsListChanged"] == true)
+        |> maybe_put_subscription("resourcesListChanged", filter["resourcesListChanged"] == true)
+        |> maybe_put_subscription("resourceSubscriptions", Enum.uniq(resource_subscriptions))
+
+      {:ok, normalized}
+    else
+      :error
+    end
+  end
+
+  defp maybe_put_subscription(filter, _key, false), do: filter
+  defp maybe_put_subscription(filter, _key, []), do: filter
+  defp maybe_put_subscription(filter, key, value), do: Map.put(filter, key, value)
+
+  defp subscription_requested?(%__MODULE__{subscription_filter: nil}, _key), do: true
+
+  defp subscription_requested?(%__MODULE__{subscription_filter: filter}, key),
+    do: filter[key] == true
+
+  defp subscription_requested?(%__MODULE__{subscription_filter: nil}, _key, _value), do: true
+
+  defp subscription_requested?(%__MODULE__{subscription_filter: filter}, key, value),
+    do: value in Map.get(filter, key, [])
+
+  defp subscription_notifications(
+         %__MODULE__{subscriptions: subscriptions} = session,
+         key,
+         notification
+       )
+       when map_size(subscriptions) > 0 do
+    for {id, filter} <- subscriptions,
+        MapSet.member?(session.acknowledged_subscriptions, id),
+        filter[key] == true do
+      add_subscription_id(notification, id)
+    end
+  end
+
+  defp subscription_notifications(session, key, notification) do
+    if subscription_requested?(session, key),
+      do: [add_subscription_id(notification, session)],
+      else: []
+  end
+
+  defp subscription_notifications(
+         %__MODULE__{subscriptions: subscriptions} = session,
+         key,
+         value,
+         notification
+       )
+       when map_size(subscriptions) > 0 do
+    for {id, filter} <- subscriptions,
+        MapSet.member?(session.acknowledged_subscriptions, id),
+        value in Map.get(filter, key, []) do
+      add_subscription_id(notification, id)
+    end
+  end
+
+  defp subscription_notifications(session, key, value, notification) do
+    if subscription_requested?(session, key, value),
+      do: [add_subscription_id(notification, session)],
+      else: []
+  end
+
+  defp stream_notifications(state, notifications) do
+    Enum.reduce(notifications, state, fn notification, acc ->
+      acc.stream_fun.(acc, nil, "message", notification)
+    end)
+  end
+
+  defp add_subscription_id(notification, %__MODULE__{subscription_id: nil}), do: notification
+
+  defp add_subscription_id(notification, %__MODULE__{subscription_id: subscription_id}) do
+    add_subscription_id(notification, subscription_id)
+  end
+
+  defp add_subscription_id(notification, subscription_id) do
+    params = Map.get(notification, :params, %{})
+    meta = Map.get(params, :_meta, %{})
+    meta = Map.put(meta, "io.modelcontextprotocol/subscriptionId", subscription_id)
+    Map.put(notification, :params, Map.put(params, :_meta, meta))
+  end
+
   defp maybe_finish(state) do
     if Enum.any?(Map.keys(state.session.requests)) or not state.session.close_after_complete do
       {:noreply, state |> set_activity() |> schedule_inactivity()}
@@ -573,6 +975,22 @@ defmodule Phantom.Session do
   @doc false
   # eat this message since we send once the stream loop is over
   def handle_info({:plug_conn, :sent}, state), do: {:noreply, state}
+
+  def handle_info({:phantom_worker_started, request_id, pid}, state) do
+    monitor_ref = Process.monitor(pid)
+    workers = Map.put(Map.get(state, :workers, %{}), request_id, {pid, monitor_ref})
+    {:noreply, Map.put(state, :workers, workers)}
+  end
+
+  def handle_info({:DOWN, monitor_ref, :process, _pid, _reason}, state) do
+    workers =
+      state
+      |> Map.get(:workers, %{})
+      |> Enum.reject(fn {_id, {_pid, ref}} -> ref == monitor_ref end)
+      |> Map.new()
+
+    {:noreply, Map.put(state, :workers, workers)}
+  end
 
   def handle_info({:phantom_elicitation_response, ref, response}, state) do
     case pop_in(state, [:elicitation_callers, ref]) do
@@ -589,7 +1007,11 @@ defmodule Phantom.Session do
   def handle_info(:inactivity, state) do
     cond do
       not state.session.close_after_complete ->
-        state = state.stream_fun.(state, nil, "message", Request.ping())
+        state =
+          if stateless?(state.session),
+            do: state.stream_fun.(state, nil, "comment", nil),
+            else: state.stream_fun.(state, nil, "message", Request.ping())
+
         {:noreply, state |> set_activity() |> schedule_inactivity()}
 
       System.system_time() - state.last_activity > state.timeout ->
@@ -618,7 +1040,15 @@ defmodule Phantom.Session do
       Enum.reduce(other, state, fn raw_request, state_acc ->
         case Request.build(raw_request) do
           {:ok, request} ->
-            dispatch_stdio_request(request, state_acc)
+            case validate_stdio_request(request) do
+              :ok ->
+                state_acc = hydrate_stdio_request(state_acc, request)
+                dispatch_stdio_request(request, state_acc)
+
+              {:error, error} ->
+                payload = Request.error(request.id, error)
+                state_acc.stream_fun.(state_acc, request.id, "message", payload)
+            end
 
           {:error, error} ->
             state_acc.stream_fun.(state_acc, error.id, "message", error.response)
@@ -631,6 +1061,13 @@ defmodule Phantom.Session do
   def handle_info({:phantom_dispatch_error, :parse_error}, state) do
     cancel_inactivity(state)
     error = Request.error(nil, Request.parse_error("Parse error: Invalid JSON"))
+    state = state.stream_fun.(state, nil, "message", error)
+    {:noreply, state |> set_activity() |> schedule_inactivity()}
+  end
+
+  def handle_info({:phantom_dispatch_error, :batch_not_supported}, state) do
+    cancel_inactivity(state)
+    error = Request.error(nil, Request.invalid("Batch requests are not supported"))
     state = state.stream_fun.(state, nil, "message", error)
     {:noreply, state |> set_activity() |> schedule_inactivity()}
   end
@@ -650,6 +1087,16 @@ defmodule Phantom.Session do
 
   def handle_info(_what, state) do
     {:noreply, state}
+  end
+
+  @doc false
+  def terminate(_reason, state) do
+    Enum.each(Map.get(state, :workers, %{}), fn {_id, {pid, monitor_ref}} ->
+      Process.demonitor(monitor_ref, [:flush])
+      Process.exit(pid, :shutdown)
+    end)
+
+    :ok
   end
 
   # Methods that dispatch to user-defined handlers and may have
@@ -705,7 +1152,7 @@ defmodule Phantom.Session do
         {:noreply, %__MODULE__{} = session} ->
           # In-flight claim stays held until `Session.respond/2`
           # casts back to this GenServer and untracks.
-          requests = Map.put(session.requests, request.id, request.response)
+          requests = Map.put(session.requests, request.id, request)
           put_in(state.session, %{session | requests: requests})
 
         {:reply, nil, %__MODULE__{} = session} ->
@@ -714,6 +1161,7 @@ defmodule Phantom.Session do
           |> release_in_flight(request.id)
 
         {:reply, result, %__MODULE__{} = session} ->
+          result = Request.normalize_result(result, request, session)
           request = Request.result(request, "message", result)
 
           state
@@ -770,6 +1218,27 @@ defmodule Phantom.Session do
   end
 
   defp put_session(state, %__MODULE__{} = session), do: put_in(state.session, session)
+
+  defp validate_stdio_request(%Request{} = request) do
+    if Request.stateless_envelope?(request),
+      do: Request.validate_modern(request),
+      else: :ok
+  end
+
+  defp hydrate_stdio_request(state, request) do
+    state = put_in(state.session, hydrate_from_request(state.session, request))
+
+    if Request.modern?(request) do
+      level =
+        Enum.find_value(Phantom.ClientLogger.log_levels(), 0, fn {name, grade} ->
+          if Atom.to_string(name) == Request.log_level(request), do: grade
+        end)
+
+      Map.put(state, :log_level, level)
+    else
+      state
+    end
+  end
 
   defp request_in_flight?(state, request_id),
     do: MapSet.member?(Map.get(state, :in_flight, MapSet.new()), request_id)

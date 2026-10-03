@@ -10,6 +10,8 @@ defmodule Test.MCP.Router do
     name: "Test",
     vsn: "1.0",
     instructions: @instructions,
+    secret_key_base: "test-secret-key-base-of-sufficient-entropy-for-aes-256-gcm-encryption",
+    request_state_salt: "phantom test salt",
     icons: [
       %{
         src: {Phoenix.VerifiedRoutes, :static_url, [Test.Endpoint, "/images/test-icon.png"]},
@@ -113,6 +115,8 @@ defmodule Test.MCP.Router do
   tool :audio_tool, description: "An audio tool"
   tool :with_error_tool, description: "A test tool with an error"
   tool :elicit_tool, description: "A tool that always needs info"
+  tool :resume_tool, description: "Calls Session.elicit/3 with state — protocol-agnostic"
+  tool :await_tool, description: "Calls Session.elicit/3 with await: true — inline blocking"
   tool :async_elicit_tool, description: "A tool that elicits from a spawned Task"
   tool :url_elicit_tool, description: "A tool that requires URL elicitation"
   tool :elicitation_required_tool, description: "A tool that returns elicitation_required error"
@@ -146,6 +150,7 @@ defmodule Test.MCP.Router do
   tool :client_log_tool,
     description: "A tool that sends a log to the MCP client",
     input_schema: %{
+      type: "object",
       properties: %{
         message: %{type: "string", description: "message to log"}
       }
@@ -155,6 +160,7 @@ defmodule Test.MCP.Router do
     description: "A test that echos your message",
     icons: [%{src: "https://example.com/echo-icon.png", mime_type: "image/png"}],
     input_schema: %{
+      type: "object",
       required: [:message],
       properties: %{
         message: %{
@@ -164,9 +170,20 @@ defmodule Test.MCP.Router do
       }
     }
 
+  tool :header_echo_tool,
+    description: "Echo a header-routed argument",
+    input_schema: %{
+      type: "object",
+      required: [:tenant],
+      properties: %{
+        tenant: %{type: "string", "x-mcp-header": "Tenant"}
+      }
+    }
+
   tool :structured_echo_tool,
     description: "A test that echos your message",
     input_schema: %{
+      type: "object",
       required: [:message],
       properties: %{
         message: %{
@@ -176,6 +193,7 @@ defmodule Test.MCP.Router do
       }
     },
     output_schema: %{
+      type: "object",
       required: [:message],
       properties: %{
         message: %{
@@ -196,6 +214,7 @@ defmodule Test.MCP.Router do
   @description "A test that echos your message slowly"
   tool :async_echo_tool, AsyncModule,
     input_schema: %{
+      type: "object",
       required: [:message],
       properties: %{
         message: %{
@@ -259,6 +278,10 @@ defmodule Test.MCP.Router do
     {:reply, Phantom.Tool.text(params["message"] || ""), session}
   end
 
+  def header_echo_tool(params, session) do
+    {:reply, Phantom.Tool.text(params["tenant"]), session}
+  end
+
   def client_log_tool(params, session) do
     message = params["message"] || "client-log-test"
     Phantom.ClientLogger.log(session, :info, %{message: message}, "test")
@@ -298,6 +321,42 @@ defmodule Test.MCP.Router do
                    }
                  ]
                })
+  def resume_tool(
+        %{"name" => name},
+        %Session{state: %{step: :got_name, origin: origin}} = session
+      ) do
+    {:reply, Tool.text("resumed name=#{name} origin=#{origin}"), session}
+  end
+
+  def resume_tool(params, session) do
+    {:noreply,
+     Session.elicit(
+       session,
+       Phantom.Elicit.build(%{
+         message: "Your name?",
+         requested_schema: [%{name: "name", type: :string, required: true}]
+       }),
+       state: %{step: :got_name, origin: params["origin"] || "unknown"}
+     )}
+  end
+
+  def await_tool(_params, session) do
+    case Session.elicit(
+           session,
+           Phantom.Elicit.build(%{
+             message: "What color?",
+             requested_schema: [%{name: "color", type: :string, required: true}]
+           }),
+           await: true
+         ) do
+      {:ok, %{"color" => color}} ->
+        {:reply, Tool.text("awaited color=#{color}"), session}
+
+      other ->
+        {:reply, Tool.error("await failed: #{inspect(other)}"), session}
+    end
+  end
+
   def elicit_tool(_params, session) do
     case Session.elicit(session, @elicit_name) do
       {:ok, %{"action" => "accept", "content" => content}} ->

@@ -5,6 +5,10 @@ defmodule Phantom.DistributedTest do
   @node2 :"node2@127.0.0.1"
   @node1_port 4101
   @node2_port 4102
+  @modern_meta %{
+    "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+    "io.modelcontextprotocol/clientCapabilities" => %{"elicitation" => %{}}
+  }
 
   # Initialize and return {session_id, resp, ref, buffer} so the caller
   # can keep reading SSE events from the initialize stream.
@@ -352,6 +356,157 @@ defmodule Phantom.DistributedTest do
 
       assert log_notification["params"]["level"] == "info"
       assert log_notification["params"]["data"]["message"] == "hello from node2"
+    end
+  end
+
+  describe "stateless core (2026-07-28) — no Tracker, no sticky session" do
+    # Node A returns `inputRequired` with an encrypted `requestState`.
+    # Node B — with no prior knowledge of the original call — decodes the
+    # blob using the shared `:secret_key_base`, populates `session.state`,
+    # and runs the same tool's resume clause to completion. This is the
+    # load-bearing claim of the stateless core: any node can serve any
+    # call as long as it shares the secret with the others.
+    test "node 1 returns inputRequired; node 2 resumes purely from the encrypted state" do
+      first_resp =
+        post_mcp(
+          @node1_port,
+          %{
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: %{
+              "name" => "resume_tool",
+              "arguments" => %{"origin" => "test"},
+              "_meta" => @modern_meta
+            }
+          },
+          headers: [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "tools/call"},
+            {"mcp-name", "resume_tool"}
+          ]
+        )
+
+      assert first_resp.status == 200
+
+      input_required =
+        poll_for_sse_event(first_resp, 5_000, fn msg ->
+          get_in(msg, ["result", "resultType"]) == "input_required"
+        end)
+
+      assert input_required, "Expected inputRequired result from node 1"
+
+      token = input_required["result"]["requestState"]
+      assert is_binary(token)
+      refute token == ""
+
+      input_requests = input_required["result"]["inputRequests"]
+      assert is_map(input_requests) and map_size(input_requests) >= 1
+
+      second_resp =
+        post_mcp(
+          @node2_port,
+          %{
+            jsonrpc: "2.0",
+            id: 2,
+            method: "tools/call",
+            params: %{
+              "name" => "resume_tool",
+              "arguments" => %{},
+              "requestState" => token,
+              "inputResponses" => %{
+                "elicitation" => %{
+                  "action" => "accept",
+                  "content" => %{"name" => "alice"}
+                }
+              },
+              "_meta" => @modern_meta
+            }
+          },
+          headers: [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "tools/call"},
+            {"mcp-name", "resume_tool"}
+          ]
+        )
+
+      assert second_resp.status == 200
+
+      result =
+        poll_for_sse_event(second_resp, 5_000, fn msg ->
+          get_in(msg, ["result", "content"]) != nil
+        end)
+
+      assert result, "Expected tool result from node 2"
+
+      text = get_in(result, ["result", "content", Access.at(0), "text"])
+      assert text == "resumed name=alice origin=test"
+    end
+
+    test "an invalid requestState on node 2 is rejected as invalid_params" do
+      bad_resp =
+        post_mcp(
+          @node2_port,
+          %{
+            jsonrpc: "2.0",
+            id: 3,
+            method: "tools/call",
+            params: %{
+              "name" => "resume_tool",
+              "arguments" => %{"name" => "alice"},
+              "requestState" => "not-a-real-token",
+              "_meta" => @modern_meta
+            }
+          },
+          headers: [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "tools/call"},
+            {"mcp-name", "resume_tool"}
+          ]
+        )
+
+      assert bad_resp.status == 200
+
+      error =
+        poll_for_sse_event(bad_resp, 5_000, fn msg ->
+          get_in(msg, ["error", "code"]) != nil
+        end)
+
+      assert error, "Expected JSON-RPC error response"
+      assert error["error"]["code"] == -32602
+    end
+
+    test "inline await is rejected because a running continuation is not stateless" do
+      first_resp =
+        post_mcp(
+          @node1_port,
+          %{
+            jsonrpc: "2.0",
+            id: 10,
+            method: "tools/call",
+            params: %{
+              "name" => "await_tool",
+              "arguments" => %{},
+              "_meta" => @modern_meta
+            }
+          },
+          headers: [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "tools/call"},
+            {"mcp-name", "await_tool"}
+          ]
+        )
+
+      assert first_resp.status == 200
+
+      result =
+        poll_for_sse_event(first_resp, 5_000, fn msg ->
+          get_in(msg, ["result", "content"]) != nil
+        end)
+
+      text = get_in(result, ["result", "content", Access.at(0), "text"])
+      assert text =~ "await failed: :not_supported"
+      assert result["result"]["isError"] == true
     end
   end
 end

@@ -170,6 +170,51 @@ defmodule Phantom.ResourceSubscriptionAuthorizationTest do
                     %{method: "notifications/resources/updated", params: %{uri: ^alice_two}}}
   end
 
+  test "subscriptions/listen only tracks authorized resource subscriptions" do
+    alice = "authz:///records/alice-1"
+    bob = "authz:///records/bob-1"
+
+    :persistent_term.put({Router, "alice"}, ["alice-1"])
+
+    stream_pid =
+      :post
+      |> Plug.Test.conn("/mcp", %{
+        "jsonrpc" => "2.0",
+        "id" => "listen:0",
+        "method" => "subscriptions/listen",
+        "params" => %{
+          "notifications" => %{"resourceSubscriptions" => [alice, bob]},
+          "_meta" => %{
+            "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities" => %{}
+          }
+        }
+      })
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("mcp-protocol-version", "2026-07-28")
+      |> put_req_header("mcp-method", "subscriptions/listen")
+      |> call(Map.new(authz_opts(nil, "alice")))
+
+    assert_notify(%{method: "notifications/subscriptions/acknowledged"})
+    wait_for_subscriptions([alice])
+
+    tracked = Enum.map(Phantom.Tracker.list_resource_listeners(), &elem(&1, 0))
+    assert alice in tracked
+    refute bob in tracked
+
+    Phantom.Tracker.notify_resources_updated([alice, bob])
+
+    assert_notify(%{
+      method: "notifications/resources/updated",
+      params: %{uri: ^alice, _meta: %{"io.modelcontextprotocol/subscriptionId" => "listen:0"}}
+    })
+
+    refute_receive {:response, nil, "message",
+                    %{method: "notifications/resources/updated", params: %{uri: ^bob}}}
+
+    Session.finish(stream_pid)
+  end
+
   defp authz_opts(session_id, user_id, extra \\ []) do
     before_call = fn conn ->
       conn
