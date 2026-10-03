@@ -37,6 +37,7 @@ defmodule Phantom.Tracker do
   if @available do
     def start_link(opts) do
       opts = Keyword.merge([name: __MODULE__], opts)
+      Phantom.SessionMeta.listen(Keyword.fetch!(opts, :pubsub_server))
       Phoenix.Tracker.start_link(__MODULE__, opts, opts)
     end
   else

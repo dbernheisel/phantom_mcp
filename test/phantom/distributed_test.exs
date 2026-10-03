@@ -389,6 +389,24 @@ defmodule Phantom.DistributedTest do
       assert log["params"]["data"]["message"] == "logged"
     end
 
+    test "tools/call on node 2 knows the capabilities from initialize on node 1" do
+      session_id = initialize(@node1_port)
+
+      tool =
+        post_mcp(
+          @node2_port,
+          %{
+            jsonrpc: "2.0",
+            id: 50,
+            method: "tools/call",
+            params: %{"name" => "elicit_tool", "arguments" => %{}}
+          },
+          session_id: session_id
+        )
+
+      assert poll_for_sse_event(tool, 5_000, &(&1["method"] == "elicitation/create"))
+    end
+
     test "resources/subscribe and unsubscribe on node 2 reach the session stream on node 1" do
       {session_id, init_resp, ref, buffer} = initialize_with_stream(@node1_port)
 

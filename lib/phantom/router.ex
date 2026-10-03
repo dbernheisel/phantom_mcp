@@ -425,7 +425,8 @@ defmodule Phantom.Router do
             client_capabilities: client_capabilities
         }
 
-        Phantom.Tracker.update_session_meta(session.id, %{
+        Phantom.SessionMeta.put(session.pubsub, session.id, %{
+          client_info: params["clientInfo"],
           client_capabilities: client_capabilities
         })
 

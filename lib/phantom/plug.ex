@@ -455,6 +455,7 @@ defmodule Phantom.Plug do
     session = conn.private.phantom.session
     Phantom.Tracker.cast_session(session.pubsub, session.id, :finish)
     Phantom.Tracker.untrack_session(session.id)
+    Phantom.SessionMeta.delete(session.pubsub, session.id)
 
     conn =
       case conn.private.phantom.router.terminate(session) do
@@ -1213,11 +1214,11 @@ defmodule Phantom.Plug do
   defp release_in_flight(_session_id, _request), do: :ok
 
   defp inherit_session_meta(%Session{} = session) do
-    case Phantom.Tracker.get_session_meta(session.id) do
-      %{client_capabilities: caps} when is_map(caps) ->
-        %{session | client_capabilities: caps}
+    case Phantom.SessionMeta.get(session.id) do
+      %{client_capabilities: caps, client_info: info} ->
+        %{session | client_capabilities: caps, client_info: info || session.client_info}
 
-      _ ->
+      nil ->
         session
     end
   end
