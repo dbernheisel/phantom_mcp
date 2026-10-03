@@ -449,4 +449,22 @@ defmodule Phantom.RouterTest do
       assert JSON.decode!(conn.resp_body)["error"]["message"] == "Session terminated"
     end
   end
+
+  describe "elicitation re-entry" do
+    test "a legacy session resumes the handler with the accepted content" do
+      session = Phantom.Test.build_session(Test.MCP.Router)
+      elicitations = :counters.new(1, [])
+
+      Phantom.Test.expect_elicit(fn _elicit ->
+        :counters.add(elicitations, 1, 1)
+        {:ok, %{"action" => "accept", "content" => %{"name" => "Ada"}}}
+      end)
+
+      session
+      |> Phantom.Test.call_tool(:resume_tool, %{"origin" => "legacy"})
+      |> Phantom.Test.assert_tool_text("resumed name=Ada origin=legacy")
+
+      assert :counters.get(elicitations, 1) == 1
+    end
+  end
 end

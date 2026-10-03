@@ -1766,7 +1766,7 @@ defmodule Phantom.Router do
     case Session.elicit(session, elicit, await: true) do
       {:ok, response} ->
         new_session = %{session | state: state}
-        new_params = Map.merge(params, response)
+        new_params = Map.merge(params, elicit_response_args(response))
         handler_result = apply(spec.handler, spec.function, [new_params, new_session])
         process_handler_result(kind, handler_result, spec, new_params, new_session)
 
@@ -1963,15 +1963,16 @@ defmodule Phantom.Router do
   end
 
   defp input_response_args(%Request{params: %{"inputResponses" => responses}})
-       when is_map(responses) do
-    case responses["elicitation"] do
-      %{"content" => content} when is_map(content) -> content
-      response when is_map(response) -> response
-      _ -> %{}
-    end
-  end
+       when is_map(responses),
+       do: elicit_response_args(responses["elicitation"])
 
   defp input_response_args(%Request{}), do: %{}
+
+  # A re-entered handler gets the same params on every protocol: the accepted
+  # content, or the response itself when there is none (decline or cancel).
+  defp elicit_response_args(%{"content" => content}) when is_map(content), do: content
+  defp elicit_response_args(response) when is_map(response), do: response
+  defp elicit_response_args(_response), do: %{}
 
   @doc false
   def get_prompt(router, session, name) do

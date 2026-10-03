@@ -24,6 +24,10 @@
   `$schema`, `$defs`, `$ref`, `allOf`, `if`/`then`/`else`,
   `additionalProperties`, and other JSON Schema keywords are kept. They
   previously raised at compile time or were dropped.
+- `Session.elicit/3` re-entry passes the accepted content to the resumed
+  handler under every protocol version. Before 2026-07-28 it passed the whole
+  client response, so resume clauses never matched and the handler asked the
+  user again indefinitely.
 - Elicitation enums keep their `default`, and titled multi-select enums use
   `items.anyOf` as the spec requires (was `items.oneOf`, which clients
   rejected).
