@@ -14,6 +14,7 @@ defmodule Phantom.ResourceTemplate do
   @enforce_keys ~w[name handler function path router scheme uri uri_template]a
   defstruct [
     :name,
+    :authority,
     :description,
     :function,
     :completion_function,
@@ -31,6 +32,7 @@ defmodule Phantom.ResourceTemplate do
 
   @type t :: %__MODULE__{
           name: String.t(),
+          authority: String.t(),
           description: String.t(),
           function: atom(),
           completion_function: atom(),
@@ -64,7 +66,9 @@ defmodule Phantom.ResourceTemplate do
   - `:uri` - The URI template of the resource in the style of `Plug.Router`, including the scheme.
     For example, you can define a path like `"myapp:///some/path/:project_id/:id` which
     will be parsed to include path params `%{"project_id" => _, "id" => _}`. The scheme can be
-    `"https"`, `"git"`, `"file"`, or custom, eg `"myapp"`.
+    `"https"`, `"git"`, `"file"`, or custom, eg `"myapp"`. A host is matched exactly
+    (ignoring case), so `"myapp://settings"`, `"myapp://settings/:id"`, and
+    `"https://example.com/:id"` only match URIs with that host.
   - `:description` - The description of the resource and when to use it.
   - `:handler` - The module to call.
   - `:function` - The function to call on the handler module.
@@ -86,12 +90,12 @@ defmodule Phantom.ResourceTemplate do
 
     uri =
       case uri do
-        {:ok, %URI{path: path, scheme: scheme} = uri}
-        when is_binary(path) and is_binary(scheme) ->
+        {:ok, %URI{path: path, host: host, scheme: scheme} = uri}
+        when is_binary(scheme) and (is_binary(path) or (is_binary(host) and host != "")) ->
           uri
 
         {:ok, uri} ->
-          raise "Provided an invalid URI.\nResource URIs must contain a path and a scheme.\nProvided: #{URI.to_string(uri)}"
+          raise "Provided an invalid URI.\nResource URIs must contain a scheme and a host or path.\nProvided: #{URI.to_string(uri)}"
 
         {:error, invalid} ->
           raise "Provided an invalid URI.\nProvided: #{inspect(attrs[:uri])}\nError at: #{inspect(invalid)}"
@@ -109,9 +113,10 @@ defmodule Phantom.ResourceTemplate do
       |> Map.new()
       |> Map.merge(%{
         name: attrs[:name] || to_string(attrs[:function]),
+        authority: authority(uri),
         scheme: attrs[:scheme] || uri.scheme,
-        path: attrs[:path] || uri.path,
-        uri_template: "#{uri.scheme}://#{to_uri_6570(uri.path)}",
+        path: attrs[:path] || uri.path || "",
+        uri_template: "#{uri.scheme}://#{authority(uri)}#{to_uri_6570(uri.path || "")}",
         icons: icons
       })
     )
@@ -143,6 +148,34 @@ defmodule Phantom.ResourceTemplate do
         base
     end
   end
+
+  @doc false
+  # The path a resource router matches for this template. The authority is
+  # its first segment, so templates that differ only by host stay distinct.
+  def route(%__MODULE__{authority: authority, path: path}),
+    do: "/" <> authority_segment(authority) <> path
+
+  @doc false
+  # The `path_info` a resource router matches a requested URI with.
+  def path_info(%URI{path: path} = uri) do
+    segments =
+      for segment <- :binary.split(path || "", "/", [:global]),
+          segment != "",
+          do: URI.decode(segment)
+
+    [authority_segment(authority(uri)) | segments]
+  end
+
+  # Hosts are case-insensitive, and a port only matters when it is not the
+  # scheme's default.
+  defp authority(%URI{host: host, port: port, scheme: scheme}) do
+    host = String.downcase(host || "")
+    if port && port != URI.default_port(scheme), do: "#{host}:#{port}", else: host
+  end
+
+  # An encoded authority never contains "@", so it marks an empty one.
+  defp authority_segment(""), do: "@"
+  defp authority_segment(authority), do: URI.encode_www_form(authority)
 
   defp to_uri_6570(str) do
     # this is not a total 6570-compliant URI template.

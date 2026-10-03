@@ -563,22 +563,19 @@ defmodule Conformance.MCP.Router do
 
   ## Resources
 
-  # The reference server uses URIs with an authority (`test://static-text`,
-  # `test://template/{id}/data`), which `Phantom.Router.resource/4` rejects
-  # because it routes on the path only. The closest supported forms are used.
-  resource "test:///static-text", :static_text,
+  resource "test://static-text", :static_text,
     description: "A static text resource for testing",
     mime_type: "text/plain"
 
-  resource "test:///static-binary", :static_binary,
+  resource "test://static-binary", :static_binary,
     description: "A static binary resource (image) for testing",
     mime_type: "image/png"
 
-  resource "test:///template/:id/data", :template,
+  resource "test://template/:id/data", :template,
     description: "A resource template with parameter substitution",
     mime_type: "application/json"
 
-  resource "test:///watched-resource", :watched_resource,
+  resource "test://watched-resource", :watched_resource,
     description: "A resource that auto-updates every 3 seconds",
     mime_type: "text/plain"
 

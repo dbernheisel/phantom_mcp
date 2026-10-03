@@ -5,6 +5,10 @@ defmodule Phantom.Test.ConformanceProxy do
   Consecutive requests of one MCP session, including the SSE streams they
   open, land on different nodes, so a passing conformance run proves that any
   node can serve any request.
+
+  A session's `initialize` always goes to the first backend and its later
+  requests alternate from the second, so a scenario reaches the same nodes
+  on every run. Requests without a session alternate across all requests.
   """
 
   @behaviour Plug
@@ -16,13 +20,14 @@ defmodule Phantom.Test.ConformanceProxy do
   @impl Plug
   def init(opts) do
     backends = opts |> Keyword.fetch!(:backends) |> List.to_tuple()
-    %{backends: backends, counter: :atomics.new(1, [])}
+    sessions = :ets.new(__MODULE__, [:public, write_concurrency: true])
+    %{backends: backends, counter: :atomics.new(1, []), sessions: sessions}
   end
 
   @impl Plug
-  def call(conn, %{backends: backends, counter: counter}) do
-    index = rem(:atomics.add_get(counter, 1, 1), tuple_size(backends))
+  def call(conn, %{backends: backends} = opts) do
     {:ok, body, conn} = read_body(conn)
+    index = rem(request_number(conn, body, opts), tuple_size(backends))
 
     resp =
       Req.request!(
@@ -47,6 +52,14 @@ defmodule Phantom.Test.ConformanceProxy do
       |> send_chunked(resp.status)
 
     stream(conn, resp)
+  end
+
+  defp request_number(conn, body, %{counter: counter, sessions: sessions}) do
+    case {get_req_header(conn, "mcp-session-id"), JSON.decode(body)} do
+      {[], {:ok, %{"method" => "initialize"}}} -> 0
+      {[], _} -> :atomics.add_get(counter, 1, 1)
+      {[session_id | _], _} -> :ets.update_counter(sessions, session_id, 1, {session_id, 0})
+    end
   end
 
   defp stream(conn, resp) do

@@ -11,6 +11,12 @@
   `input_required` result under MCP 2026-07-28.
 - `Phantom.Tracker` broadcasts to other nodes every second by default
   (`broadcast_period`, previously Phoenix.Tracker's 1.5s).
+- Resource URIs keep their host. `resource "https://example.com/x/:id", ...`
+  now advertises `https://example.com/x/{id}` and `resource_uri/3` builds
+  `https://example.com/x/1` (both previously dropped the host), and only
+  URIs with that host match it (previously any host did). Host-only URIs
+  such as `myapp://settings` can now be defined, and reading an unknown one
+  returns "Resource not found" instead of crashing.
 - MCP 2026-07-28 fixes found by the conformance suite:
   - -32021 errors name `requiredCapabilities` as a ClientCapabilities object
     and are sent with HTTP status 400.

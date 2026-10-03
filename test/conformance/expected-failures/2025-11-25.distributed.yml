@@ -6,3 +6,8 @@ server:
   # `initialize` on another node the lookup misses, the level is stored on the
   # short-lived POST process instead, and the tool's logs are filtered out.
   - tools-call-with-logging
+  # Same cause: `resources/subscribe` and `resources/unsubscribe` look up the
+  # session's stream with `Phantom.Tracker` and answer "SSE stream not open"
+  # when the other node has not learned about it yet.
+  - resources-subscribe
+  - resources-unsubscribe

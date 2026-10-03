@@ -836,11 +836,12 @@ defmodule Phantom.Router do
         {:ok, %{scheme: "ui"}} ->
           raise "The ui:// scheme is reserved for MCP Apps"
 
-        {:ok, %{scheme: scheme, path: path}} when is_binary(scheme) and is_binary(path) ->
+        {:ok, %{scheme: scheme, host: host, path: path}}
+        when is_binary(scheme) and (is_binary(path) or (is_binary(host) and host != "")) ->
           scheme
 
         _ ->
-          raise "Provided an invalid URI. Resource URIs must contain a path and a scheme. Provided: #{pattern}"
+          raise "Provided an invalid URI. Resource URIs must contain a scheme and a host or path. Provided: #{pattern}"
       end
 
     resource_router =
@@ -1153,7 +1154,7 @@ defmodule Phantom.Router do
             plug :dispatch
 
             for resource_template <- unquote(Macro.escape(resource_templates)) do
-              match(resource_template.path,
+              match(Phantom.ResourceTemplate.route(resource_template),
                 to: Phantom.ResourcePlug,
                 assigns: %{resource_template: resource_template}
               )
@@ -1201,7 +1202,7 @@ defmodule Phantom.Router do
 
       if MapSet.equal?(MapSet.new(Map.keys(path_params)), MapSet.new(params)) do
         route =
-          Enum.reduce(segments, "#{resource_template.scheme}://", fn
+          Enum.reduce(segments, "#{resource_template.scheme}://#{resource_template.authority}", fn
             segment, acc when is_binary(segment) -> "#{acc}/#{segment}"
             {field, _, _}, acc -> "#{acc}/#{Map.fetch!(path_params, field)}"
           end)
@@ -1268,20 +1269,14 @@ defmodule Phantom.Router do
   end
 
   defp resolve_resource(router, session, uri) when is_binary(uri) do
-    with {:ok, %{path: path, scheme: scheme}} when is_binary(path) and is_binary(scheme) <-
-           URI.new(uri),
+    with {:ok, %{scheme: scheme} = uri_struct} when is_binary(scheme) <- URI.new(uri),
          resource_router when not is_nil(resource_router) <-
            get_resource_router(router, session, scheme) do
-      path_info =
-        for segment <- :binary.split(path, "/", [:global]),
-            segment != "",
-            do: URI.decode(segment)
-
       fake_conn = %Plug.Conn{
         assigns: %{resolve_resource: true, session: session, uri: uri, result: nil},
         method: "GET",
-        request_path: path,
-        path_info: path_info
+        request_path: uri_struct.path || "/",
+        path_info: Phantom.ResourceTemplate.path_info(uri_struct)
       }
 
       case resource_router.call(fake_conn, resource_router.init([])).assigns.result do
@@ -1454,11 +1449,6 @@ defmodule Phantom.Router do
 
     intercept_session = %{session | pid: task.pid}
 
-    path_info =
-      for segment <- :binary.split(uri_struct.path, "/", [:global]),
-          segment != "",
-          do: URI.decode(segment)
-
     fake_conn = %Plug.Conn{
       assigns: %{
         session: %{intercept_session | request: fake_request},
@@ -1466,8 +1456,8 @@ defmodule Phantom.Router do
         result: nil
       },
       method: "POST",
-      request_path: uri_struct.path,
-      path_info: path_info
+      request_path: uri_struct.path || "/",
+      path_info: Phantom.ResourceTemplate.path_info(uri_struct)
     }
 
     case router.call(fake_conn, router.init([])).assigns.result do
@@ -2045,14 +2035,9 @@ defmodule Phantom.Router do
   @doc false
   def read_resource_request(router, session, uri, request) do
     with {:ok, session} <- decode_request_state(router, session, request),
-         {:ok, %{path: path, scheme: scheme}} <- URI.new(uri),
+         {:ok, %{scheme: scheme} = uri_struct} when is_binary(scheme) <- URI.new(uri),
          resource_router when not is_nil(resource_router) <-
            get_resource_router(router, session, scheme) do
-      path_info =
-        for segment <- :binary.split(path, "/", [:global]),
-            segment != "",
-            do: URI.decode(segment)
-
       fake_conn = %Plug.Conn{
         assigns: %{
           session: %{session | request: request},
@@ -2060,8 +2045,8 @@ defmodule Phantom.Router do
           result: nil
         },
         method: "POST",
-        request_path: path,
-        path_info: path_info
+        request_path: uri_struct.path || "/",
+        path_info: Phantom.ResourceTemplate.path_info(uri_struct)
       }
 
       result = resource_router.call(fake_conn, resource_router.init([])).assigns.result
