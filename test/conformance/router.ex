@@ -1,4 +1,4 @@
-defmodule Conformance.MCP.Router do
+defmodule Phantom.Conformance.MCP.Router do
   @moduledoc """
   Mirrors the reference "everything" server used by the official MCP
   conformance suite (https://github.com/modelcontextprotocol/conformance).
@@ -27,7 +27,7 @@ defmodule Conformance.MCP.Router do
 
   # Remembers terminated sessions on one node for the whole cluster, so
   # every node rejects them. An app would use its own storage.
-  @terminated_sessions {:global, Conformance.TerminatedSessions}
+  @terminated_sessions {:global, Phantom.Conformance.TerminatedSessions}
 
   def connect(session, _conn) do
     if session.id in terminated_sessions(),

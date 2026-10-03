@@ -18,7 +18,7 @@ Each spec revision's requirement set (`--requirements 2025-11-25` and
   its `requestState` continuations are served by different nodes.
 
 The nodes are the test cluster peers started by `test/test_helper.exs`. Each
-one serves `Conformance.MCP.Router` (`router.ex`) on its own port, and the
+one serves `Phantom.Conformance.MCP.Router` (`router.ex`) on its own port, and the
 proxy listens on the primary node. See `Phantom.Test.Conformance`.
 
 ## Expected failures
@@ -57,7 +57,7 @@ npx conformance server --url http://127.0.0.1:4110/mcp --scenario ping    # dist
 
 ## Fixture router
 
-`Conformance.MCP.Router` mirrors the suite's reference
+`Phantom.Conformance.MCP.Router` mirrors the suite's reference
 ["everything" server](https://github.com/modelcontextprotocol/conformance/blob/main/examples/servers/typescript/everything-server.ts)
 using Phantom's public API. Where Phantom cannot express a fixture, the
 closest equivalent is used and the gap is noted in a comment. The nodes only

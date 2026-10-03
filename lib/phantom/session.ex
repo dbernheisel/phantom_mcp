@@ -1219,7 +1219,7 @@ defmodule Phantom.Session do
 
   defp validate_stdio_request(%Request{} = request) do
     if Request.stateless_envelope?(request),
-      do: Request.validate_modern(request),
+      do: Request.validate(request),
       else: :ok
   end
 

@@ -190,6 +190,8 @@ defmodule Phantom.PlugTest do
     end
   end
 
+  def truthy_rejection(_value), do: {:error, :not_allowed}
+
   describe "host validation" do
     @local_hosts ["localhost", "127.0.0.1", "[::1]"]
 
@@ -215,6 +217,26 @@ defmodule Phantom.PlugTest do
 
         assert_receive {:conn, %{status: 200}}
       end
+    end
+
+    test "a host callback must return true, not just a truthy value" do
+      request_ping(
+        hosts: {__MODULE__, :truthy_rejection, []},
+        validate_origin: false,
+        before_call: &%{&1 | host: "localhost"}
+      )
+
+      assert_receive {:conn, %{status: 403}}
+    end
+
+    test "an origin callback must return true, not just a truthy value" do
+      request_ping(
+        origins: {__MODULE__, :truthy_rejection, []},
+        validate_origin: true,
+        before_call: &put_req_header(&1, "origin", "http://localhost:4000")
+      )
+
+      assert_receive {:conn, %{status: 403}}
     end
 
     test "accepts any Host by default" do

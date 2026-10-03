@@ -247,7 +247,7 @@ defmodule Phantom.Request do
   def modern_method?(method), do: method in @modern_methods
 
   @doc false
-  def validate_modern(%__MODULE__{} = request, transport_version \\ nil) do
+  def validate(%__MODULE__{} = request, transport_version \\ nil) do
     body_version = if is_map(request.meta), do: request.meta[@protocol_version_meta_key]
     capabilities = if is_map(request.meta), do: request.meta[@client_capabilities_meta_key]
     log_level = if is_map(request.meta), do: request.meta[@log_level_meta_key]

@@ -1,6 +1,6 @@
 defmodule Phantom.Test.Conformance do
   @moduledoc """
-  Runs the official MCP conformance suite against `Conformance.MCP.Router`.
+  Runs the official MCP conformance suite against `Phantom.Conformance.MCP.Router`.
 
   The router is served by the peer nodes that `Phantom.Test.Cluster` starts.
   The `:single` topology points the suite at one node. The `:distributed`
@@ -84,10 +84,10 @@ defmodule Phantom.Test.Conformance do
   end
 
   defp start_backend(node, port) do
-    :rpc.block_call(node, Phantom.Cache, :register, [Conformance.MCP.Router])
+    :rpc.block_call(node, Phantom.Cache, :register, [Phantom.Conformance.MCP.Router])
 
     plug_opts = [
-      router: Conformance.MCP.Router,
+      router: Phantom.Conformance.MCP.Router,
       pubsub: Phantom.Test.PubSub,
       hosts: ["localhost", "127.0.0.1", "[::1]"],
       origins:

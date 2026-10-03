@@ -117,7 +117,7 @@ defmodule Phantom.RequestTest do
           }
         })
 
-      assert {:error, %{code: -32602}} = Request.validate_modern(request, "2026-07-28")
+      assert {:error, %{code: -32602}} = Request.validate(request, "2026-07-28")
     end
 
     test "reports a header mismatch before an unsupported body version" do
@@ -134,8 +134,8 @@ defmodule Phantom.RequestTest do
           }
         })
 
-      assert {:error, %{code: -32020}} = Request.validate_modern(request, "2026-07-28")
-      assert {:error, %{code: -32022}} = Request.validate_modern(request, "2025-11-25")
+      assert {:error, %{code: -32020}} = Request.validate(request, "2026-07-28")
+      assert {:error, %{code: -32022}} = Request.validate(request, "2025-11-25")
     end
   end
 

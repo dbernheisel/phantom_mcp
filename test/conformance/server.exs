@@ -1,4 +1,4 @@
-# Serves Conformance.MCP.Router for the official MCP conformance suite.
+# Serves Phantom.Conformance.MCP.Router for the official MCP conformance suite.
 # See test/conformance/README.md.
 #
 #     MIX_ENV=test mix run test/conformance/server.exs

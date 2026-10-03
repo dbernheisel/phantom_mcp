@@ -36,7 +36,7 @@ defmodule Phantom.Tracker do
   @doc false
   if @available do
     def start_link(opts) do
-      opts = Keyword.merge([name: __MODULE__, broadcast_period: 1_000], opts)
+      opts = Keyword.merge([name: __MODULE__], opts)
       Phoenix.Tracker.start_link(__MODULE__, opts, opts)
     end
   else

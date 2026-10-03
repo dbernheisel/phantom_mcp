@@ -392,12 +392,8 @@ defmodule Phantom.Elicit do
   end
 
   @doc """
-  Render an `Elicit` struct as the MCP `2026-07-28` `inputRequests` map.
-
-  Under the stateless core, the server returns its outstanding input
-  requirements directly in the tool reply rather than over an SSE-pushed
-  `elicitation/create` round-trip. This adapter packages the same Elicit
-  struct your handler already builds into the new shape.
+  Render an `Elicit` struct as the MCP `2026-07-28` `inputRequests` map,
+  which a tool or prompt returns in an `input_required` result.
   """
   def to_input_requests(%__MODULE__{} = elicit) do
     %{

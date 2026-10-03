@@ -9,8 +9,6 @@
   updated resources with one authorization call per subscribed session.
 - New: `Phantom.Prompt.input_required/1`. Prompt handlers can return an
   `input_required` result under MCP 2026-07-28.
-- `Phantom.Tracker` broadcasts to other nodes every second by default
-  (`broadcast_period`, previously Phoenix.Tracker's 1.5s).
 - Session messages reach the session's stream on any node immediately.
   `logging/setLevel`, `resources/subscribe`, `resources/unsubscribe`, and
   client logs used to fail or be lost when they reached a node before

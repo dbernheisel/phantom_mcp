@@ -175,7 +175,7 @@ defmodule Phantom.Plug do
       router: config.router,
       session: nil,
       requests: %{},
-      modern: modern_request?(conn)
+      modern: not legacy_request?(conn)
     })
     |> validate_request(config)
     |> validate_protocol_request()
@@ -326,7 +326,7 @@ defmodule Phantom.Plug do
       true ->
         case Request.build(conn.body_params) do
           {:ok, request} ->
-            case Request.validate_modern(request, version) do
+            case Request.validate(request, version) do
               :ok -> conn
               {:error, %{code: -32601} = error} -> protocol_error(conn, request.id, error, 404)
               {:error, error} -> protocol_error(conn, request.id, error, 400)
@@ -502,16 +502,9 @@ defmodule Phantom.Plug do
   defp validate_routing_headers(_conn, %{"_json" => _}), do: :ok
 
   defp validate_routing_headers(conn, params) when is_map(params) do
-    cond do
-      not Map.has_key?(params, "method") ->
-        :ok
-
-      modern_request?(conn) ->
-        do_validate_routing_headers(conn, params)
-
-      true ->
-        :ok
-    end
+    if Map.has_key?(params, "method") and not legacy_request?(conn),
+      do: do_validate_routing_headers(conn, params),
+      else: :ok
   end
 
   defp do_validate_routing_headers(conn, %{"method" => body_method} = params) do
@@ -567,32 +560,43 @@ defmodule Phantom.Plug do
 
     args = Map.get(method_params, "arguments", %{})
 
-    Enum.find_value(declarations, :ok, fn {path, header, type} ->
-      case value_at_path(args, path) do
-        nil ->
-          false
-
-        value ->
-          expected = primitive_header_value(value)
-          actual = mcp_header(conn, "mcp-param-#{String.downcase(header)}")
-
-          with expected when is_binary(expected) <- expected,
-               actual when is_binary(actual) <- actual,
-               decoded when is_binary(decoded) <- decode_header_value(actual),
-               true <- matching_header_value?(decoded, value, expected, type) do
-            false
-          else
-            _ ->
-              {:error,
-               Request.header_mismatch(
-                 "Header mismatch: Mcp-Param-#{header} does not match body argument #{Enum.join(path, ".")}"
-               ), id}
-          end
+    Enum.find_value(declarations, :ok, fn declaration ->
+      case validate_param_header(conn, args, declaration) do
+        :ok -> false
+        {:error, error} -> {:error, error, id}
       end
     end)
   end
 
   defp validate_param_headers(_conn, _params), do: :ok
+
+  # An argument declared with `x-mcp-header` must be mirrored in its
+  # `Mcp-Param-*` header. Arguments that are absent need no header.
+  defp validate_param_header(conn, args, {path, header, type}) do
+    case value_at_path(args, path) do
+      nil ->
+        :ok
+
+      value ->
+        if param_header_matches?(conn, header, value, type),
+          do: :ok,
+          else:
+            {:error,
+             Request.header_mismatch(
+               "Header mismatch: Mcp-Param-#{header} does not match body argument #{Enum.join(path, ".")}"
+             )}
+    end
+  end
+
+  defp param_header_matches?(conn, header, value, type) do
+    with expected when is_binary(expected) <- primitive_header_value(value),
+         actual when is_binary(actual) <- mcp_header(conn, "mcp-param-#{String.downcase(header)}"),
+         decoded when is_binary(decoded) <- decode_header_value(actual) do
+      matching_header_value?(decoded, value, expected, type)
+    else
+      _ -> false
+    end
+  end
 
   defp scan_param_headers(schema), do: scan_param_headers(schema, [])
 
@@ -664,11 +668,12 @@ defmodule Phantom.Plug do
 
   defp decode_header_value(value), do: value
 
-  defp modern_request?(%Plug.Conn{} = conn) do
+  defp legacy_request?(%Plug.Conn{} = conn) do
     header_version = mcp_header(conn, "mcp-protocol-version")
     body_version = body_protocol_version(conn.body_params)
 
-    "2026-07-28" in [header_version, body_version] or stateless_body?(conn.body_params)
+    "2026-07-28" not in [header_version, body_version] and
+      not stateless_body?(conn.body_params)
   end
 
   defp stateless_body?(%{"params" => %{"_meta" => meta}}) when is_map(meta),
@@ -1046,13 +1051,13 @@ defmodule Phantom.Plug do
     case opts[:origins] do
       :all -> true
       origins when is_list(origins) -> origin in origins
-      {m, f, a} -> apply(m, f, [origin | a])
+      {m, f, a} -> apply(m, f, [origin | a]) == true
       _ -> false
     end
   end
 
   defp valid_host?(_host, :all), do: true
-  defp valid_host?(host, {m, f, a}), do: apply(m, f, [host | a])
+  defp valid_host?(host, {m, f, a}), do: apply(m, f, [host | a]) == true
 
   defp valid_host?(host, hosts) when is_list(hosts),
     do: normalize_host(host) in Enum.map(hosts, &normalize_host/1)
