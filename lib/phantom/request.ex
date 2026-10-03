@@ -124,7 +124,7 @@ defmodule Phantom.Request do
     %{
       code: @unsupported_protocol,
       message: "Unsupported protocol version",
-      data: %{supported: supported_protocols(), requested: requested}
+      data: %{supported: stateless_protocols(), requested: requested}
     }
   end
 

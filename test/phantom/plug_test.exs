@@ -375,6 +375,28 @@ defmodule Phantom.PlugTest do
       assert Phantom.Tracker.list_sessions() != []
     end
 
+    test "the initialize stream closes after its response, freeing the session's GET stream" do
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: %{
+          protocolVersion: "2025-11-25",
+          capabilities: %{},
+          clientInfo: %{name: "Client", version: "1.0"}
+        }
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(%{session_id: "initialize-closes"})
+
+      assert_receive {:response, 1, "message", %{result: %{protocolVersion: "2025-11-25"}}}
+      assert_receive {:conn, %{status: 200}}, 1_000
+
+      request_sse_stream(session_id: "initialize-closes")
+      assert_sse_connected()
+    end
+
     test "second GET on same session returns 409 without raising AlreadySentError" do
       session_id = "019dd3d8-0000-0000-0000-000000000001"
 
@@ -643,12 +665,12 @@ defmodule Phantom.PlugTest do
       |> call(%{session_id: session_id})
 
       assert_receive {:response, 1, "message", _}, 500
+      assert_receive {:conn, %{status: 200}}, 500
     end
 
     test "form elicitation round-trip", context do
       session_id = to_string(context.test)
 
-      # Initialize with elicitation capability (POST becomes SSE stream)
       initialize_with_elicitation(session_id)
 
       # Call elicit_tool — this blocks until we respond
@@ -727,7 +749,7 @@ defmodule Phantom.PlugTest do
       |> put_req_header("content-type", "application/json")
       |> call(%{session_id: session_id})
 
-      assert_sse_connected()
+      assert_connected(_conn)
       assert_receive {:response, 1, "message", _}, 500
 
       request_tool("elicit_tool", %{}, session_id: session_id, id: 2)
@@ -750,7 +772,7 @@ defmodule Phantom.PlugTest do
 
     test "initialize response advertises elicitation capability" do
       request_initialize()
-      assert_sse_connected()
+      assert_connected(_conn)
       assert_receive {:response, 1, "message", response}, 500
 
       assert %{result: %{capabilities: capabilities}} = response
@@ -760,14 +782,14 @@ defmodule Phantom.PlugTest do
     test "form elicitation works after tracked session closes", context do
       session_id = to_string(context.test)
       initialize_with_elicitation(session_id)
+      request_sse_stream(session_id: session_id)
+      assert_sse_connected()
 
-      Process.sleep(50)
-
-      [{_key, %{pid: init_pid}}] =
+      [{_key, %{pid: stream_pid}}] =
         Phoenix.Tracker.get_by_key(Phantom.Tracker, "phantom:sessions", session_id)
 
-      Process.unlink(init_pid)
-      Process.exit(init_pid, :kill)
+      Process.unlink(stream_pid)
+      Process.exit(stream_pid, :kill)
       Process.sleep(100)
       assert Phantom.Tracker.get_session(session_id) == nil
 

@@ -10,24 +10,12 @@ defmodule Phantom.DistributedTest do
     "io.modelcontextprotocol/clientCapabilities" => %{"elicitation" => %{}}
   }
 
-  # Initialize and return {session_id, resp, ref, buffer} so the caller
-  # can keep reading SSE events from the initialize stream.
-  defp initialize_with_stream(port) do
-    resp =
-      post_mcp(port, %{
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: %{
-          protocolVersion: "2025-06-18",
-          capabilities: %{roots: %{}, sampling: %{}, elicitation: %{}},
-          clientInfo: %{name: "DistributedTestClient", version: "1.0"}
-        }
-      })
-
-    session_id = session_id(resp)
-    {_messages, ref, buffer} = receive_sse_event(resp, 5_000)
-    {session_id, resp, ref, buffer}
+  # Initialize, then open the session's GET stream on the same node. Returns
+  # {session_id, resp, ref, buffer} so the caller can keep reading it.
+  defp initialize_with_session_stream(port) do
+    session_id = initialize(port)
+    resp = open_sse(port, session_id: session_id)
+    {session_id, resp, resp.body.ref, ""}
   end
 
   describe "cross-node elicitation" do
@@ -252,8 +240,8 @@ defmodule Phantom.DistributedTest do
 
   describe "cross-node notifications" do
     test "resource update notification reaches remote SSE stream" do
-      # Initialize on node 1 and keep init stream open
-      {session_id, init_resp, ref, buffer} = initialize_with_stream(@node1_port)
+      # Initialize on node 1 and open the session stream there
+      {session_id, stream_resp, ref, buffer} = initialize_with_session_stream(@node1_port)
       assert is_binary(session_id)
 
       # Wait for session to be replicated to node 2
@@ -267,9 +255,9 @@ defmodule Phantom.DistributedTest do
           [id: 100]
         ])
 
-      # Subscribe to the resource directly on the init stream via RPC
-      init_pid = :rpc.call(@node1, Phantom.Tracker, :get_session, [session_id])
-      GenServer.cast(init_pid, {:subscribe_resource, uri})
+      # Subscribe to the resource directly on the session stream via RPC
+      stream_pid = :rpc.call(@node1, Phantom.Tracker, :get_session, [session_id])
+      GenServer.cast(stream_pid, {:subscribe_resource, uri})
 
       # Wait for resource subscription to replicate to node 2
       await_resource_tracked(@node2, uri)
@@ -277,14 +265,14 @@ defmodule Phantom.DistributedTest do
       # Trigger resource update from NODE 2
       :rpc.call(@node2, Phantom.Tracker, :notify_resource_updated, [uri])
 
-      # Read notification from node 1's init stream
+      # Read notification from node 1's session stream
       notification =
-        poll_for_sse_event(init_resp, ref, buffer, 10_000, fn msg ->
+        poll_for_sse_event(stream_resp, ref, buffer, 10_000, fn msg ->
           msg["method"] == "notifications/resources/updated"
         end)
 
       assert notification,
-             "Expected resource update notification on init stream"
+             "Expected resource update notification on session stream"
 
       assert notification["params"]["uri"] == uri
     end
@@ -293,7 +281,7 @@ defmodule Phantom.DistributedTest do
   describe "cross-node logging" do
     test "client log from tool on node 2 reaches SSE stream on node 1" do
       # Step 1: Initialize on node 1, keeping the SSE stream open
-      {session_id, init_resp, ref, buffer} = initialize_with_stream(@node1_port)
+      {session_id, stream_resp, ref, buffer} = initialize_with_session_stream(@node1_port)
       assert is_binary(session_id)
 
       # Wait for session to be replicated to node 2
@@ -314,12 +302,12 @@ defmodule Phantom.DistributedTest do
 
       assert log_level_resp.status == 200
 
-      # The response arrives once the init stream has applied the level.
+      # The response arrives once the session stream has applied the level.
       assert {[%{"id" => 20, "result" => %{}}], _, _} = receive_sse_event(log_level_resp, 5_000)
 
       # Step 3: Call client_log_tool on node 2 with the same session.
       # ClientLogger.do_log sends the log cast to Tracker.get_session(id),
-      # which finds the init stream PID on node 1 — cross-node delivery.
+      # which finds the session stream PID on node 1 — cross-node delivery.
       tool_resp =
         post_mcp(
           @node2_port,
@@ -337,14 +325,14 @@ defmodule Phantom.DistributedTest do
       # Drain the tool response
       receive_sse_event(tool_resp, 5_000)
 
-      # Step 4: Read log notification from the init stream on node 1
+      # Step 4: Read log notification from the session stream on node 1
       log_notification =
-        poll_for_sse_event(init_resp, ref, buffer, 10_000, fn msg ->
+        poll_for_sse_event(stream_resp, ref, buffer, 10_000, fn msg ->
           msg["method"] == "notifications/message"
         end)
 
       assert log_notification,
-             "Expected notifications/message log entry on init stream"
+             "Expected notifications/message log entry on session stream"
 
       assert log_notification["params"]["level"] == "info"
       assert log_notification["params"]["data"]["message"] == "hello from node2"
@@ -355,7 +343,7 @@ defmodule Phantom.DistributedTest do
   # session stream that `initialize` registered on node 1.
   describe "cross-node session messages before Tracker replication" do
     test "logging/setLevel on node 2 applies to the session stream on node 1" do
-      {session_id, init_resp, ref, buffer} = initialize_with_stream(@node1_port)
+      {session_id, stream_resp, ref, buffer} = initialize_with_session_stream(@node1_port)
 
       set_level =
         post_mcp(
@@ -382,7 +370,7 @@ defmodule Phantom.DistributedTest do
       assert poll_for_sse_event(tool, 5_000, &(&1["id"] == 31))
 
       log =
-        poll_for_sse_event(init_resp, ref, buffer, 5_000, fn msg ->
+        poll_for_sse_event(stream_resp, ref, buffer, 5_000, fn msg ->
           msg["method"] == "notifications/message"
         end)
 
@@ -408,7 +396,7 @@ defmodule Phantom.DistributedTest do
     end
 
     test "resources/subscribe and unsubscribe on node 2 reach the session stream on node 1" do
-      {session_id, init_resp, ref, buffer} = initialize_with_stream(@node1_port)
+      {session_id, stream_resp, ref, buffer} = initialize_with_session_stream(@node1_port)
 
       {:ok, uri} =
         :rpc.call(@node1, Phantom.Router, :resource_uri, [
@@ -429,7 +417,7 @@ defmodule Phantom.DistributedTest do
       :rpc.call(@node1, Phantom.Tracker, :notify_resource_updated, [uri])
 
       assert %{"params" => %{"uri" => ^uri}} =
-               poll_for_sse_event(init_resp, ref, buffer, 5_000, fn msg ->
+               poll_for_sse_event(stream_resp, ref, buffer, 5_000, fn msg ->
                  msg["method"] == "notifications/resources/updated"
                end)
 
@@ -446,7 +434,7 @@ defmodule Phantom.DistributedTest do
 
   describe "session termination" do
     test "DELETE on node 2 closes the session stream on node 1" do
-      {session_id, init_resp, ref, buffer} = initialize_with_stream(@node1_port)
+      {session_id, stream_resp, ref, buffer} = initialize_with_session_stream(@node1_port)
 
       delete =
         Req.delete!("http://127.0.0.1:#{@node2_port}/",
@@ -455,7 +443,7 @@ defmodule Phantom.DistributedTest do
         )
 
       assert delete.status in 200..299
-      assert {:closed, _ref, _buffer} = receive_sse_event(init_resp, ref, buffer, 5_000)
+      assert {:closed, _ref, _buffer} = receive_sse_event(stream_resp, ref, buffer, 5_000)
     end
   end
 

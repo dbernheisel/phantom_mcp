@@ -110,7 +110,7 @@ defmodule Phantom.RouterTest do
     |> put_req_header("content-type", "application/json")
     |> call()
 
-    assert_sse_connected()
+    assert_connected(_conn)
     assert_receive {:response, 1, "message", response}, 500
     assert response[:result][:protocolVersion] == "2026-07-28"
   end

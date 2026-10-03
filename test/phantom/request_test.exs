@@ -138,13 +138,12 @@ defmodule Phantom.RequestTest do
       assert {:error, %{code: -32022}} = Request.validate(request, "2025-11-25")
     end
 
-    test "an unsupported version error lists every supported version" do
+    # The versions a stateless request may use, matching `server/discover`.
+    test "an unsupported version error lists the stateless versions" do
       assert %{data: %{supported: supported, requested: "1999-01-01"}} =
                Request.unsupported_protocol("1999-01-01")
 
-      assert supported == Request.supported_protocols()
-      assert "2025-11-25" in supported
-      assert "2026-07-28" in supported
+      assert supported == Request.stateless_protocols()
     end
   end
 

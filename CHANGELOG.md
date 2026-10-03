@@ -20,6 +20,11 @@
   an empty `{}` event to the session stream.
 - An HTTP `DELETE` closes the session's open streams on every node; it
   previously only untracked streams on the node that received it.
+- The `initialize` response stream closes after the response, as the spec
+  recommends. Server-initiated messages (notifications, logs, resource
+  updates) go to the session's GET stream; clients that never open one no
+  longer receive them on the `initialize` stream. A client's GET stream no
+  longer gets 409 because the `initialize` stream held the session.
 - New: `Phantom.Plug` `:hosts` option rejects requests whose `Host` header is
   not allowed (403), protecting servers bound to localhost from DNS
   rebinding. Defaults to `:all`.

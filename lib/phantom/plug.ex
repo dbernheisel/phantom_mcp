@@ -1230,28 +1230,14 @@ defmodule Phantom.Plug do
 
   defp maybe_track_response(state, _), do: state
 
+  # The GET stream is the session's stream for server-initiated messages.
+  # A POST's stream, `initialize` included, closes after its response.
   defp maybe_track_session_stream(conn) do
     session_id = conn.private.phantom.session.id
-    existing_streams = Phantom.Tracker.list_session_streams(session_id)
-    initialize? = conn.body_params["method"] == "initialize"
 
-    case {initialize?, conn.method, existing_streams} do
-      # Initialize: always track (first session stream for this session)
-      {true, _, _} ->
-        session = %{conn.private.phantom.session | close_after_complete: false}
-
-        Phantom.Tracker.track_session(
-          self(),
-          session.id,
-          conn.body_params["params"]["clientInfo"] || %{}
-        )
-
-        Phantom.Tracker.subscribe_session(session.pubsub, session.id)
-
-        put_in(conn.private.phantom.session, session)
-
-      # GET SSE: only if no existing stream (on any node)
-      {false, "GET", []} ->
+    case {conn.method, Phantom.Tracker.list_session_streams(session_id)} do
+      # Only if no stream exists for the session (on any node)
+      {"GET", []} ->
         session = %{conn.private.phantom.session | close_after_complete: false}
 
         Phantom.Tracker.track_session(
@@ -1264,7 +1250,7 @@ defmodule Phantom.Plug do
 
         put_in(conn.private.phantom.session, session)
 
-      {false, "GET", _existing} ->
+      {"GET", _existing} ->
         conn
         |> put_status(409)
         |> json_error(
