@@ -76,3 +76,6 @@ jobs:
 
       - name: Run tests
         run: epmd -daemon && mix test
+
+      - name: Run MCP conformance suite
+        run: mix test --only conformance

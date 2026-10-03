@@ -1,30 +1,32 @@
 #!/usr/bin/env bash
-# Run the official MCP conformance suite against a Phantom server.
+# Run the official MCP conformance suite against Phantom.
 # See test/conformance/README.md.
 #
-#     bin/conformance                    # every scenario, checked against the baseline
-#     bin/conformance ping tools-list    # only the given scenarios
+#     bin/conformance                       # every requirement set, both topologies
+#     bin/conformance --scenario ping       # pass options to `npx conformance server`
+#     TOPOLOGY=distributed bin/conformance --scenario tools-call-with-logging \
+#       --spec-version 2025-11-25
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-PORT="${PORT:-3999}"
-BASELINE="test/conformance/expected-failures.yml"
+if [ "$#" -eq 0 ]; then
+  exec mix test --only conformance
+fi
 
-# Scenarios that hang instead of failing. The pinned CLI has no per-scenario
-# timeout, so these would block the whole run.
-#
-# - dns-rebinding-protection: reads the `initialize` response body to the end,
-#   but Phantom keeps that SSE stream open as the session stream.
-SKIP=(dns-rebinding-protection)
+case "${TOPOLOGY:-single}" in
+  single) URL="http://127.0.0.1:4111/mcp" ;;
+  distributed) URL="http://127.0.0.1:4110/mcp" ;;
+  *) echo "TOPOLOGY must be single or distributed" >&2; exit 1 ;;
+esac
 
 LOG="$(mktemp -t phantom-conformance.XXXXXX)"
-MIX_ENV=test PORT="$PORT" mix run test/conformance/server.exs >"$LOG" 2>&1 &
+MIX_ENV=test mix run test/conformance/server.exs >"$LOG" 2>&1 &
 SERVER_PID=$!
 trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -f "$LOG"' EXIT
 
 for _ in $(seq 1 120); do
-  grep -q "listening" "$LOG" && break
+  grep -q "(distributed)" "$LOG" && break
 
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then
     cat "$LOG"
@@ -35,40 +37,4 @@ for _ in $(seq 1 120); do
   sleep 1
 done
 
-if ! grep -q "listening" "$LOG"; then
-  cat "$LOG"
-  echo "Timed out waiting for the conformance server" >&2
-  exit 1
-fi
-
-if [ "$#" -gt 0 ]; then
-  scenarios=("$@")
-else
-  scenarios=()
-
-  while IFS= read -r scenario; do
-    scenarios+=("$scenario")
-  done < <(npx conformance list --server | sed -n 's/^  - \([^ ]*\).*/\1/p')
-fi
-
-failed=()
-
-for scenario in "${scenarios[@]}"; do
-  if [[ " ${SKIP[*]} " == *" $scenario "* ]]; then
-    echo "=== Skipping scenario: $scenario (see SKIP in bin/conformance) ==="
-    continue
-  fi
-
-  if ! npx conformance server \
-    --url "http://localhost:${PORT}/mcp" \
-    --scenario "$scenario" \
-    --expected-failures "$BASELINE"; then
-    failed+=("$scenario")
-  fi
-done
-
-if [ "${#failed[@]}" -gt 0 ]; then
-  echo
-  echo "Unexpected results (regressions or stale baseline entries): ${failed[*]}" >&2
-  exit 1
-fi
+npx conformance server --url "$URL" "$@"
