@@ -147,7 +147,7 @@ defmodule Phantom.ElicitTest do
       assert color.enum == ["red", "green", "blue"]
     end
 
-    test "titled multi-select emits array with items.oneOf" do
+    test "titled multi-select emits array with items.anyOf" do
       elicit =
         Elicit.build(%{
           message: "Pick colors",
@@ -170,12 +170,52 @@ defmodule Phantom.ElicitTest do
                type: "array",
                minItems: 1,
                items: %{
-                 oneOf: [
+                 anyOf: [
                    %{const: "#FF0000", title: "Red"},
                    %{const: "#00FF00", title: "Green"}
                  ]
                }
              }
+    end
+
+    test "every enum shape keeps its default" do
+      elicit =
+        Elicit.build(%{
+          message: "Pick",
+          requested_schema: [
+            %{type: :enum, name: "untitled", required: false, enum: ["a", "b"], default: "a"},
+            %{
+              type: :enum,
+              name: "titled",
+              required: false,
+              enum: [{"a", "A"}, {"b", "B"}],
+              default: "b"
+            },
+            %{
+              type: :enum,
+              name: "multi",
+              required: false,
+              enum: ["a", "b"],
+              multi: true,
+              default: ["a"]
+            },
+            %{
+              type: :enum,
+              name: "titled_multi",
+              required: false,
+              enum: [{"a", "A"}, {"b", "B"}],
+              multi: true,
+              default: ["a", "b"]
+            }
+          ]
+        })
+
+      properties = Elicit.to_json(elicit).requestedSchema.properties
+
+      assert properties["untitled"].default == "a"
+      assert properties["titled"].default == "b"
+      assert properties["multi"].default == ["a"]
+      assert properties["titled_multi"].default == ["a", "b"]
     end
 
     test "untitled single-select emits type string with enum array" do

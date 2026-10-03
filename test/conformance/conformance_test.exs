@@ -8,7 +8,11 @@ defmodule Phantom.ConformanceTest do
   @moduletag timeout: :infinity
 
   # Requirement sets run these without scoring, so they cannot fail a run.
-  @unscored_scenarios [{"server-session-lifecycle", "2025-11-25"}]
+  @unscored_scenarios [
+    {"server-session-lifecycle", "2025-11-25"},
+    {"json-schema-2020-12", "2025-11-25"},
+    {"json-schema-2020-12", "2026-07-28"}
+  ]
 
   setup_all do
     Conformance.start()

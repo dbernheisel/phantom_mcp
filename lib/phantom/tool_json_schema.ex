@@ -31,8 +31,10 @@ defmodule Phantom.Tool.JSONSchema do
           }
         }
 
-  The map-based form skips server-side validation — it only advertises the
-  schema to clients.
+  The map-based form is advertised to clients as given, so any JSON Schema
+  keyword works (`$defs`, `allOf`, `if`/`then`/`else`, ...). Server-side
+  validation only checks `type`, `required`, `properties`, `enum`, and
+  `items`.
 
   ## Type system
 
@@ -157,7 +159,8 @@ defmodule Phantom.Tool.JSONSchema do
           required: [String.t()],
           type: String.t(),
           properties: map(),
-          fields: [field()] | nil
+          fields: [field()] | nil,
+          schema: map() | nil
         }
 
   @type json :: %{
@@ -166,7 +169,8 @@ defmodule Phantom.Tool.JSONSchema do
           optional(:properties) => map()
         }
 
-  defstruct required: [], type: "object", properties: %{}, fields: nil
+  # `schema` holds a map-based schema as given, so every keyword reaches clients.
+  defstruct required: [], type: "object", properties: %{}, fields: nil, schema: nil
 
   @callback __input_schema__() :: t()
 
@@ -335,7 +339,15 @@ defmodule Phantom.Tool.JSONSchema do
 
   def build(nil), do: nil
   def build(%__MODULE__{} = schema), do: schema
-  def build(attrs), do: struct!(__MODULE__, attrs)
+
+  def build(schema) when is_map(schema) do
+    %__MODULE__{
+      type: schema[:type] || schema["type"] || "object",
+      required: schema[:required] || schema["required"] || [],
+      properties: schema[:properties] || schema["properties"] || %{},
+      schema: schema
+    }
+  end
 
   @doc "Build a `%JSONSchema{}` from a list of field maps, pre-computing JSON Schema properties."
   def build_from_fields(fields) when is_list(fields) do
@@ -406,6 +418,12 @@ defmodule Phantom.Tool.JSONSchema do
   end
 
   def to_json(nil), do: %{required: [], type: "object", properties: %{}}
+
+  def to_json(%__MODULE__{schema: %{} = schema}) do
+    if Map.has_key?(schema, :type) or Map.has_key?(schema, "type"),
+      do: schema,
+      else: Map.put(schema, :type, "object")
+  end
 
   def to_json(%__MODULE__{} = schema) do
     remove_nils(%{

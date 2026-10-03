@@ -79,23 +79,31 @@ defmodule Conformance.MCP.Router do
     description: "Tests elicitation with enum schema improvements per SEP-1330"
 
   # The scenario checks that a raw JSON Schema passes through unchanged, which
-  # is the map-form `input_schema` use case. It only keeps `type`,
-  # `properties`, and `required`, so the reference schema's `$schema`, `$defs`, `allOf`, `if`/`then`/`else`, and
-  # `additionalProperties` cannot be expressed.
+  # is the map-form `input_schema` use case.
   tool :json_schema_2020_12_tool,
     description: "Tool with JSON Schema 2020-12 features for conformance testing (SEP-1613)",
     input_schema: %{
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       type: "object",
-      properties: %{
-        name: %{type: "string"},
+      "$defs": %{
         address: %{
+          "$anchor": "addressDef",
           type: "object",
           properties: %{street: %{type: "string"}, city: %{type: "string"}}
-        },
+        }
+      },
+      properties: %{
+        name: %{type: "string"},
+        address: %{"$ref": "#/$defs/address"},
         contactMethod: %{type: "string", enum: ["phone", "email"]},
         phone: %{type: "string"},
         email: %{type: "string"}
-      }
+      },
+      allOf: [%{anyOf: [%{required: ["phone"]}, %{required: ["email"]}]}],
+      if: %{properties: %{contactMethod: %{const: "phone"}}, required: ["contactMethod"]},
+      then: %{required: ["phone"]},
+      else: %{required: ["email"]},
+      additionalProperties: false
     }
 
   def test_simple_text(_params, session) do

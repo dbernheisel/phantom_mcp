@@ -202,8 +202,9 @@ end
 ```
 
 You can also use the map-based `input_schema` option for full control over
-the JSON Schema. This form skips server-side validation — it only advertises
-the schema to clients:
+the JSON Schema. Clients receive the map as given, so any JSON Schema keyword
+works; server-side validation only checks `type`, `required`, `properties`,
+`enum`, and `items`:
 
 ```elixir
 tool :create_question, MyApp.MCP,

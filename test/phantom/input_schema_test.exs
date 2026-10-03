@@ -786,6 +786,56 @@ defmodule Phantom.Tool.JSONSchemaTest do
       assert tool.input_schema == nil
     end
 
+    test "raw map input_schema keeps every JSON Schema keyword" do
+      defmodule FullSchemaRouter do
+        use Phantom.Router, name: "FullSchemaTest", vsn: "1.0"
+
+        tool :full_schema_tool,
+          description: "JSON Schema 2020-12",
+          input_schema: %{
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            type: "object",
+            "$defs": %{
+              address: %{
+                "$anchor": "addressDef",
+                type: "object",
+                properties: %{street: %{type: "string"}}
+              }
+            },
+            properties: %{
+              name: %{type: "string"},
+              address: %{"$ref": "#/$defs/address"},
+              phone: %{type: "string"},
+              email: %{type: "string"}
+            },
+            allOf: [%{anyOf: [%{required: ["phone"]}, %{required: ["email"]}]}],
+            if: %{properties: %{phone: %{const: ""}}},
+            then: %{required: ["email"]},
+            else: %{required: ["phone"]},
+            additionalProperties: false
+          }
+
+        def full_schema_tool(_params, session), do: {:reply, Phantom.Tool.text("ok"), session}
+      end
+
+      tool =
+        Enum.find(FullSchemaRouter.__phantom__(:info).tools, &(&1.name == "full_schema_tool"))
+
+      json = Phantom.Tool.to_json(tool).inputSchema
+
+      assert json[:"$schema"] == "https://json-schema.org/draft/2020-12/schema"
+      assert json[:"$defs"].address[:"$anchor"] == "addressDef"
+      assert json.properties.address == %{"$ref": "#/$defs/address"}
+      assert [%{anyOf: [_, _]}] = json.allOf
+      assert json.then == %{required: ["email"]}
+      assert json.else == %{required: ["phone"]}
+      assert json.additionalProperties == false
+      refute Map.has_key?(json, :required)
+
+      assert {:error, [_ | _]} = JSONSchema.maybe_validate(tool.input_schema, %{"name" => 1})
+      assert {:ok, _} = JSONSchema.maybe_validate(tool.input_schema, %{"name" => "Ada"})
+    end
+
     test "raw map input_schema still works (backwards compatible)" do
       defmodule RawMapRouter do
         use Phantom.Router,

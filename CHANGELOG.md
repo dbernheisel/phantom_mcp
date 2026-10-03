@@ -20,6 +20,13 @@
   an empty `{}` event to the session stream.
 - An HTTP `DELETE` closes the session's open streams on every node; it
   previously only untracked streams on the node that received it.
+- Map-based `input_schema` and `output_schema` reach clients as given, so
+  `$schema`, `$defs`, `$ref`, `allOf`, `if`/`then`/`else`,
+  `additionalProperties`, and other JSON Schema keywords are kept. They
+  previously raised at compile time or were dropped.
+- Elicitation enums keep their `default`, and titled multi-select enums use
+  `items.anyOf` as the spec requires (was `items.oneOf`, which clients
+  rejected).
 - New: `connect/2` may return `{:not_found | 404, message}` to answer with
   HTTP 404. Record terminated sessions in `terminate/1` and reject them this
   way, as the MCP spec requires 404 for a terminated session ID.

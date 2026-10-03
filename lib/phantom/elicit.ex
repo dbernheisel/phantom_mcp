@@ -71,7 +71,7 @@ defmodule Phantom.Elicit do
   - `:string` — options: `:min_length`, `:max_length`, `:pattern` (string or `Regex`), `:format` (`:email`, `:uri`, `:date`, `:date_time`)
   - `:boolean` — options: `:default`
   - `:number` / `:integer` — options: `:minimum`, `:maximum`
-  - `:enum` — options: `:enum` (list of values or `{value, title}` tuples), `:multi` (boolean), `:min`, `:max`
+  - `:enum` — options: `:enum` (list of values or `{value, title}` tuples), `:multi` (boolean), `:min`, `:max`, `:default` (a value, or a list of values when `:multi`)
 
   All property types accept `:name`, `:required`, `:title`, and `:description`.
 
@@ -220,7 +220,8 @@ defmodule Phantom.Elicit do
           enum: [String.t() | {value :: String.t(), title :: String.t()}],
           multi: boolean(),
           min: pos_integer(),
-          max: pos_integer()
+          max: pos_integer(),
+          default: String.t() | [String.t()]
         }
 
   @type boolean_property :: %{
@@ -441,10 +442,7 @@ defmodule Phantom.Elicit do
     multi? = Map.get(attrs, :multi, false)
     titled? = match?([{_, _} | _], values)
 
-    base =
-      attrs
-      |> Map.take(~w[title description]a)
-      |> Enum.into(%{}, fn {k, v} -> {k, v} end)
+    base = Map.take(attrs, ~w[title description default]a)
 
     case {multi?, titled?} do
       {false, false} ->
@@ -467,7 +465,7 @@ defmodule Phantom.Elicit do
       {true, true} ->
         Map.merge(base, %{
           type: "array",
-          items: %{oneOf: Enum.map(values, fn {v, t} -> %{const: v, title: t} end)}
+          items: %{anyOf: Enum.map(values, fn {v, t} -> %{const: v, title: t} end)}
         })
         |> maybe_put(:minItems, attrs[:min])
         |> maybe_put(:maxItems, attrs[:max])
