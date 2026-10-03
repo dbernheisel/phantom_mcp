@@ -7,4 +7,4 @@ unless :clustered in exclude do
   ])
 end
 
-ExUnit.start()
+ExUnit.start(exclude: [:conformance | exclude])

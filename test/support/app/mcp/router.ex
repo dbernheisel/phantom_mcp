@@ -147,29 +147,18 @@ defmodule Test.MCP.Router do
   tool :embedded_resource_tool, AsyncModule, description: "A embedded resource tool"
   tool :embedded_resource_link_tool, AsyncModule, description: "A embedded resource link tool"
 
-  tool :client_log_tool,
-    description: "A tool that sends a log to the MCP client",
-    input_schema: %{
-      type: "object",
-      properties: %{
-        message: %{type: "string", description: "message to log"}
-      }
-    }
+  tool :client_log_tool, description: "A tool that sends a log to the MCP client" do
+    field :message, :string, description: "message to log"
+  end
 
   tool :echo_tool,
     description: "A test that echos your message",
-    icons: [%{src: "https://example.com/echo-icon.png", mime_type: "image/png"}],
-    input_schema: %{
-      type: "object",
-      required: [:message],
-      properties: %{
-        message: %{
-          type: "string",
-          description: "message to echo"
-        }
-      }
-    }
+    icons: [%{src: "https://example.com/echo-icon.png", mime_type: "image/png"}] do
+    field :message, :string, required: true, description: "message to echo"
+  end
 
+  # `field` cannot express extension keywords such as `x-mcp-header`, so this
+  # tool also covers the raw-map `input_schema` form.
   tool :header_echo_tool,
     description: "Echo a header-routed argument",
     input_schema: %{
@@ -182,16 +171,6 @@ defmodule Test.MCP.Router do
 
   tool :structured_echo_tool,
     description: "A test that echos your message",
-    input_schema: %{
-      type: "object",
-      required: [:message],
-      properties: %{
-        message: %{
-          type: "string",
-          description: "message to echo"
-        }
-      }
-    },
     output_schema: %{
       type: "object",
       required: [:message],
@@ -201,7 +180,9 @@ defmodule Test.MCP.Router do
           description: "echo"
         }
       }
-    }
+    } do
+    field :message, :string, required: true, description: "message to echo"
+  end
 
   tool :really_long_async_tool, AsyncModule, description: "this will notify of progress"
   tool :timeout_async_tool, AsyncModule, description: "this will timeout!"
@@ -211,18 +192,9 @@ defmodule Test.MCP.Router do
     {:reply, Tool.audio(@audio, mime_type: "audio/wav"), session}
   end
 
-  @description "A test that echos your message slowly"
-  tool :async_echo_tool, AsyncModule,
-    input_schema: %{
-      type: "object",
-      required: [:message],
-      properties: %{
-        message: %{
-          type: "string",
-          description: "message to echo"
-        }
-      }
-    }
+  tool :async_echo_tool, AsyncModule, description: "A test that echos your message slowly" do
+    field :message, :string, required: true, description: "message to echo"
+  end
 
   prompt :explode_prompt, description: "Always throws an exception"
   prompt :binary_prompt, description: "An image prompt"

@@ -1,18 +1,11 @@
-# Scenarios Phantom is known to fail. `bin/conformance` exits non-zero when a
-# scenario outside this list fails, or when a listed scenario starts passing;
-# remove the entry once it is fixed.
+# Scenarios the 2025-11-25 requirement set scores that Phantom is known to
+# fail, on every topology. The run fails when a scenario outside this list
+# fails, or when a listed one passes; remove the entry once it is fixed.
 server:
   # Server-initiated sampling is not implemented.
   - tools-call-sampling
-  # `input_schema` keeps only `type`, `properties`, and `required`, so
-  # `$schema`, `$defs`, and `additionalProperties` are dropped.
-  - json-schema-2020-12
-  # `Phantom.Elicit` drops `default` on string, integer, number, and enum
-  # properties.
-  - elicitation-sep1034-defaults
-  # Warnings only: no priming event, no `retry` field, and no resumption via
-  # GET with `Last-Event-ID`.
-  - server-sse-polling
+  # `Phantom.Elicit` drops `default` on enum properties.
+  - elicitation-sep1034-defaults:elicitation-sep1034-enum-default
   # Titled multi-select enums are sent as `items.oneOf` instead of
   # `items.anyOf`, so the client rejects the request and the call times out.
   - elicitation-sep1330-enums
@@ -27,3 +20,6 @@ server:
   # with "Resource not found" because unresolved URIs fail authorization.
   - resources-subscribe
   - resources-unsubscribe
+  # Times out: the client reads the `initialize` response to the end, but
+  # Phantom keeps that SSE stream open as the session stream.
+  - dns-rebinding-protection

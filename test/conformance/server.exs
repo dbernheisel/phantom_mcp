@@ -3,52 +3,18 @@
 #
 #     MIX_ENV=test mix run test/conformance/server.exs
 #
-# Environment variables:
-#
-# - `PORT` - port to listen on (default: 3999)
-# - `VALIDATE_ORIGIN` - set to "true" to enable Origin validation (default:
-#   "false"). The conformance client sends no Origin header, which Phantom
-#   rejects when validation is enabled.
+# Starts the same two-node cluster that `mix test --only conformance` uses and
+# prints the URL of each topology.
 
-Code.require_file("router.ex", __DIR__)
+Phantom.Test.Cluster.spawn([
+  {:"node1@127.0.0.1", port: 4101},
+  {:"node2@127.0.0.1", port: 4102}
+])
 
-defmodule Conformance.Plug do
-  use Plug.Router
+:ok = Phantom.Test.Conformance.start()
 
-  @port String.to_integer(System.get_env("PORT", "3999"))
-
-  plug :match
-
-  plug Plug.Parsers,
-    parsers: [{:json, length: 1_000_000}],
-    pass: ["application/json"],
-    json_decoder: JSON
-
-  plug :dispatch
-
-  forward "/mcp",
-    to: Phantom.Plug,
-    init_opts: [
-      router: Conformance.MCP.Router,
-      pubsub: Conformance.PubSub,
-      validate_origin: System.get_env("VALIDATE_ORIGIN", "false") == "true",
-      origins: ["http://localhost:#{@port}", "http://127.0.0.1:#{@port}"]
-    ]
+for topology <- [:single, :distributed] do
+  IO.puts("Conformance server listening (#{topology}): #{Phantom.Test.Conformance.url(topology)}")
 end
 
-port = String.to_integer(System.get_env("PORT", "3999"))
-
-{:ok, _} =
-  Supervisor.start_link(
-    [
-      {Phoenix.PubSub, name: Conformance.PubSub},
-      {Phantom.Tracker, [name: Phantom.Tracker, pubsub_server: Conformance.PubSub]},
-      {Bandit, plug: Conformance.Plug, ip: {127, 0, 0, 1}, port: port}
-    ],
-    strategy: :one_for_one
-  )
-
-IO.puts("Conformance server listening on http://localhost:#{port}/mcp")
-
-# The supervisor is linked to this script process, so keep it alive.
 Process.sleep(:infinity)

@@ -9,13 +9,15 @@ defmodule Conformance.MCP.Router do
 
   use Phantom.Router,
     name: "mcp-conformance-test-server",
-    vsn: "1.0.0"
+    vsn: "1.0.0",
+    secret_key_base: String.duplicate("conformance", 8),
+    request_state_salt: "conformance request_state"
 
   alias Phantom.Session
   require Phantom.Tool, as: Tool
   require Phantom.Prompt, as: Prompt
   require Phantom.Resource, as: Resource
-  require Phantom.ClientLogger, as: ClientLogger
+  alias Phantom.ClientLogger
 
   # 1x1 red PNG pixel and a minimal WAV file, identical to the reference server
   @image Base.decode64!(
@@ -40,18 +42,14 @@ defmodule Conformance.MCP.Router do
   tool :test_error_handling, description: "Tests error response handling"
 
   tool :test_sampling,
-    description: "Tests server-initiated sampling (LLM completion request)",
-    input_schema: %{
-      required: [:prompt],
-      properties: %{prompt: %{type: "string", description: "The prompt to send to the LLM"}}
-    }
+    description: "Tests server-initiated sampling (LLM completion request)" do
+    field :prompt, :string, required: true, description: "The prompt to send to the LLM"
+  end
 
   tool :test_elicitation,
-    description: "Tests server-initiated elicitation (user input request)",
-    input_schema: %{
-      required: [:message],
-      properties: %{message: %{type: "string", description: "The message to show the user"}}
-    }
+    description: "Tests server-initiated elicitation (user input request)" do
+    field :message, :string, required: true, description: "The message to show the user"
+  end
 
   tool :test_elicitation_sep1034_defaults,
     description: "Tests elicitation with default values per SEP-1034"
@@ -59,8 +57,9 @@ defmodule Conformance.MCP.Router do
   tool :test_elicitation_sep1330_enums,
     description: "Tests elicitation with enum schema improvements per SEP-1330"
 
-  # `input_schema` only keeps `type`, `properties`, and `required`, so the
-  # reference schema's `$schema`, `$defs`, `allOf`, `if`/`then`/`else`, and
+  # The scenario checks that a raw JSON Schema passes through unchanged, which
+  # is the map-form `input_schema` use case. It only keeps `type`,
+  # `properties`, and `required`, so the reference schema's `$schema`, `$defs`, `allOf`, `if`/`then`/`else`, and
   # `additionalProperties` cannot be expressed.
   tool :json_schema_2020_12_tool,
     description: "Tool with JSON Schema 2020-12 features for conformance testing (SEP-1613)",
@@ -281,6 +280,287 @@ defmodule Conformance.MCP.Router do
     {:reply, Tool.text(text), session}
   end
 
+  ## MCP 2026-07-28 fixtures
+  #
+  # The reference server only serves these on its stateless path. Their
+  # `inputRequests` keys are asserted by the suite, so they are built with
+  # `Tool.input_required/1` instead of `Session.elicit/3`, which cannot name
+  # its key. `inputResponses` are read from the request because Phantom only
+  # merges the `"elicitation"` response into the handler params.
+
+  tool :test_missing_capability, description: "Test tool requiring sampling"
+
+  tool :test_input_required_result_elicitation,
+    description: "MRTR: returns InputRequiredResult with elicitation request"
+
+  tool :test_input_required_result_sampling,
+    description: "MRTR: returns InputRequiredResult with sampling request"
+
+  tool :test_input_required_result_list_roots,
+    description: "MRTR: returns InputRequiredResult with roots/list request"
+
+  tool :test_input_required_result_request_state,
+    description: "MRTR: returns InputRequiredResult with requestState"
+
+  tool :test_input_required_result_multiple_inputs,
+    description: "MRTR: returns InputRequiredResult with multiple input requests"
+
+  tool :test_input_required_result_multi_round,
+    description: "MRTR: multi-round InputRequiredResult workflow"
+
+  tool :test_input_required_result_tampered_state,
+    description: "MRTR: HMAC-signed requestState integrity test"
+
+  tool :test_input_required_result_capabilities,
+    description: "MRTR: respects client capabilities in inputRequests"
+
+  tool :test_streaming_elicitation,
+    description: "Diagnostic tool validating response progress streams"
+
+  tool :test_logging_tool, description: "Diagnostic logging validator tool"
+  tool :test_trigger_tool_change, description: "Triggers notifications/tools/list_changed"
+  tool :test_trigger_prompt_change, description: "Triggers notifications/prompts/list_changed"
+
+  # Not in the reference server. `field` cannot express the `x-mcp-header`
+  # extension keyword, so this uses the map form.
+  tool :test_custom_headers,
+    description: "A tool with x-mcp-header annotations (SEP-2243)",
+    input_schema: %{
+      type: "object",
+      required: [:region, :query],
+      properties: %{
+        region: %{type: "string", "x-mcp-header": "Region"},
+        priority: %{type: "integer", "x-mcp-header": "Priority"},
+        query: %{type: "string"}
+      }
+    }
+
+  def test_custom_headers(params, session) do
+    {:reply, Tool.text("Custom headers tool called with: #{JSON.encode!(params)}"), session}
+  end
+
+  def test_missing_capability(_params, session) do
+    if session.client_capabilities[:sampling] do
+      {:reply, Tool.text("Success"), session}
+    else
+      {:error, Phantom.Request.missing_capability(["sampling"]), session}
+    end
+  end
+
+  def test_input_required_result_elicitation(_params, session) do
+    case input_responses(session) do
+      %{"user_name" => response} ->
+        {:reply, Tool.text("Hello, #{input_text(response, "name")}!"), session}
+
+      _ ->
+        {:reply,
+         Tool.input_required(
+           input_requests: %{"user_name" => elicit_request("What is your name?", "name")}
+         ), session}
+    end
+  end
+
+  def test_input_required_result_sampling(_params, session) do
+    case input_responses(session) do
+      %{"sample_request" => %{"content" => %{"text" => text}}} ->
+        {:reply, Tool.text("Sampling result: #{text}"), session}
+
+      %{"sample_request" => _} ->
+        {:reply, Tool.text("Sampling result: no response"), session}
+
+      _ ->
+        {:reply,
+         Tool.input_required(
+           input_requests: %{
+             "sample_request" => sampling_request("What is the capital of France?", 100)
+           }
+         ), session}
+    end
+  end
+
+  def test_input_required_result_list_roots(_params, session) do
+    case input_responses(session) do
+      %{"roots_request" => response} ->
+        {:reply, Tool.text("Found #{length(response["roots"] || [])} root(s)"), session}
+
+      _ ->
+        {:reply, Tool.input_required(input_requests: %{"roots_request" => roots_request()}),
+         session}
+    end
+  end
+
+  def test_input_required_result_request_state(_params, session) do
+    case {session.state, input_responses(session)} do
+      {%{kind: :request_state}, %{"confirm" => %{"content" => %{"ok" => true}}}} ->
+        {:reply, Tool.text("state-ok: requestState validated"), session}
+
+      _ ->
+        {:reply,
+         Tool.input_required(
+           input_requests: %{"confirm" => elicit_request("Please confirm", "ok", "boolean")},
+           state: %{kind: :request_state}
+         ), session}
+    end
+  end
+
+  def test_input_required_result_multiple_inputs(_params, session) do
+    case {session.state, input_responses(session)} do
+      {%{kind: :multiple_inputs},
+       %{"user_name" => name, "greeting" => greeting, "client_roots" => roots}} ->
+        greeting = get_in(greeting, ["content", "text"]) || "Hello there!"
+        roots = length(roots["roots"] || [])
+
+        {:reply,
+         Tool.text("Name: #{input_text(name, "name")}; Greeting: #{greeting}; Roots: #{roots}"),
+         session}
+
+      _ ->
+        {:reply,
+         Tool.input_required(
+           input_requests: %{
+             "user_name" => elicit_request("What is your name?", "name"),
+             "greeting" => sampling_request("Generate a greeting", 50),
+             "client_roots" => roots_request()
+           },
+           state: %{kind: :multiple_inputs}
+         ), session}
+    end
+  end
+
+  def test_input_required_result_multi_round(_params, session) do
+    case {session.state, input_responses(session)} do
+      {%{round: 1}, %{"step1" => response}} ->
+        {:reply,
+         Tool.input_required(
+           input_requests: %{
+             "step2" => elicit_request("Step 2: What is your favorite color?", "color")
+           },
+           state: %{round: 2, name: input_text(response, "name")}
+         ), session}
+
+      {%{round: 2, name: name}, %{"step2" => response}} ->
+        {:reply,
+         Tool.text("Multi-round complete for #{name} who likes #{input_text(response, "color")}"),
+         session}
+
+      _ ->
+        {:reply,
+         Tool.input_required(
+           input_requests: %{"step1" => elicit_request("Step 1: What is your name?", "name")},
+           state: %{round: 1}
+         ), session}
+    end
+  end
+
+  # Phantom authenticates and encrypts `requestState`, so tampered state is
+  # rejected before this handler runs.
+  def test_input_required_result_tampered_state(_params, session) do
+    case {session.state, input_responses(session)} do
+      {%{kind: :tamper_test}, %{"confirm" => _}} ->
+        {:reply, Tool.text("integrity-ok: state verified"), session}
+
+      _ ->
+        {:reply,
+         Tool.input_required(
+           input_requests: %{"confirm" => elicit_request("Please confirm", "ok", "boolean")},
+           state: %{kind: :tamper_test}
+         ), session}
+    end
+  end
+
+  def test_input_required_result_capabilities(_params, session) do
+    caps = session.client_capabilities
+
+    input_requests =
+      %{}
+      |> then(
+        &if caps[:elicitation],
+          do: Map.put(&1, "elicit_input", elicit_request("Elicitation input", "value")),
+          else: &1
+      )
+      |> then(
+        &if caps[:sampling],
+          do: Map.put(&1, "sample_input", sampling_request("Sample request", 50)),
+          else: &1
+      )
+
+    cond do
+      map_size(input_responses(session)) > 0 ->
+        keys = session |> input_responses() |> Map.keys() |> Enum.join(",")
+        {:reply, Tool.text("capabilities-ok: received #{keys}"), session}
+
+      map_size(input_requests) == 0 ->
+        {:reply, Tool.text("No supported capabilities declared"), session}
+
+      true ->
+        {:reply,
+         Tool.input_required(input_requests: input_requests, state: %{kind: :capabilities_test}),
+         session}
+    end
+  end
+
+  def test_streaming_elicitation(_params, session) do
+    Task.start(fn ->
+      Session.notify_progress(session, 50, 100)
+      Session.respond(session, Tool.text("Streaming complete"))
+    end)
+
+    {:noreply, session}
+  end
+
+  def test_logging_tool(_params, session) do
+    Task.start(fn ->
+      ClientLogger.log(session, :info, "Diagnostic trace logging activated", "conformance")
+      Session.respond(session, Tool.text("Logging evaluated"))
+    end)
+
+    {:noreply, session}
+  end
+
+  def test_trigger_tool_change(_params, session) do
+    Phantom.Tracker.notify_tool_list()
+    {:reply, Tool.text("Mutation triggered"), session}
+  end
+
+  def test_trigger_prompt_change(_params, session) do
+    Phantom.Tracker.notify_prompt_list()
+    {:reply, Tool.text("Mutation triggered"), session}
+  end
+
+  defp input_responses(%Session{request: %{params: %{"inputResponses" => responses}}})
+       when is_map(responses),
+       do: responses
+
+  defp input_responses(_session), do: %{}
+
+  defp input_text(response, field), do: get_in(response, ["content", field])
+
+  defp elicit_request(message, field, type \\ "string") do
+    %{
+      method: "elicitation/create",
+      params: %{
+        message: message,
+        requestedSchema: %{
+          type: "object",
+          properties: %{field => %{type: type}},
+          required: [field]
+        }
+      }
+    }
+  end
+
+  defp sampling_request(text, max_tokens) do
+    %{
+      method: "sampling/createMessage",
+      params: %{
+        messages: [%{role: "user", content: %{type: "text", text: text}}],
+        maxTokens: max_tokens
+      }
+    }
+  end
+
+  defp roots_request, do: %{method: "roots/list", params: %{}}
+
   ## Resources
 
   # The reference server uses URIs with an authority (`test://static-text`,
@@ -352,6 +632,9 @@ defmodule Conformance.MCP.Router do
 
   prompt :test_prompt_with_image, description: "A prompt that includes image content"
 
+  prompt :test_input_required_result_prompt,
+    description: "MRTR: prompt that requires elicitation input"
+
   def test_simple_prompt(_params, session) do
     {:reply, Prompt.response(user: Prompt.text("This is a simple prompt for testing.")), session}
   end
@@ -380,6 +663,24 @@ defmodule Conformance.MCP.Router do
        user: Prompt.image(@image, "image/png"),
        user: Prompt.text("Please analyze the image above.")
      ), session}
+  end
+
+  def test_input_required_result_prompt(_params, session) do
+    case input_responses(session) do
+      %{"user_context" => response} ->
+        {:reply,
+         Prompt.response(
+           user: Prompt.text("Prompt with context: #{input_text(response, "context")}")
+         ), session}
+
+      _ ->
+        {:reply,
+         Tool.input_required(
+           input_requests: %{
+             "user_context" => elicit_request("What context should the prompt use?", "context")
+           }
+         ), session}
+    end
   end
 
   def complete_argument(_argument, _value, session) do

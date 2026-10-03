@@ -955,7 +955,7 @@ defmodule Phantom.Tool.JSONSchemaTest do
     end
 
     test "tools/call validates raw-map input_schema" do
-      request_tool("echo_tool", %{"message" => 12345}, [])
+      request_tool("header_echo_tool", %{"tenant" => 12345}, [])
 
       assert_receive {:conn, conn}
       assert conn.status == 200

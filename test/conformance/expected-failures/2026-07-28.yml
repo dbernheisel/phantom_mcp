@@ -1,0 +1,28 @@
+# Scenarios the 2026-07-28 requirement set scores that Phantom is known to
+# fail, on every topology. The run fails when a scenario or check outside this
+# list fails, or when a listed one passes; remove the entry once it is fixed.
+server:
+  # A mismatched `MCP-Protocol-Version` header is reported as an unsupported
+  # version (-32022) before the header mismatch (-32020) is checked.
+  - server-stateless:sep-2575-http-server-header-mismatch-400
+  # `Request.missing_capability/1` sends `requiredCapabilities` as a list of
+  # names instead of a ClientCapabilities object, with HTTP status 200
+  # instead of 400.
+  - server-stateless:sep-2575-server-rejects-undeclared-capability
+  - server-stateless:sep-2575-missing-capability-http-400
+  # Prompt handlers cannot return an `input_required` result with named
+  # `inputRequests`; `Phantom.Prompt.response/2` rejects it.
+  - input-required-result-non-tool-request:sep-2322-non-tool-incomplete
+  # `Phantom.Router.resource/4` cannot define URIs with an authority such as
+  # `test://static-text`; reading one crashes instead of returning
+  # "Resource not found".
+  - resources-read-text
+  - resources-read-binary
+  - resources-templates-read
+  # Same crash for an unknown `test://` URI: -32603 instead of -32602 with
+  # `data.uri` (warnings).
+  - sep-2164-resource-not-found:sep-2164-error-code
+  - sep-2164-resource-not-found:sep-2164-data-uri
+  # The suite runs with Origin validation off because the client sends no
+  # Origin header, which Phantom rejects when validation is on.
+  - dns-rebinding-protection:localhost-host-rebinding-rejected

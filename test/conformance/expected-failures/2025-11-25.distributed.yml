@@ -1,0 +1,8 @@
+# Failures that only occur when consecutive requests of a session are served
+# by different nodes. Added to `2025-11-25.yml` for the distributed topology.
+server:
+  # `logging/setLevel` finds the session process with `Phantom.Tracker`, which
+  # replicates across nodes eventually (every 1.5s by default). Right after
+  # `initialize` on another node the lookup misses, the level is stored on the
+  # short-lived POST process instead, and the tool's logs are filtered out.
+  - tools-call-with-logging

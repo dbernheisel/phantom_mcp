@@ -31,7 +31,7 @@ defmodule Phantom.MixProject do
     ]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(:test), do: ["lib", "test/support", "test/conformance"]
 
   defp elixirc_paths(:stdio), do: ["lib", "test/support/app"]
 
@@ -52,7 +52,8 @@ defmodule Phantom.MixProject do
       {:tidewave, "~> 0.5", only: [:dev, :test], warn_if_outdated: true},
       {:makeup_javascript, "~> 0.1", only: :dev},
       {:phoenix_live_reload, "~> 1.5", only: [:dev, :test, :stdio]},
-      {:bandit, "~> 1.0", only: [:dev, :test]}
+      {:bandit, "~> 1.0", only: [:dev, :test]},
+      {:req, "~> 0.5", only: [:dev, :test]}
     ]
   end
 

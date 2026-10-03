@@ -34,7 +34,7 @@
     "@modelcontextprotocol/ext-apps": "^1.7.0"
   },
   "devDependencies": {
-    "@modelcontextprotocol/conformance": "0.1.16",
+    "@modelcontextprotocol/conformance": "0.2.0-alpha.12",
     "@tailwindcss/cli": "^4.2.4",
     "esbuild": "^0.28.0",
     "tailwindcss": "^4.2.4"

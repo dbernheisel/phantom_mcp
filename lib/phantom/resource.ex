@@ -144,7 +144,8 @@ defmodule Phantom.Resource do
     mime_type = get_var(attrs, :mime_type, [:spec, :mime_type], __CALLER__, "text/plain")
     uri = get_var(attrs, :uri, [:params, "uri"], __CALLER__)
 
-    quote bind_quoted: [
+    quote generated: true,
+          bind_quoted: [
             text: text,
             uri: uri,
             mime_type: mime_type,
