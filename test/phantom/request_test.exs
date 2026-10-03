@@ -137,6 +137,15 @@ defmodule Phantom.RequestTest do
       assert {:error, %{code: -32020}} = Request.validate(request, "2026-07-28")
       assert {:error, %{code: -32022}} = Request.validate(request, "2025-11-25")
     end
+
+    test "an unsupported version error lists every supported version" do
+      assert %{data: %{supported: supported, requested: "1999-01-01"}} =
+               Request.unsupported_protocol("1999-01-01")
+
+      assert supported == Request.supported_protocols()
+      assert "2025-11-25" in supported
+      assert "2026-07-28" in supported
+    end
   end
 
   describe "missing_capability/1" do

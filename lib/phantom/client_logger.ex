@@ -40,10 +40,10 @@ defmodule Phantom.ClientLogger do
         end)
 
       if threshold && level_num <= threshold do
-        GenServer.cast(session.pid, {:log_modern, level_name, domain, payload})
+        GenServer.cast(session.pid, {:log, level_name, domain, payload})
       end
     else
-      cast_log(session, {:log, level_num, level_name, domain, payload})
+      cast_log(session, {:log_legacy, level_num, level_name, domain, payload})
     end
 
     :ok

@@ -172,14 +172,6 @@ defmodule Phantom.Router do
   @callback authorize_resource_subscriptions([resolved_resource()], Session.t()) ::
               [resolved_resource() | String.t()] | nil
 
-  @supported_protocol_versions ~w[
-    2024-11-05
-    2025-03-26
-    2025-06-18
-    2025-11-25
-    2026-07-28
-  ]
-
   @dialyzer {:nowarn_function, default_vsn: 1}
   defp default_vsn(nil) do
     Mix.Project.config()[:version]
@@ -480,7 +472,7 @@ defmodule Phantom.Router do
 
         {:reply,
          %{
-           supportedVersions: ["2026-07-28"],
+           supportedVersions: Request.stateless_protocols(),
            capabilities: capabilities,
            instructions: instructions,
            _meta: %{"io.modelcontextprotocol/serverInfo" => server_info}
@@ -1030,17 +1022,14 @@ defmodule Phantom.Router do
   end
 
   @doc false
-  def validate_protocol(protocol_version, _)
-      when protocol_version in @supported_protocol_versions do
-    {:ok, protocol_version}
-  end
+  def validate_protocol(protocol_version, session) do
+    supported = Request.supported_protocols()
 
-  def validate_protocol(unsupported_protocol, session) do
-    {:error,
-     Request.invalid_params(%{
-       supported: @supported_protocol_versions,
-       requested: unsupported_protocol
-     }), session}
+    if protocol_version in supported,
+      do: {:ok, protocol_version},
+      else:
+        {:error, Request.invalid_params(%{supported: supported, requested: protocol_version}),
+         session}
   end
 
   @doc false

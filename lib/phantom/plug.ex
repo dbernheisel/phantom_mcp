@@ -672,7 +672,7 @@ defmodule Phantom.Plug do
     header_version = mcp_header(conn, "mcp-protocol-version")
     body_version = body_protocol_version(conn.body_params)
 
-    "2026-07-28" not in [header_version, body_version] and
+    not Request.modern?(header_version) and not Request.modern?(body_version) and
       not stateless_body?(conn.body_params)
   end
 
@@ -692,7 +692,7 @@ defmodule Phantom.Plug do
     header_version = mcp_header(conn, "mcp-protocol-version")
     meta_version = body_protocol_version(params)
 
-    if "2026-07-28" in [header_version, meta_version],
+    if Request.modern?(header_version) or Request.modern?(meta_version),
       do: conn,
       else: put_resp_header(conn, "mcp-session-id", session_id)
   end
@@ -743,7 +743,7 @@ defmodule Phantom.Plug do
   end
 
   defp put_request_log_level(state, %Request{} = request) do
-    if Request.protocol_version(request) == "2026-07-28" do
+    if Request.modern?(request) do
       log_level =
         Enum.find_value(Phantom.ClientLogger.log_levels(), 0, fn {name, grade} ->
           if Atom.to_string(name) == Request.log_level(request), do: grade

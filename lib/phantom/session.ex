@@ -225,7 +225,7 @@ defmodule Phantom.Session do
   stateless-core protocol.
   """
   def stateless?(%__MODULE__{request: request}),
-    do: Request.protocol_version(request) == "2026-07-28"
+    do: Request.modern?(request)
 
   def stateless?(_), do: false
 
@@ -610,7 +610,7 @@ defmodule Phantom.Session do
   end
 
   @doc false
-  def handle_cast({:log, level, level_name, domain, payload}, state)
+  def handle_cast({:log_legacy, level, level_name, domain, payload}, state)
       when level <= state.log_level do
     cancel_inactivity(state)
 
@@ -625,11 +625,11 @@ defmodule Phantom.Session do
      |> schedule_inactivity()}
   end
 
-  def handle_cast({:log, _level, _level_name, _domain, _payload}, state) do
+  def handle_cast({:log_legacy, _level, _level_name, _domain, _payload}, state) do
     {:noreply, state}
   end
 
-  def handle_cast({:log_modern, level_name, domain, payload}, state) do
+  def handle_cast({:log, level_name, domain, payload}, state) do
     cancel_inactivity(state)
 
     {:noreply,

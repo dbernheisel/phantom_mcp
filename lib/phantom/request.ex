@@ -29,8 +29,9 @@ defmodule Phantom.Request do
   @client_capabilities_meta_key "io.modelcontextprotocol/clientCapabilities"
   @log_level_meta_key "io.modelcontextprotocol/logLevel"
 
-  @modern_protocol "2026-07-28"
-  @supported_protocols ~w[2026-07-28]
+  # Protocol versions Phantom supports. Add a new version to its list.
+  @legacy_protocols ~w[2024-11-05 2025-03-26 2025-06-18 2025-11-25]
+  @stateless_protocols ~w[2026-07-28]
   @modern_methods ~w[
     server/discover
     tools/list
@@ -123,7 +124,7 @@ defmodule Phantom.Request do
     %{
       code: @unsupported_protocol,
       message: "Unsupported protocol version",
-      data: %{supported: @supported_protocols, requested: requested}
+      data: %{supported: supported_protocols(), requested: requested}
     }
   end
 
@@ -231,15 +232,21 @@ defmodule Phantom.Request do
   def log_level(meta) when is_map(meta), do: meta[@log_level_meta_key]
   def log_level(_), do: nil
 
+  @doc "Every protocol version Phantom supports."
+  def supported_protocols, do: @legacy_protocols ++ @stateless_protocols
+
+  @doc "Protocol versions that use the stateless core (no `initialize` or session)."
+  def stateless_protocols, do: @stateless_protocols
+
   @doc false
-  def modern?(%__MODULE__{} = request), do: protocol_version(request) == @modern_protocol
-  def modern?(version), do: version == @modern_protocol
+  def modern?(%__MODULE__{} = request), do: modern?(protocol_version(request))
+  def modern?(version), do: version in @stateless_protocols
 
   @doc false
   def stateless_envelope?(%__MODULE__{meta: meta}) when is_map(meta),
     do:
       Map.has_key?(meta, @protocol_version_meta_key) or
-        meta["protocolVersion"] == @modern_protocol
+        modern?(meta["protocolVersion"])
 
   def stateless_envelope?(_), do: false
 
@@ -267,7 +274,7 @@ defmodule Phantom.Request do
         {:error,
          header_mismatch("Header mismatch: MCP-Protocol-Version does not match request metadata")}
 
-      body_version != @modern_protocol ->
+      not modern?(body_version) ->
         {:error, unsupported_protocol(body_version)}
 
       not is_map(capabilities) ->
@@ -307,7 +314,7 @@ defmodule Phantom.Request do
 
   @doc false
   def normalize_result(%{} = result, %__MODULE__{} = request) do
-    if protocol_version(request) == "2026-07-28" do
+    if modern?(request) do
       result = normalize_result_type(result)
 
       if is_map_key(request.params, "inputResponses") or

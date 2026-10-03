@@ -383,7 +383,7 @@ defmodule Phantom.Test do
         send(self(), {:phantom_test_notify, payload})
         await_response(request_id, timeout, deadline)
 
-      {:"$gen_cast", {:log, level, level_name, domain, payload}} ->
+      {:"$gen_cast", {:log_legacy, level, level_name, domain, payload}} ->
         send(self(), {:phantom_test_client_log, level, level_name, domain, payload})
         await_response(request_id, timeout, deadline)
 
@@ -422,7 +422,7 @@ defmodule Phantom.Test do
         send(self(), {:phantom_test_notify, payload})
         drain_session_casts(request_id)
 
-      {:"$gen_cast", {:log, level, level_name, domain, payload}} ->
+      {:"$gen_cast", {:log_legacy, level, level_name, domain, payload}} ->
         send(self(), {:phantom_test_client_log, level, level_name, domain, payload})
         drain_session_casts(request_id)
 
