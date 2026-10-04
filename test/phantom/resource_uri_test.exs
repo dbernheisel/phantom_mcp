@@ -85,7 +85,7 @@ defmodule Phantom.ResourceURITest do
         ] do
       request_resource_read(uri, id: id, router: Router, pubsub: nil)
 
-      assert_response(id, %{result: %{contents: [%{uri: ^uri, text: ^text}]}})
+      assert_response(_id, %{result: %{contents: [%{uri: ^uri, text: ^text}]}})
     end
   end
 

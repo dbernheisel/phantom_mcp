@@ -325,18 +325,18 @@ peer = PeerNode.spawn!(4003)
 
 {:ok, _lb} =
   Supervisor.start_link(
-    [{LoadBalancer, port: 4001, backends: [4002, 4000]}],
+    [{LoadBalancer, port: 4001, backends: [4003, 4002]}],
     strategy: :one_for_one,
     name: :lb_sup
   )
 
 IO.puts("""
 
-  Primary node:   http://localhost:4000/mcp (#{node()})
-  Tidewave:       http://localhost:4000/tidewave/mcp
-  Load Balancer:  http://localhost:4001/mcp (round-robin)
-  App Preview:    http://localhost:4001/mcp-apps
-  Peer node:      http://localhost:4002/mcp (#{peer})
+  Primary node:   http://localhost:4001/mcp (#{node()})
+  Tidewave:       http://localhost:4001/tidewave/mcp
+  Load Balancer:  http://localhost:4002/mcp (round-robin)
+  App Preview:    http://localhost:4002/mcp-apps
+  Peer node:      http://localhost:4003/mcp (#{peer})
 """)
 
 IEx.Server.run(env: __ENV__, binding: binding(), register: false)
