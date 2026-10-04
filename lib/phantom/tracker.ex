@@ -105,6 +105,25 @@ defmodule Phantom.Tracker do
     def track_in_flight(_session_id, _request_id), do: :ok
   end
 
+  @doc false
+  # The process running a session's request, while it is in flight.
+  if @available do
+    def in_flight(session_id, request_id) do
+      case Phoenix.Tracker.get_by_key(
+             __MODULE__,
+             @requests,
+             in_flight_key(session_id, request_id)
+           ) do
+        [{_key, %{pid: pid}} | _] -> pid
+        [] -> nil
+      end
+    rescue
+      _ -> nil
+    end
+  else
+    def in_flight(_session_id, _request_id), do: nil
+  end
+
   @doc "Release an in-flight claim taken by `track_in_flight/2`."
   if @available do
     def untrack_in_flight(session_id, request_id) do

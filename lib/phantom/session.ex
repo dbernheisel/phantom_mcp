@@ -439,11 +439,17 @@ defmodule Phantom.Session do
   def finish(pid) when is_pid(pid), do: GenServer.cast(pid, :finish)
 
   @doc false
-  def cancel_request(%__MODULE__{pid: pid}, request_id) when is_pid(pid) do
-    GenServer.cast(pid, {:cancel_request, request_id})
+  # The cancellation arrives on its own request, so the request it names is
+  # found where it runs. A stateless request has no session to scope the
+  # client's request id; closing its connection cancels it.
+  def cancel_request(%__MODULE__{} = session, request_id) do
+    with false <- stateless?(session),
+         pid when is_pid(pid) <- Phantom.Tracker.in_flight(session.id, request_id) do
+      GenServer.cast(pid, {:cancel_request, request_id})
+    else
+      _ -> :ok
+    end
   end
-
-  def cancel_request(_session, _request_id), do: :ok
 
   @doc """
   Sends response back to the stream
@@ -769,17 +775,16 @@ defmodule Phantom.Session do
   end
 
   def handle_cast({:cancel_request, request_id}, state) do
-    case Map.pop(Map.get(state, :workers, %{}), request_id) do
-      {nil, _workers} ->
-        {:noreply, state}
+    {worker, workers} = Map.pop(Map.get(state, :workers, %{}), request_id)
 
-      {{pid, monitor_ref}, workers} ->
-        Process.demonitor(monitor_ref, [:flush])
-        Process.exit(pid, :shutdown)
-        requests = Map.delete(state.session.requests, request_id)
-        state = %{state | session: %{state.session | requests: requests}}
-        {:noreply, Map.put(state, :workers, workers)}
+    with {pid, monitor_ref} <- worker do
+      Process.demonitor(monitor_ref, [:flush])
+      Process.exit(pid, :shutdown)
     end
+
+    requests = Map.delete(state.session.requests, request_id)
+    state = %{state | session: %{state.session | requests: requests}}
+    maybe_finish(Map.put(state, :workers, workers))
   end
 
   def handle_cast({:subscribe_resource, resource}, state) do

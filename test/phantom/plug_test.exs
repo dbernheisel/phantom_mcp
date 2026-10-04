@@ -246,6 +246,36 @@ defmodule Phantom.PlugTest do
     end
   end
 
+  describe "cancellation" do
+    test "notifications/cancelled ends the request it names", context do
+      session_id = to_string(context.test)
+      request_tool("hanging_tool", %{}, session_id: session_id, id: 77)
+      assert_receive {:plug_conn, :sent}, 1_000
+      await_in_flight(session_id, 77)
+
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        method: "notifications/cancelled",
+        params: %{requestId: 77, reason: "user cancelled"}
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(%{session_id: session_id})
+
+      assert_receive {:conn, %{status: 202}}, 1_000
+      assert_receive {:conn, %{status: 200}}, 1_000
+      refute_received {:response, 77, "message", _}
+    end
+  end
+
+  defp await_in_flight(session_id, request_id, attempts \\ 50) do
+    cond do
+      is_pid(Phantom.Tracker.in_flight(session_id, request_id)) -> :ok
+      attempts == 0 -> flunk("request #{request_id} never went in flight")
+      true -> Process.sleep(10) && await_in_flight(session_id, request_id, attempts - 1)
+    end
+  end
+
   describe "content length validation" do
     test "rejects requests that exceed max_request_size" do
       request_ping(

@@ -246,6 +246,7 @@ defmodule Test.MCP.Router do
 
   tool :really_long_async_tool, AsyncModule, description: "this will notify of progress"
   tool :timeout_async_tool, AsyncModule, description: "this will timeout!"
+  tool :hanging_tool, description: "Never responds, so only cancellation ends it"
 
   @audio File.read!(@base <> "/game-over.wav")
   def audio_tool(_params, session) do
@@ -316,6 +317,8 @@ defmodule Test.MCP.Router do
     header = session.assigns[:mcp_param_headers]["mcp-param-tenant"] || "(not sent)"
     {:reply, Tool.text("tenant: #{params["tenant"]}\nMcp-Param-Tenant: #{header}"), session}
   end
+
+  def hanging_tool(_params, session), do: {:noreply, session}
 
   def client_log_tool(params, session) do
     message = params["message"] || "client-log-test"
