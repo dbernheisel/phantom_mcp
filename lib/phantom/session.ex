@@ -737,6 +737,8 @@ defmodule Phantom.Session do
     end
   end
 
+  def handle_cast({:notify, payload}, state), do: handle_cast({:send, payload}, state)
+
   def handle_cast({:send, payload}, state) do
     cancel_inactivity(state)
     state = state.stream_fun.(state, nil, "message", payload)

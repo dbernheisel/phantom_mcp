@@ -246,6 +246,28 @@ defmodule Phantom.PlugTest do
     end
   end
 
+  describe "Session.notify/2" do
+    test "sends the notification on the session's stream", context do
+      session_id = to_string(context.test)
+      request_sse_stream(session_id: session_id)
+      assert_sse_connected()
+
+      stream_pid = await_session_stream(session_id)
+      Phantom.Session.notify(stream_pid, %{jsonrpc: "2.0", method: "notifications/test"})
+
+      assert_notify(%{method: "notifications/test"})
+      assert Process.alive?(stream_pid)
+    end
+  end
+
+  defp await_session_stream(session_id, attempts \\ 50) do
+    case Phantom.Tracker.get_session(session_id) do
+      pid when is_pid(pid) -> pid
+      nil when attempts > 0 -> Process.sleep(10) && await_session_stream(session_id, attempts - 1)
+      nil -> flunk("no session stream for #{session_id}")
+    end
+  end
+
   describe "cancellation" do
     test "notifications/cancelled ends the request it names", context do
       session_id = to_string(context.test)
