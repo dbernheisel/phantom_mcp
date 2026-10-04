@@ -32,12 +32,19 @@ defmodule Test.ElicitationPage do
 
   A `session_id` (MCP 2025-11-25) indexes it for the session's retry, which
   is a new call that does not carry the ID, and gets the completion
-  notification. A real app would bind it to the signed-in user instead, and
+  notification. A `:waiter` process is sent the completion instead, for a
+  tool waiting inline. A real app would bind it to the signed-in user, and
   check that the same user completes it.
   """
-  def start(session_id, elicitation_id, message) do
+  def start(session_id, elicitation_id, message, opts \\ []) do
     if Test.SessionStore.running?() do
-      elicitation = %{session_id: session_id, message: message, completed: false}
+      elicitation = %{
+        session_id: session_id,
+        waiter: opts[:waiter],
+        message: message,
+        completed: false
+      }
+
       Test.SessionStore.put(key(elicitation_id), elicitation)
 
       if session_id,
@@ -47,18 +54,34 @@ defmodule Test.ElicitationPage do
     base_url() <> "/elicitations/" <> elicitation_id
   end
 
-  @doc "Marks the elicitation completed and notifies its session, if any."
+  @doc "Marks the elicitation completed and tells whoever is waiting for it."
   def complete(elicitation_id) do
     with %{} = elicitation <- Test.SessionStore.get(key(elicitation_id)) do
       Test.SessionStore.put(key(elicitation_id), %{elicitation | completed: true})
+      notify = Phantom.Request.elicitation_complete(elicitation_id)
 
-      if elicitation.session_id do
-        notify = Phantom.Request.elicitation_complete(elicitation_id)
-        Phantom.Tracker.cast_session(Test.PubSub, elicitation.session_id, {:notify, notify})
-      end
+      if elicitation.session_id,
+        do: Phantom.Tracker.cast_session(Test.PubSub, elicitation.session_id, {:notify, notify})
+
+      if elicitation.waiter,
+        do: send(elicitation.waiter, {__MODULE__, :completed, elicitation_id})
+
+      # An elicitation sent with `Session.elicit/3` under MCP 2025-11-25.
+      Phantom.Tracker.notify_elicitation_complete(elicitation_id)
     end
 
     :ok
+  end
+
+  @doc "Waits for the page to complete an elicitation started with `:waiter`."
+  def await(elicitation_id, timeout) do
+    receive do
+      {__MODULE__, :completed, ^elicitation_id} -> completed?([elicitation_id])
+    after
+      timeout ->
+        Test.SessionStore.delete(key(elicitation_id))
+        false
+    end
   end
 
   @doc "The elicitations the session started that its retry should check."

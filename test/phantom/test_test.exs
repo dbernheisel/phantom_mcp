@@ -65,13 +65,23 @@ defmodule Phantom.TestTest do
     end
 
     test "expect_elicit_url responder for url-mode tools", %{session: session} do
-      expect_elicit_url(fn _elicit ->
-        {:ok, %{"action" => "accept", "content" => %{"token" => "abc123"}}}
-      end)
+      start_elicitation_pages()
+      expect_elicit_url(&complete_page_and_accept/1)
 
       session
       |> call_tool(:url_elicit_tool, %{})
-      |> assert_tool_text(~r/abc123/)
+      |> assert_tool_text("Authenticated")
+    end
+
+    test "a url-mode tool waits for the page, not the client's accept",
+         %{session: session} do
+      start_elicitation_pages()
+      put_page_timeout(50)
+      expect_elicit_url(fn _elicit -> {:ok, %{"action" => "accept"}} end)
+
+      session
+      |> call_tool(:url_elicit_tool, %{})
+      |> assert_tool_error("Authentication timed out")
     end
 
     test "embedded resource tool", %{session: session} do
@@ -258,13 +268,19 @@ defmodule Phantom.TestTest do
          %{session: session} do
       start_elicitation_pages()
 
-      expect_elicit_url(fn %{url: url} ->
-        url |> String.split("/") |> List.last() |> Test.ElicitationPage.complete()
-        {:ok, %{"action" => "accept"}}
-      end)
+      expect_elicit_url(&complete_page_and_accept/1)
 
       session
       |> call_tool(:elicitation_required_tool, %{})
+      |> assert_tool_text("Authenticated")
+    end
+
+    test "a url-mode tool waits inline for the page", %{session: session} do
+      start_elicitation_pages()
+      expect_elicit_url(&complete_page_and_accept/1)
+
+      session
+      |> call_tool(:url_elicit_tool, %{})
       |> assert_tool_text("Authenticated")
     end
 
@@ -316,6 +332,17 @@ defmodule Phantom.TestTest do
       call_tool(session, :client_log_tool, %{message: "modern"})
       assert_client_log_seen(level: :info, data: %{message: "modern"})
     end
+  end
+
+  # Stands in for the user finishing the page the client opened.
+  defp complete_page_and_accept(%Phantom.Elicit{url: url}) do
+    url |> String.split("/") |> List.last() |> Test.ElicitationPage.complete()
+    {:ok, %{"action" => "accept"}}
+  end
+
+  defp put_page_timeout(timeout) do
+    Application.put_env(:phantom_mcp, :elicitation_page_timeout, timeout)
+    on_exit(fn -> Application.delete_env(:phantom_mcp, :elicitation_page_timeout) end)
   end
 
   defp start_elicitation_pages do

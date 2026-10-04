@@ -444,10 +444,25 @@ defmodule Test.MCP.Router do
     {:noreply, session}
   end
 
+  # Accepting only means the user agreed to open `Test.ElicitationPage`, so
+  # the tool then waits for the page to be completed. The mock does not check
+  # which user completes the page; a real app must.
   def url_elicit_tool(_params, session) do
-    case Session.elicit_url(session, "https://example.com/auth", "Please authenticate") do
-      {:ok, %{"action" => "accept", "content" => content}} ->
-        {:reply, Tool.text(%{authenticated: true, token: content["token"]}), session}
+    elicitation_id = UUIDv7.generate()
+    message = "Please authenticate"
+    url = Test.ElicitationPage.start(nil, elicitation_id, message, waiter: self())
+
+    elicitation =
+      Phantom.Elicit.url(%{message: message, url: url, elicitation_id: elicitation_id})
+
+    case Session.elicit(session, elicitation, await: true) do
+      {:ok, %{"action" => "accept"}} ->
+        timeout =
+          Application.get_env(:phantom_mcp, :elicitation_page_timeout, to_timeout(minute: 5))
+
+        if Test.ElicitationPage.await(elicitation_id, timeout),
+          do: {:reply, Tool.text("Authenticated"), session},
+          else: {:reply, Tool.error("Authentication timed out"), session}
 
       {:ok, _rejected} ->
         {:reply, Tool.error("Authentication was rejected"), session}
