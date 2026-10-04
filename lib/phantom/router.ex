@@ -23,9 +23,8 @@ defmodule Phantom.Router do
   - `[:phantom, :dispatch, :stop]` with meta: `~w[method params request result session trace_context]a`
   - `[:phantom, :dispatch, :exception]` with meta: `~w[method kind reason stacktrace params request session]a`
 
-  The `:trace_context` value is `Phantom.Request.trace_context/1` applied to
-  the incoming request — a map of W3C `traceparent`, `tracestate`, and
-  `baggage` when the client provided them in `_meta`.
+  The `:trace_context` value is a map of the W3C `traceparent`,
+  `tracestate`, and `baggage` the client provided in the request's `_meta`.
   """
 
   import Plug.Router.Utils, only: [build_path_match: 1]

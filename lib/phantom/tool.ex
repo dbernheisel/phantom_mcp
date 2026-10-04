@@ -146,7 +146,7 @@ defmodule Phantom.Tool do
   Build a tool spec. Be intentional with the name and description when defining
   the tool since it will inform the LLM when to use the tool.
 
-  The `Phantom.Router.tool/3` macro will build these specs.
+  The `Phantom.Router.tool/4` macro will build these specs.
 
   Fields:
 
