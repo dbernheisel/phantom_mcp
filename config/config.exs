@@ -8,3 +8,10 @@ import Config
 if config_env() == :dev do
   config :mime, :types, %{"text/event-stream" => ["sse"]}
 end
+
+# The test app's slow tools wait `:timeout` milliseconds (`start.exs` sets the
+# same value at runtime). The stdio escript is compiled in this environment, so
+# it needs it at compile time.
+if config_env() == :stdio do
+  config :phantom_mcp, timeout: 1000
+end
