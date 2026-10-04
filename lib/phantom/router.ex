@@ -13,7 +13,12 @@ defmodule Phantom.Router do
   - `:icons`, `:website_url` — server metadata
   - `:secret_key_base` — required to support MCP `2026-07-28`. Used by
     `Phantom.RequestState` to encrypt the multi-round-trip `requestState`
-    blob; nodes serving the same router must share this value.
+    blob; nodes serving the same router must share this value. Pass a
+    `{module, function, args}` tuple to read it at runtime, e.g.
+    `{Application, :fetch_env!, [:my_app, :mcp_secret_key_base]}` set in
+    `config/runtime.exs`, or `{MyAppWeb.Endpoint, :config, [:secret_key_base]}`.
+  - `:request_state_salt` — required with `:secret_key_base`; a stable
+    string used to derive the `requestState` key.
 
   ## Telemetry
 
@@ -1063,7 +1068,13 @@ defmodule Phantom.Router do
         Generate a strong key with `:crypto.strong_rand_bytes(64) |> Base.encode64()`.
         """
 
-      is_binary(secret) and is_nil(salt) ->
+      not (is_nil(secret) or is_binary(secret) or mfa?(secret)) ->
+        raise ArgumentError, """
+        #{inspect(mod)}: :secret_key_base must be a binary or a \
+        {module, function, args} tuple that returns one (got #{inspect(secret)}).
+        """
+
+      not is_nil(secret) and is_nil(salt) ->
         raise ArgumentError, """
         #{inspect(mod)}: :secret_key_base is configured but :request_state_salt is not.
 
@@ -1098,7 +1109,7 @@ defmodule Phantom.Router do
 
             use Phantom.Router,
               ...,
-              secret_key_base: Application.compile_env(:my_app, :secret_key_base),
+              secret_key_base: {Application, :fetch_env!, [:my_app, :mcp_secret_key_base]},
               request_state_salt: "myapp request_state v1"
 
         The key must be at least 64 bytes. Generate one with:
@@ -1112,6 +1123,9 @@ defmodule Phantom.Router do
         :ok
     end
   end
+
+  defp mfa?({mod, fun, args}), do: is_atom(mod) and is_atom(fun) and is_list(args)
+  defp mfa?(_), do: false
 
   # Suppress the missing-secret warning only when compiling Phantom's own
   # test suite. Checking the current Mix project's app name (instead of
@@ -1528,8 +1542,8 @@ defmodule Phantom.Router do
          Map.has_key?(result, state_key) and not is_binary(raw) do
       info = session.router.__phantom__(:info)
 
-      case {info[:secret_key_base], info[:request_state_salt]} do
-        {secret, salt} when is_binary(secret) and is_binary(salt) ->
+      case request_state_keys(info) do
+        {:ok, secret, salt} ->
           binding = Phantom.RequestState.binding(session.request, session)
           Map.put(result, state_key, Phantom.RequestState.encode(raw, binding, secret, salt))
 
@@ -2004,8 +2018,7 @@ defmodule Phantom.Router do
     request_state = request.params["requestState"] || meta["requestState"]
 
     with token when is_binary(token) <- request_state || :none,
-         secret when is_binary(secret) <- info[:secret_key_base],
-         salt when is_binary(salt) <- info[:request_state_salt],
+         {:ok, secret, salt} <- request_state_keys(info),
          binding <- Phantom.RequestState.binding(request, session),
          {:ok, term} <-
            Phantom.RequestState.decode(token, secret, salt, binding: binding) do
@@ -2015,6 +2028,24 @@ defmodule Phantom.Router do
       {:error, :expired} -> {:error, :expired_request_state}
       _ -> {:error, :invalid_request_state}
     end
+  end
+
+  # The key may be an MFA, so a release can read it from runtime config.
+  defp request_state_keys(%{secret_key_base: nil}), do: :error
+
+  defp request_state_keys(%{secret_key_base: secret, request_state_salt: salt}),
+    do: {:ok, resolve_secret_key_base!(secret), salt}
+
+  defp resolve_secret_key_base!({mod, fun, args}),
+    do: resolve_secret_key_base!(apply(mod, fun, args))
+
+  defp resolve_secret_key_base!(secret) when is_binary(secret) and byte_size(secret) >= 64,
+    do: secret
+
+  defp resolve_secret_key_base!(secret) do
+    raise ArgumentError,
+          ":secret_key_base must resolve to a binary of at least 64 bytes, got: " <>
+            if(is_binary(secret), do: "#{byte_size(secret)} bytes", else: inspect(secret))
   end
 
   defp input_response_args(%Request{params: %{"inputResponses" => responses}})

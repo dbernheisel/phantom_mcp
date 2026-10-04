@@ -82,6 +82,30 @@ defmodule Phantom.RouterTest do
       end
     end
 
+    test "accepts an MFA, resolved at runtime" do
+      defmodule Test.RuntimeSecretRouter do
+        use Phantom.Router,
+          name: "RuntimeSecret",
+          vsn: "1.0",
+          secret_key_base: {Application, :fetch_env!, [:phantom_mcp, :unset_secret]},
+          request_state_salt: "test salt"
+      end
+
+      assert Test.RuntimeSecretRouter.__phantom__(:info)[:secret_key_base] ==
+               {Application, :fetch_env!, [:phantom_mcp, :unset_secret]}
+    end
+
+    test "raises when an MFA :secret_key_base is set without :request_state_salt" do
+      assert_raise ArgumentError, ~r/request_state_salt/, fn ->
+        defmodule Test.RuntimeMissingSaltRouter do
+          use Phantom.Router,
+            name: "RuntimeMissingSalt",
+            vsn: "1.0",
+            secret_key_base: {Application, :fetch_env!, [:phantom_mcp, :unset_secret]}
+        end
+      end
+    end
+
     test "raises when :secret_key_base is set without :request_state_salt" do
       assert_raise ArgumentError, ~r/request_state_salt/, fn ->
         defmodule Test.MissingSaltRouter do

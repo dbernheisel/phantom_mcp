@@ -19,7 +19,9 @@ defmodule Phantom.RequestState do
   Encoding requires two values, both set on the router:
 
   - `:secret_key_base` — a high-entropy binary of at least 64 bytes (typically
-    the same one your Phoenix endpoint uses).
+    the same one your Phoenix endpoint uses), or a `{module, function, args}`
+    tuple that returns one at runtime, such as
+    `{MyAppWeb.Endpoint, :config, [:secret_key_base]}`.
   - `:request_state_salt` — a string used as the HKDF salt to derive a key
     specifically for `requestState` blobs. Doesn't need to be secret, but
     must be stable; rotating it invalidates all in-flight blobs.
@@ -27,7 +29,7 @@ defmodule Phantom.RequestState do
   ```elixir
   use Phantom.Router,
     name: "MyApp",
-    secret_key_base: Application.compile_env(:my_app, :secret_key_base),
+    secret_key_base: {Application, :fetch_env!, [:my_app, :mcp_secret_key_base]},
     request_state_salt: "myapp request_state v1"
   ```
   """

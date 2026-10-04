@@ -576,7 +576,7 @@ populated on continuation. Same source under both protocols:
 ```elixir
 use Phantom.Router,
   name: "MyApp",
-  secret_key_base: Application.compile_env(:my_app, :secret_key_base),
+  secret_key_base: {Application, :fetch_env!, [:my_app, :mcp_secret_key_base]},
   request_state_salt: "myapp request_state v1"
 
 @description "Delete a file after confirming with the user"
@@ -623,6 +623,18 @@ check.
 (no Phoenix dependency) using the salt to derive a domain-specific key.
 Each node serving the same router must share both values; clients can hop
 nodes freely.
+
+`:secret_key_base` can be a `{module, function, args}` tuple, called each
+time Phantom needs the key, so a release can set it in `config/runtime.exs`
+instead of compiling it into the router:
+
+```elixir
+# config/runtime.exs
+config :my_app, mcp_secret_key_base: System.fetch_env!("SECRET_KEY_BASE")
+```
+
+With Phoenix, `{MyAppWeb.Endpoint, :config, [:secret_key_base]}` reuses the
+endpoint's key.
 
 ### Sending the user to a URL
 

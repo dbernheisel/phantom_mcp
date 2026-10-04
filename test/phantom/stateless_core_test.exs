@@ -177,6 +177,66 @@ defmodule Phantom.StatelessCoreTest do
     end
   end
 
+  describe "secret_key_base as an MFA" do
+    defmodule RuntimeSecretRouter do
+      use Phantom.Router,
+        name: "RuntimeSecretTest",
+        vsn: "1.0",
+        secret_key_base: {Application, :fetch_env!, [:phantom_mcp, :stateless_test_secret]},
+        request_state_salt: "phantom test salt"
+
+      require Phantom.Tool, as: T
+
+      tool :resume_demo, description: "Returns input_required, then text"
+
+      def resume_demo(_params, %Session{state: :ready} = session),
+        do: {:reply, T.text("resumed"), session}
+
+      def resume_demo(_params, session) do
+        {:reply,
+         T.input_required(
+           input_requests: %{
+             "confirm" => %{method: "elicitation/create", params: %{mode: "form"}}
+           },
+           state: :ready
+         ), session}
+      end
+    end
+
+    setup do
+      Phantom.Cache.register(RuntimeSecretRouter)
+      on_exit(fn -> Application.delete_env(:phantom_mcp, :stateless_test_secret) end)
+      %{session: %{build_session() | router: RuntimeSecretRouter}}
+    end
+
+    test "is resolved when encrypting and decrypting requestState", %{session: session} do
+      Application.put_env(:phantom_mcp, :stateless_test_secret, @secret)
+      request = build_request()
+
+      assert {:noreply, _} =
+               RuntimeSecretRouter.dispatch_method("tools/call", request.params, request, session)
+
+      assert %{requestState: token} = assert_responded()
+      assert {:ok, :ready} = RequestState.decode(token, @secret, @salt)
+
+      request = build_request(%{"requestState" => token})
+
+      assert {:noreply, _} =
+               RuntimeSecretRouter.dispatch_method("tools/call", request.params, request, session)
+
+      assert assert_responded() == %{content: [%{type: :text, text: "resumed"}]}
+    end
+
+    test "raises when it resolves to a short key", %{session: session} do
+      Application.put_env(:phantom_mcp, :stateless_test_secret, "too-short")
+      request = build_request(%{"requestState" => "token"})
+
+      assert_raise ArgumentError, ~r/64 bytes/, fn ->
+        RuntimeSecretRouter.dispatch_method("tools/call", request.params, request, session)
+      end
+    end
+  end
+
   describe "decode-on-inbound" do
     test "a valid requestState in _meta populates session.state and resumes" do
       session = build_session()
