@@ -506,7 +506,16 @@ defmodule Phantom.Plug do
     header_method = mcp_header(conn, "mcp-method")
     body_name = name_from_params(body_method, Map.get(params, "params"))
     header_name = mcp_header(conn, "mcp-name") |> decode_header_value()
-    needs_name? = body_method in ["tools/call", "prompts/get", "resources/read"]
+
+    needs_name? =
+      body_method in [
+        "tools/call",
+        "prompts/get",
+        "resources/read",
+        "tasks/get",
+        "tasks/update",
+        "tasks/cancel"
+      ]
 
     cond do
       is_nil(header_method) ->
@@ -533,6 +542,7 @@ defmodule Phantom.Plug do
   end
 
   defp name_from_params("resources/read", params) when is_map(params), do: params["uri"]
+  defp name_from_params("tasks/" <> _, params) when is_map(params), do: params["taskId"]
   defp name_from_params(_method, params) when is_map(params), do: params["name"]
   defp name_from_params(_method, _params), do: nil
 
@@ -769,6 +779,7 @@ defmodule Phantom.Plug do
         {state, exceptions}
 
       :ok ->
+        subscribe_request(state.session, request)
         run_dispatch(state, request, exceptions)
     end
   end
@@ -1179,6 +1190,13 @@ defmodule Phantom.Plug do
        do: Phantom.Tracker.track_in_flight(session_id, id)
 
   defp claim_in_flight(_session_id, _request), do: :ok
+
+  # `Phantom.Session.notify_progress/4` reaches the request through this topic.
+  defp subscribe_request(session, %Request{id: id, method: method})
+       when method in @dedupable_methods and not is_nil(id),
+       do: Phantom.Tracker.subscribe_request(session.pubsub, session.id, id)
+
+  defp subscribe_request(_session, _request), do: :ok
 
   defp release_in_flight(session_id, %Request{id: id, method: method})
        when method in @dedupable_methods and not is_nil(id),

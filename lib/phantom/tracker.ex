@@ -27,6 +27,7 @@ defmodule Phantom.Tracker do
   @sessions "phantom:sessions"
   @requests "phantom:requests"
   @resources "phantom:resources"
+  @tasks "phantom:tasks"
 
   def available?, do: @available
   def resource_subscription_topic, do: @resources
@@ -276,6 +277,17 @@ defmodule Phantom.Tracker do
     def list_resource_listeners, do: []
   end
 
+  @doc "Return a list of all listening for task status notifications"
+  if @available do
+    def list_task_listeners do
+      Phoenix.Tracker.list(__MODULE__, @tasks)
+    rescue
+      _ -> []
+    end
+  else
+    def list_task_listeners, do: []
+  end
+
   @doc "Fetch the PID of the open request by ID"
   def get_request(%Phantom.Request{id: request_id}), do: get_request(request_id)
 
@@ -338,6 +350,11 @@ defmodule Phantom.Tracker do
     "phantom:listen:" <> Base.url_encode64(key, padding: false)
   end
 
+  defp request_topic(session_id, request_id) do
+    key = :crypto.hash(:sha256, :erlang.term_to_binary({session_id, request_id}))
+    "phantom:request:" <> Base.url_encode64(key, padding: false)
+  end
+
   if @available do
     @doc false
     def subscribe_session(nil, _session_id), do: :ok
@@ -387,6 +404,25 @@ defmodule Phantom.Tracker do
     end
 
     @doc false
+    def subscribe_request(nil, _session_id, _request_id), do: :ok
+
+    # Progress is best-effort, so a missing PubSub must not fail the request.
+    def subscribe_request(pubsub, session_id, request_id) do
+      Phoenix.PubSub.subscribe(pubsub, request_topic(session_id, request_id))
+    rescue
+      ArgumentError -> :ok
+    end
+
+    @doc false
+    def cast_request(pubsub, session_id, request_id, message) do
+      Phoenix.PubSub.broadcast(
+        pubsub,
+        request_topic(session_id, request_id),
+        {:"$gen_cast", message}
+      )
+    end
+
+    @doc false
     def cast_session(nil, _session_id, _message), do: :ok
 
     def cast_session(pubsub, session_id, message),
@@ -397,6 +433,8 @@ defmodule Phantom.Tracker do
     def cast_session(_pubsub, _session_id, _message), do: :ok
     def subscribe_listen(_pubsub, _principal, _request_id), do: :ok
     def cast_listen(_pubsub, _principal, _request_id, _message), do: :ok
+    def subscribe_request(_pubsub, _session_id, _request_id), do: :ok
+    def cast_request(_pubsub, _session_id, _request_id, _message), do: :ok
   end
 
   @doc "Untrack the processe for everything"
@@ -470,6 +508,28 @@ defmodule Phantom.Tracker do
     def subscribe_resource(_uri), do: {:error, :not_available}
   end
 
+  @doc false
+  if @available do
+    def subscribe_task(task_id) do
+      Phoenix.Tracker.track(__MODULE__, self(), @tasks, task_id, %{pid: self()})
+    rescue
+      _ -> {:error, :tracker_not_in_supervision_tree}
+    end
+  else
+    def subscribe_task(_task_id), do: {:error, :not_available}
+  end
+
+  @doc false
+  if @available do
+    def unsubscribe_task(task_id) do
+      Phoenix.Tracker.untrack(__MODULE__, self(), @tasks, task_id)
+    rescue
+      _ -> :ok
+    end
+  else
+    def unsubscribe_task(_task_id), do: :ok
+  end
+
   @doc "Unsubscribe the process to resource notifications from the PubSub on topic #{inspect(@resources)}"
   if @available do
     def unsubscribe_resource(uri) do
@@ -537,6 +597,36 @@ defmodule Phantom.Tracker do
     end
   else
     def notify_resources_updated(_uris), do: {:ok, 0}
+  end
+
+  @doc """
+  Notify clients listening to a task that it changed. Call it after each
+  change you store, with the task or its ID.
+
+  Each listening stream fetches the task with `c:Phantom.Router.get_task/2`
+  and sends what it returns as `notifications/tasks`, so clients get the
+  stored task even when notifications arrive out of order. Returns the number
+  of listening streams.
+  """
+  @spec notify_task_updated(Phantom.Tasks.t() | String.t()) ::
+          {:ok, non_neg_integer()} | {:error, :tracker_not_in_supervision_tree}
+  def notify_task_updated(%Phantom.Tasks{id: task_id}), do: notify_task_updated(task_id)
+
+  if @available do
+    def notify_task_updated(task_id) when is_binary(task_id) do
+      pids =
+        __MODULE__
+        |> Phoenix.Tracker.get_by_key(@tasks, task_id)
+        |> Enum.map(fn {_key, %{pid: pid}} -> pid end)
+        |> Enum.uniq()
+
+      Enum.each(pids, &GenServer.cast(&1, {:task_updated, task_id}))
+      {:ok, length(pids)}
+    rescue
+      _ -> {:error, :tracker_not_in_supervision_tree}
+    end
+  else
+    def notify_task_updated(task_id) when is_binary(task_id), do: {:ok, 0}
   end
 
   @doc "Convenience wrapper for notifying sessions about one updated resource"

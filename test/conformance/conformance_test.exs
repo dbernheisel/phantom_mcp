@@ -11,7 +11,17 @@ defmodule Phantom.ConformanceTest do
   @unscored_scenarios [
     {"server-session-lifecycle", "2025-11-25"},
     {"json-schema-2020-12", "2025-11-25"},
-    {"json-schema-2020-12", "2026-07-28"}
+    {"json-schema-2020-12", "2026-07-28"},
+    {"tasks-lifecycle", "2026-07-28"},
+    {"tasks-capability-negotiation", "2026-07-28"},
+    {"tasks-wire-fields", "2026-07-28"},
+    {"tasks-request-state-removal", "2026-07-28"},
+    {"tasks-mrtr-input", "2026-07-28"},
+    {"tasks-request-headers", "2026-07-28"},
+    {"tasks-dispatch-and-envelope", "2026-07-28"},
+    {"tasks-status-notifications", "2026-07-28"},
+    {"tasks-required-task-error", "2026-07-28"},
+    {"tasks-mrtr-composition", "2026-07-28"}
   ]
 
   setup_all do
