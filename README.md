@@ -574,7 +574,10 @@ and `resources/directory/read`, and computes the digests clients verify from
 what it returns. A file can be a binary or a function that renders it when
 needed. Caching is opt-in with `Phantom.Skill.with_cache/2`. Parsing
 `SKILL.md` frontmatter needs the optional `{:yamerl, "~> 0.10"}` dependency.
-To add a skill at runtime, use `Phantom.Cache.add_skill/2`. See `Phantom.Skill`.
+Skill routes are resource templates named by their path: they share names and
+allow-lists with your resource templates, and are not listed in
+`resources/templates/list`. To add skills at runtime, use
+`Phantom.Cache.add_skill/2`. See `Phantom.Skill`.
 
 ## Eliciting input
 

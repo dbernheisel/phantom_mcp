@@ -9,6 +9,20 @@ defmodule Phantom.SkillRouterTest do
     embed_skills "../support/skills/*"
     embed_skills "../support/skills/refunds/partial-refunds"
 
+    # Same-size edits to an embedded skill, which must not reuse stale digests.
+    def edited(_params, session) do
+      skill = git_workflow(%{})
+
+      skill = %{
+        skill
+        | frontmatter:
+            Map.update!(skill.frontmatter, "description", &String.replace(&1, "Git", "Hg!")),
+          files: Map.update!(skill.files, "SKILL.md", &String.replace(&1, "main", "trnk"))
+      }
+
+      {:reply, skill, session}
+    end
+
     def git_workflow(_params, session) do
       {:reply, git_workflow(%{}) |> Phantom.Skill.with_cache(ttl_ms: 300_000, scope: :public),
        session}
@@ -76,6 +90,12 @@ defmodule Phantom.SkillRouterTest do
     use Phantom.Router, name: "RuntimeSkills", vsn: "1.0"
   end
 
+  defmodule EditedRouter do
+    use Phantom.Router, name: "SkillEdited", vsn: "1.0"
+
+    skill "edited/git-workflow", Skills, :edited
+  end
+
   defmodule MismatchRouter do
     use Phantom.Router, name: "SkillMismatch", vsn: "1.0"
 
@@ -89,6 +109,7 @@ defmodule Phantom.SkillRouterTest do
   setup do
     Cache.register(TestRouter)
     Cache.register(MismatchRouter)
+    Cache.register(EditedRouter)
     Cache.register(EmptyRouter)
     Cache.register(RuntimeRouter)
     :ok
@@ -227,6 +248,20 @@ defmodule Phantom.SkillRouterTest do
                dispatch("skills/get", %{"uri" => "skill://lazy/lazy-skill/SKILL.md"})
 
       assert_received :rendered_skill_md
+    end
+
+    test "digests cover the bytes the action returns" do
+      uri = "skill://edited/git-workflow/SKILL.md"
+
+      assert {:reply, %{skill: %{resources: [%{digest: digest, size: size}]}}, _} =
+               dispatch_to(EditedRouter, "skills/get", %{"uri" => uri})
+
+      assert {:reply, %{contents: [%{text: text}]}, _} =
+               dispatch_to(EditedRouter, "resources/read", %{"uri" => uri})
+
+      assert text =~ "Hg!" and text =~ "trnk"
+      assert digest == sha256(text)
+      assert size == byte_size(text)
     end
 
     test "passes path params to the action" do

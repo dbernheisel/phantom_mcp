@@ -79,6 +79,38 @@ defmodule Phantom.SkillEdgeTest do
       {:reply, Skill.new(%{name: "git-workflow", description: "Git"}, %{"SKILL.md" => "# Git\n"}),
        session}
     end
+
+    def top(_params, session) do
+      {:reply,
+       Skill.new(%{name: "top", description: "Top skill"}, %{
+         "SKILL.md" => "# Top\n",
+         "mid/notes.md" => "top copy\n",
+         "mid/bottom/notes.md" => "TOP COPY\n"
+       }), session}
+    end
+
+    def mid(_params, session), do: {:reply, nil, session}
+
+    def bottom(_params, session) do
+      {:reply,
+       Skill.new(%{name: "bottom", description: "Bottom skill"}, %{
+         "SKILL.md" => "# Bottom\n",
+         "notes.md" => "BOTTOM\n"
+       }), session}
+    end
+
+    def raiser(_params, _session), do: raise("nested boom")
+
+    def slow_skill(_params, session) do
+      send(session.assigns.test, {:blocked, self()})
+
+      receive do
+        :go ->
+          {:reply,
+           Skill.new(%{name: "slow-skill", description: "Slow"}, %{"SKILL.md" => "# Slow\n"}),
+           session}
+      end
+    end
   end
 
   defmodule NestRouter do
@@ -89,6 +121,16 @@ defmodule Phantom.SkillEdgeTest do
     skill "nest/outer/gone", Actions
     skill "files/spaced-files", Actions
     skill "git-workflow", Actions
+    skill "deep/top", Actions
+    skill "deep/top/mid", Actions
+    skill "deep/top/mid/bottom", Actions
+  end
+
+  defmodule RaiseRouter do
+    use Phantom.Router, name: "Raise", vsn: "1.0"
+
+    skill "boom/outer", Actions
+    skill "boom/outer/raiser", Actions
   end
 
   defmodule FailRouter do
@@ -133,8 +175,23 @@ defmodule Phantom.SkillEdgeTest do
     use Phantom.Router, name: "Paged", vsn: "1.0"
   end
 
+  defmodule BatchRouter do
+    use Phantom.Router, name: "Batch", vsn: "1.0"
+  end
+
+  defmodule InFlightRouter do
+    use Phantom.Router, name: "InFlight", vsn: "1.0"
+  end
+
   setup do
-    for router <- [NestRouter, FailRouter, PublicRouter, StaticFirstRouter, ParamFirstRouter],
+    for router <- [
+          NestRouter,
+          RaiseRouter,
+          FailRouter,
+          PublicRouter,
+          StaticFirstRouter,
+          ParamFirstRouter
+        ],
         do: Cache.register(router)
 
     :ok
@@ -169,7 +226,6 @@ defmodule Phantom.SkillEdgeTest do
 
       assert [
                "skill://nest/outer/SKILL.md",
-               "skill://nest/outer/gone/notes.md",
                "skill://nest/outer/inner/SKILL.md",
                "skill://nest/outer/inner/notes.md"
              ] = Enum.map(resources, & &1.uri)
@@ -183,8 +239,44 @@ defmodule Phantom.SkillEdgeTest do
       assert {:ok, "hello\n"} = read(NestRouter, "skill://nest/outer/inner/notes.md")
     end
 
-    test "falls back to the parent's files when the nested action serves no skill" do
-      assert {:ok, "kept\n"} = read(NestRouter, "skill://nest/outer/gone/notes.md")
+    test "files owned by a nested skill that serves none are neither listed nor read" do
+      assert {:error, _} = read(NestRouter, "skill://nest/outer/gone/notes.md")
+    end
+
+    test "a deeper skill under an absent nested skill is still part of the manifest" do
+      assert {:reply, %{skill: %{resources: resources}}, _} =
+               get(NestRouter, "skill://deep/top/SKILL.md")
+
+      assert [
+               "skill://deep/top/SKILL.md",
+               "skill://deep/top/mid/bottom/SKILL.md",
+               "skill://deep/top/mid/bottom/notes.md"
+             ] = Enum.map(resources, & &1.uri)
+
+      for %{uri: uri, digest: digest, size: size} <- resources do
+        assert {:ok, bytes} = read(NestRouter, uri)
+        assert digest == sha256(bytes), uri
+        assert size == byte_size(bytes), uri
+      end
+
+      assert {:ok, "BOTTOM\n"} = read(NestRouter, "skill://deep/top/mid/bottom/notes.md")
+      assert {:error, _} = read(NestRouter, "skill://deep/top/mid/notes.md")
+    end
+
+    test "skills/get on a nested skill is allowed by the parent's permission" do
+      assert {:reply, %{skill: %{frontmatter: %{"name" => "inner"}}}, _} =
+               get(NestRouter, "skill://nest/outer/inner/SKILL.md",
+                 allowed_resource_templates: ["nest/outer"]
+               )
+    end
+
+    @tag :capture_log
+    test "a nested action that raises fails skills/get, and is left out of skills/list" do
+      assert_raise RuntimeError, "nested boom", fn ->
+        get(RaiseRouter, "skill://boom/outer/SKILL.md")
+      end
+
+      assert {:reply, %{skills: []}, _} = dispatch(RaiseRouter, "skills/list", %{})
     end
 
     test "directory reads list the nested skill's files" do
@@ -347,6 +439,69 @@ defmodule Phantom.SkillEdgeTest do
 
       assert {:reply, %{skill: %{frontmatter: %{"name" => "git-workflow"}}}, _} =
                get(LateRouter, "skill://late/git-workflow/SKILL.md")
+    end
+
+    test "adds a list of skills" do
+      Cache.add_skill(BatchRouter, [
+        [path: "b1/git-workflow", handler: Actions],
+        [path: "b2/git-workflow", handler: Actions]
+      ])
+
+      for uri <- ["skill://b1/git-workflow/SKILL.md", "skill://b2/git-workflow/SKILL.md"] do
+        assert {:reply, %{skill: %{frontmatter: %{"name" => "git-workflow"}}}, _} =
+                 get(BatchRouter, uri)
+      end
+    end
+
+    test "waits for a read still running in the old routes" do
+      Cache.add_skill(InFlightRouter,
+        path: "slow/slow-skill",
+        handler: Actions,
+        function: :slow_skill
+      )
+
+      test = self()
+
+      reader =
+        Task.async(fn ->
+          read(InFlightRouter, "skill://slow/slow-skill/SKILL.md", assigns: %{test: test})
+        end)
+
+      assert_receive {:blocked, action}
+
+      Cache.add_skill(InFlightRouter, path: "one/git-workflow", handler: Actions)
+
+      adding =
+        Task.async(fn ->
+          Cache.add_skill(InFlightRouter, path: "two/git-workflow", handler: Actions)
+        end)
+
+      Process.sleep(50)
+      send(action, :go)
+
+      assert {:ok, "---\n" <> _} = Task.await(reader)
+      assert :ok = Task.await(adding)
+
+      for uri <- ["skill://one/git-workflow/SKILL.md", "skill://two/git-workflow/SKILL.md"] do
+        assert {:reply, %{skill: _}, _} = get(InFlightRouter, uri)
+      end
+    end
+
+    test "logs compile errors from regenerating the routes" do
+      log =
+        capture_log(fn ->
+          assert_raise CompileError, fn ->
+            Cache.__redefine_modules__(fn ->
+              Module.create(
+                Phantom.SkillEdgeTest.Broken,
+                quote(do: def(broken, do: undefined_variable)),
+                __ENV__
+              )
+            end)
+          end
+        end)
+
+      assert log =~ "undefined_variable"
     end
 
     test "keeps every skill added concurrently" do

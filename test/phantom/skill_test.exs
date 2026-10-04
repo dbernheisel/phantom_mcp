@@ -66,6 +66,17 @@ defmodule Phantom.SkillTest do
       end
     end
 
+    test "limits the description to 1024 characters" do
+      assert %Skill{} =
+               Skill.new(%{name: "a", description: String.duplicate("é", 1024)}, %{
+                 "SKILL.md" => ""
+               })
+
+      assert_raise ArgumentError, ~r/description/, fn ->
+        Skill.new(%{name: "a", description: String.duplicate("a", 1025)}, %{"SKILL.md" => ""})
+      end
+    end
+
     test "enforces the Agent Skills naming rules" do
       for name <- [
             "Refunds",
@@ -257,17 +268,6 @@ defmodule Phantom.SkillTest do
       %{"SKILL.md" => skill_md} = Skill.contents(skill)
 
       assert {:ok, ^frontmatter, "# Body\n"} = Skill.parse(skill_md)
-    end
-  end
-
-  describe "embedded skills" do
-    test "static files have digests computed at compile time" do
-      assert %Skill{digests: %{"SKILL.md" => {_size, "sha256:" <> _}}} =
-               Embedded.git_workflow(%{})
-
-      assert %Skill{digests: digests} = Embedded.refunds(%{user: "Ada"})
-      assert Map.has_key?(digests, "examples/email.md")
-      refute Map.has_key?(digests, "SKILL.md")
     end
   end
 end

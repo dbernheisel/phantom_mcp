@@ -22,8 +22,9 @@ defmodule Phantom.Skill do
   first. Skills with path params are left out of `skills/list`, but clients can still
   get them by URI.
 
-  Each skill is a resource template named by its path, so
-  `Phantom.Session.allow_resource_templates/2` limits skills too.
+  Each skill is a resource template named by its path, so skill paths share names with
+  resource templates, and `Phantom.Session.allow_resource_templates/2` limits skills too.
+  Skill routes are not listed in `resources/templates/list`.
 
   ## Actions
 
@@ -38,11 +39,12 @@ defmodule Phantom.Skill do
 
   ## Nested skills
 
-  A skill routed under another skill's path is nested in it: the parent's manifest and
-  directory listings include the nested skill's files in place of the parent's own
-  files in that directory, and reads there go to the nested skill's action. When that
-  action returns `nil` or an error, the parent's own files are used instead. A session
-  allowed the parent may read the nested skill's files.
+  A skill routed under another skill's path is nested in it. Each file belongs to the
+  deepest skill whose directory contains it: the parent's manifest and directory
+  listings take each nested skill's files from its own action, and leave out the
+  parent's own files in that directory. A nested action that returns `nil` or an error
+  serves no files; one that raises fails the parent's `skills/get` and is left out of
+  `skills/list`. A session allowed a skill may use every skill nested in it.
 
   ## Rendering
 
@@ -52,8 +54,9 @@ defmodule Phantom.Skill do
 
   ## Caching
 
-  Results are private and uncached unless the action calls `with_cache/2`. Only
-  declare `scope: :public` when the skill is the same for every user who can see it.
+  `skills/list` and `skills/get` results are private and uncached unless the action
+  calls `with_cache/2`. Only declare `scope: :public` when the skill is the same for
+  every user who can see it.
 
       {:reply, git_workflow(%{}) |> Phantom.Skill.with_cache(ttl_ms: 300_000, scope: :public),
        session}
@@ -98,15 +101,13 @@ defmodule Phantom.Skill do
   @frontmatter_pattern ~r/\A---[ \t]*\R(?<yaml>.*?)^---[ \t]*(?:\R|\z)(?<body>.*)\z/ms
   @simple_key ~r/\A[A-Za-z0-9_-]+\z/
 
-  # `digests` is internal: digests of static files, computed by `embed_skills/1`.
-  defstruct frontmatter: %{}, files: %{}, dynamic: false, cache: nil, digests: %{}
+  defstruct frontmatter: %{}, files: %{}, dynamic: false, cache: nil
 
   @type t :: %__MODULE__{
           frontmatter: %{required(String.t()) => term()},
           files: %{required(String.t()) => binary() | (-> iodata())},
           dynamic: boolean(),
-          cache: nil | [ttl_ms: non_neg_integer(), scope: :public | :private],
-          digests: %{optional(String.t()) => {non_neg_integer(), String.t()}}
+          cache: nil | [ttl_ms: non_neg_integer(), scope: :public | :private]
         }
 
   @doc false
@@ -269,12 +270,6 @@ defmodule Phantom.Skill do
       {path, _} -> raise ArgumentError, "#{dir}: more than one file is served at #{path}"
     end)
 
-    # SKILL.md is served with its frontmatter, so its digest covers both.
-    digests =
-      for {path, {:static, served}, _} <- embedded,
-          into: %{},
-          do: {path, {byte_size(served), digest(served)}}
-
     contents = for {path, content, body} <- embedded, do: {path, embed_content(content, body)}
 
     quote do
@@ -283,10 +278,7 @@ defmodule Phantom.Skill do
       def unquote(String.to_atom(String.replace(name, "-", "_")))(var!(assigns)) do
         _ = var!(assigns)
 
-        %{
-          Phantom.Skill.new(unquote(Macro.escape(frontmatter)), %{unquote_splicing(contents)})
-          | digests: unquote(Macro.escape(digests))
-        }
+        Phantom.Skill.new(unquote(Macro.escape(frontmatter)), %{unquote_splicing(contents)})
       end
     end
   end
@@ -451,8 +443,9 @@ defmodule Phantom.Skill do
   defp validate_frontmatter!(frontmatter, context \\ "skill") do
     validate_name!(frontmatter["name"], context)
 
-    if not (is_binary(frontmatter["description"]) and frontmatter["description"] != "") do
-      raise ArgumentError, "#{context}: frontmatter must have a description"
+    if not (is_binary(frontmatter["description"]) and
+              String.length(frontmatter["description"]) in 1..1024) do
+      raise ArgumentError, "#{context}: frontmatter must have a description of 1-1024 characters"
     end
   end
 
@@ -488,18 +481,6 @@ defmodule Phantom.Skill do
 
   defp digest(bytes), do: "sha256:" <> Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
 
-  # Reuses a digest computed by `embed_skills/1` while the file is still static.
-  defp digest(%__MODULE__{files: files, digests: digests}, path, bytes) do
-    case digests do
-      %{^path => {size, digest}}
-      when is_binary(:erlang.map_get(path, files)) and byte_size(bytes) == size ->
-        digest
-
-      _ ->
-        digest(bytes)
-    end
-  end
-
   @doc false
   # The manifest of a skill's files. `files` maps each path within the skill to the
   # skill that serves it and the file's path within that skill.
@@ -510,7 +491,7 @@ defmodule Phantom.Skill do
 
         %{
           uri: uri(base_uri, path),
-          digest: digest(skill, own_path, bytes),
+          digest: digest(bytes),
           size: byte_size(bytes)
         }
       end

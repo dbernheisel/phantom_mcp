@@ -1332,10 +1332,26 @@ defmodule Phantom.Router do
             match(_, to: Phantom.ResourcePlug.NotFound)
           end
 
-        true = :code.soft_purge(resource_router)
+        soft_purge!(resource_router)
         Module.create(resource_router, body, Macro.Env.location(env))
       end
     )
+  end
+
+  # A request still running the router's old code blocks replacing it, so wait
+  # for it to finish rather than kill it.
+  defp soft_purge!(module, attempts \\ 50) do
+    cond do
+      :code.soft_purge(module) ->
+        :ok
+
+      attempts > 0 ->
+        Process.sleep(20)
+        soft_purge!(module, attempts - 1)
+
+      true ->
+        raise "can't replace #{inspect(module)}: requests are still running its old code"
+    end
   end
 
   # A skill's route globs its files, so a skill nested within it must match first.

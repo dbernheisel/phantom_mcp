@@ -1,7 +1,9 @@
 defmodule Phantom.Router.Skills do
   @moduledoc false
   # Serves the MCP Skills extension from a router's skill routes, which are
-  # resource templates under `skill://<path>/*file`.
+  # resource templates under `skill://<path>/*file`. The router's generated
+  # resource router resolves every skill URI, so a file always belongs to the
+  # deepest skill route whose path contains it.
 
   require Logger
 
@@ -25,17 +27,13 @@ defmodule Phantom.Router.Skills do
   defp param?(":" <> _), do: true
   defp param?(_segment), do: false
 
-  defp skill_routes(routes) do
-    routes |> Enum.filter(&(&1.scheme == "skill")) |> Enum.sort_by(&route_order/1)
-  end
-
   # A route nested under another must not have path params below it, since its
   # files are part of the other skill's manifest.
   def validate_nesting!(routes) do
     for outer <- routes, inner <- routes, outer != inner do
       {prefix, rest} = Enum.split(segments(inner), length(segments(outer)))
 
-      if length(rest) > 0 and compatible?(segments(outer), prefix) and Enum.any?(rest, &param?/1) do
+      if rest != [] and compatible?(segments(outer), prefix) and Enum.any?(rest, &param?/1) do
         raise ArgumentError,
               "skill #{inspect(inner.name)} is nested in skill #{inspect(outer.name)}, " <>
                 "so it can't have path params below #{inspect(outer.name)}"
@@ -50,16 +48,9 @@ defmodule Phantom.Router.Skills do
       Enum.all?(Enum.zip(a, b), fn {x, y} -> x == y or param?(x) or param?(y) end)
   end
 
-  defp match(route_segments, segments, params \\ %{})
-  defp match([], [], params), do: {:ok, params}
-
-  defp match([":" <> param | route_segments], [value | segments], params),
-    do: match(route_segments, segments, Map.put(params, param, value))
-
-  defp match([same | route_segments], [same | segments], params),
-    do: match(route_segments, segments, params)
-
-  defp match(_route_segments, _segments, _params), do: :error
+  defp skill_routes(router) do
+    Enum.filter(Cache.list(nil, router, :resource_templates), &(&1.scheme == "skill"))
+  end
 
   defp concrete(route, params) do
     Enum.map(segments(route), fn
@@ -70,43 +61,57 @@ defmodule Phantom.Router.Skills do
 
   defp base_uri(segments), do: "skill://" <> Enum.map_join(segments, "/", &Skill.encode_segment/1)
 
-  # The routes serving `segments`, deepest first: its own route, then the route of
-  # each skill it's nested in.
-  defp chain(routes, segments) do
-    for depth <- length(segments)..1//-1,
-        prefix = Enum.take(segments, depth),
-        route = Enum.find(routes, &match?({:ok, _}, match(segments(&1), prefix))),
-        route != nil,
-        do: {route, prefix}
+  # Resolves a canonical skill URI through the resource router to the route that
+  # serves it, the route's params and segments, and the path within the skill.
+  defp resolve(router, uri) do
+    with {:ok, {^uri, %{"file" => file} = params, %ResourceTemplate{scheme: "skill"} = route}} <-
+           Phantom.Router.resolve_resource(router, nil, uri),
+         params = Map.delete(params, "file"),
+         segments = concrete(route, params),
+         path = Enum.join(file, "/"),
+         true <- Skill.uri(base_uri(segments), path) == uri do
+      {:ok, route, params, segments, path}
+    else
+      _ -> :error
+    end
   end
 
-  # Routed skills nested directly in the skill at `segments`.
-  defp nested(routes, segments) do
+  # The skill route whose root is exactly `segments`, as the resource router resolves it.
+  defp root(router, segments) do
+    case resolve(router, base_uri(segments)) do
+      {:ok, route, params, ^segments, ""} -> {:ok, route, params}
+      _ -> :error
+    end
+  end
+
+  # Skill routes nested in the skill at `segments`, at any depth.
+  defp descendants(router, segments) do
     depth = length(segments)
 
-    candidates =
-      routes
-      |> Enum.flat_map(fn route ->
-        {prefix, rest} = Enum.split(segments(route), depth)
+    for route <- skill_routes(router),
+        {_prefix, rest} = Enum.split(segments(route), depth),
+        rest != [] and not Enum.any?(rest, &param?/1),
+        inner = segments ++ rest,
+        {:ok, ^route, params} <- [root(router, inner)],
+        do: {route, params, inner}
+  end
 
-        if rest != [] and match?({:ok, _}, match(prefix, segments)),
-          do: [{route, segments ++ rest}],
-          else: []
-      end)
-      |> Enum.uniq_by(&elem(&1, 1))
+  # A route is accessible when it, or a skill route it's nested in, is allowed.
+  defp accessible?(router, session, route, segments) do
+    allowed = Cache.list(session, router, :resource_templates)
+    route in allowed or Enum.any?(ancestors(router, segments), &(&1 in allowed))
+  end
 
-    Enum.reject(candidates, fn {_, inner} ->
-      Enum.any?(candidates, fn {_, outer} ->
-        length(outer) < length(inner) and Enum.take(inner, length(outer)) == outer
-      end)
-    end)
+  defp ancestors(router, segments) do
+    for depth <- (length(segments) - 1)..1//-1,
+        {:ok, route, _params} <- [root(router, Enum.take(segments, depth))],
+        do: route
   end
 
   ## Actions
 
   # Returns `{:ok, skill, session}`, `{:absent, session}` or `{:error, error, session}`.
-  defp call(route, segments, session) do
-    {:ok, params} = match(segments(route), segments)
+  defp call(route, params, session) do
     route |> apply_action(params, session) |> action_result(route)
   end
 
@@ -142,37 +147,41 @@ defmodule Phantom.Router.Skills do
             "skill actions are synchronous. Got: #{inspect(other)}"
   end
 
-  # The skill's files, with each nested skill's files in place of the skill's own
-  # copy of its directory. Returns the files, as in `Skill.manifest/2`, and every
-  # skill they come from.
-  defp tree(routes, skill, segments, session) do
-    own = Map.new(skill.files, fn {path, _content} -> {path, {skill, path}} end)
+  # The files of the skill at `segments`, each from the skill that owns it: the
+  # deepest of the skill and its nested skills whose directory contains the file.
+  # Returns the files, as in `Skill.manifest/2`, and every skill they come from.
+  defp tree(router, skill, segments, session) do
+    owners =
+      for {route, params, inner} <- descendants(router, segments),
+          do: {inner |> Enum.drop(length(segments)) |> Enum.join("/"), route, params}
 
-    Enum.reduce(nested(routes, segments), {own, [skill]}, fn {route, inner}, {files, skills} ->
-      case call(route, inner, session) do
-        {:ok, nested_skill, _session} ->
-          {nested_files, nested_skills} = tree(routes, nested_skill, inner, session)
-          dir = inner |> Enum.drop(length(segments)) |> Enum.join("/")
+    dirs = Enum.map(owners, &elem(&1, 0))
 
-          files =
-            files
-            |> Map.reject(fn {path, _} -> String.starts_with?(path, dir <> "/") end)
-            |> Map.merge(
-              Map.new(nested_files, fn {path, served} -> {dir <> "/" <> path, served} end)
-            )
+    skills =
+      [{"", skill}] ++
+        for {dir, route, params} <- owners,
+            {:ok, nested, _session} <- [call(route, params, session)],
+            do: {dir, nested}
 
-          {files, skills ++ nested_skills}
+    files =
+      for {dir, owner} <- skills,
+          {path, _content} <- owner.files,
+          full = if(dir == "", do: path, else: dir <> "/" <> path),
+          owner_dir(full, dirs) == dir,
+          into: %{},
+          do: {full, {owner, path}}
 
-        _absent_or_error ->
-          {files, skills}
-      end
-    end)
+    {files, Enum.map(skills, &elem(&1, 1))}
+  end
+
+  defp owner_dir(path, dirs) do
+    dirs
+    |> Enum.filter(&String.starts_with?(path, &1 <> "/"))
+    |> Enum.max_by(&String.length/1, fn -> "" end)
   end
 
   defp entry(router, skill, segments, session) do
-    {files, skills} =
-      tree(skill_routes(Cache.list(nil, router, :resource_templates)), skill, segments, session)
-
+    {files, skills} = tree(router, skill, segments, session)
     base_uri = base_uri(segments)
 
     resources =
@@ -227,7 +236,7 @@ defmodule Phantom.Router.Skills do
   defp list_entry(router, route, session) do
     segments = segments(route)
 
-    with {:ok, skill, session} <- call(route, segments, session) do
+    with {:ok, skill, session} <- call(route, %{}, session) do
       entry(router, skill, segments, session)
     end
   catch
@@ -241,9 +250,9 @@ defmodule Phantom.Router.Skills do
   end
 
   def get(router, session, uri) do
-    with {:ok, route, segments, "SKILL.md"} <- resolve(router, session, uri),
-         true <- route in Cache.list(session, router, :resource_templates),
-         {:ok, skill, session} <- call(route, segments, session),
+    with {:ok, route, params, segments, "SKILL.md"} <- resolve(router, uri),
+         true <- accessible?(router, session, route, segments),
+         {:ok, skill, session} <- call(route, params, session),
          {:ok, entry, skills} <- entry(router, skill, segments, session) do
       {:reply, Request.with_cache(%{skill: entry}, Skill.cache_hints(skills, session)), session}
     else
@@ -253,12 +262,11 @@ defmodule Phantom.Router.Skills do
   end
 
   def read_directory(router, session, uri) do
-    with {:ok, _route, segments, dir} <- resolve(router, session, uri),
-         {:ok, skill, skill_segments, session} <- serving(router, segments, session),
-         routes = skill_routes(Cache.list(nil, router, :resource_templates)),
-         {files, _skills} = tree(routes, skill, skill_segments, session),
-         dir = relative(segments, dir, skill_segments),
-         {:ok, resources} <- Skill.list_directory(files, base_uri(skill_segments), dir) do
+    with {:ok, route, params, segments, dir} <- resolve(router, uri),
+         true <- accessible?(router, session, route, segments),
+         {:ok, skill, session} <- call(route, params, session),
+         {files, _skills} = tree(router, skill, segments, session),
+         {:ok, resources} <- Skill.list_directory(files, base_uri(segments), dir) do
       # Directories are listed whole, so a cursor is never needed.
       {:reply, %{resources: resources}, session}
     else
@@ -269,67 +277,19 @@ defmodule Phantom.Router.Skills do
 
   # Called by `Phantom.ResourcePlug` for `resources/read` of a skill route's file.
   def read(route, %{"file" => file} = params, uri, session) do
-    segments = concrete(route, Map.delete(params, "file"))
+    params = Map.delete(params, "file")
+    segments = concrete(route, params)
+    path = Enum.join(file, "/")
 
-    with true <- Skill.uri(base_uri(segments), Enum.join(file, "/")) == uri,
-         {:ok, skill, skill_segments, session} <-
-           serving(session.router, segments, session),
-         {:ok, content} <-
-           Skill.read(skill, relative(segments, Enum.join(file, "/"), skill_segments), uri) do
+    with true <- Skill.uri(base_uri(segments), path) == uri,
+         true <- accessible?(session.router, session, route, segments),
+         {:ok, skill, session} <- call(route, params, session),
+         {:ok, content} <- Skill.read(skill, path, uri) do
       {:reply, content, session}
     else
       {:error, _error, %Session{}} = error -> error
       _ -> {:reply, nil, session}
     end
-  end
-
-  # Resolves a canonical skill URI through the router's resource router to its
-  # route, the route's segments, and the path within the skill.
-  defp resolve(router, session, uri) do
-    with {:ok, {^uri, %{"file" => file} = params, %ResourceTemplate{scheme: "skill"} = route}} <-
-           Phantom.Router.resolve_resource(router, session, uri),
-         segments = concrete(route, Map.delete(params, "file")),
-         path = Enum.join(file, "/"),
-         true <- Skill.uri(base_uri(segments), path) == uri do
-      {:ok, route, segments, path}
-    else
-      _ -> :error
-    end
-  end
-
-  # The skill that serves a path under `segments`: the route's own skill, or when it
-  # serves none, the skill it's nested in. Each must be allowed for the session, or
-  # be nested in a skill that is.
-  defp serving(router, segments, session) do
-    allowed = Cache.list(session, router, :resource_templates)
-    chain = chain(skill_routes(Cache.list(nil, router, :resource_templates)), segments)
-    serve(chain, allowed, session, nil)
-  end
-
-  defp serve([], _allowed, session, nil), do: {:absent, session}
-  defp serve([], _allowed, _session, error), do: error
-
-  defp serve([{route, segments} | outer] = chain, allowed, session, error) do
-    if Enum.any?(chain, &(elem(&1, 0) in allowed)),
-      do: route |> call(segments, session) |> served(segments, outer, allowed, error),
-      else: {:absent, session}
-  end
-
-  defp served({:ok, skill, session}, segments, _outer, _allowed, _error),
-    do: {:ok, skill, segments, session}
-
-  defp served({:absent, session}, _segments, outer, allowed, error),
-    do: serve(outer, allowed, session, error)
-
-  defp served({:error, _error, session} = new_error, _segments, outer, allowed, error),
-    do: serve(outer, allowed, session, error || new_error)
-
-  # A path under `segments`, made relative to the skill at `skill_segments`.
-  defp relative(segments, path, skill_segments) do
-    segments
-    |> Enum.drop(length(skill_segments))
-    |> Enum.concat(String.split(path, "/", trim: true))
-    |> Enum.join("/")
   end
 
   defp invalid_params(message), do: %{Request.invalid_params() | message: message}
