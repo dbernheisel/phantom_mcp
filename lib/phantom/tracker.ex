@@ -331,6 +331,13 @@ defmodule Phantom.Tracker do
   @doc false
   def session_topic(session_id), do: "phantom:session:#{session_id}"
 
+  # A stateless `subscriptions/listen` stream has no session, so the client
+  # names it by its request id. The principal keeps clients apart.
+  defp listen_topic(principal, request_id) do
+    key = :crypto.hash(:sha256, :erlang.term_to_binary({principal, request_id}))
+    "phantom:listen:" <> Base.url_encode64(key, padding: false)
+  end
+
   if @available do
     @doc false
     def subscribe_session(nil, _session_id), do: :ok
@@ -363,6 +370,23 @@ defmodule Phantom.Tracker do
     end
 
     @doc false
+    def subscribe_listen(nil, _principal, _request_id), do: :ok
+
+    def subscribe_listen(pubsub, principal, request_id),
+      do: Phoenix.PubSub.subscribe(pubsub, listen_topic(principal, request_id))
+
+    @doc false
+    def cast_listen(nil, _principal, _request_id, _message), do: :ok
+
+    def cast_listen(pubsub, principal, request_id, message) do
+      Phoenix.PubSub.broadcast(
+        pubsub,
+        listen_topic(principal, request_id),
+        {:"$gen_cast", message}
+      )
+    end
+
+    @doc false
     def cast_session(nil, _session_id, _message), do: :ok
 
     def cast_session(pubsub, session_id, message),
@@ -371,6 +395,8 @@ defmodule Phantom.Tracker do
     def subscribe_session(_pubsub, _session_id), do: :ok
     def call_session(_pubsub, _session_id, _message, _timeout \\ 5_000), do: :error
     def cast_session(_pubsub, _session_id, _message), do: :ok
+    def subscribe_listen(_pubsub, _principal, _request_id), do: :ok
+    def cast_listen(_pubsub, _principal, _request_id, _message), do: :ok
   end
 
   @doc "Untrack the processe for everything"

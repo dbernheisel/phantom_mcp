@@ -381,6 +381,7 @@ defmodule Phantom.Session do
     with {:ok, filter} <- normalize_subscription_filter(filter) do
       Phantom.Tracker.track_session(self(), session.id, session.client_info)
       Phantom.Tracker.subscribe_session(session.pubsub, session.id)
+      Phantom.Tracker.subscribe_listen(session.pubsub, principal(session), subscription_id)
 
       session.router
       |> Phantom.Router.resolve_resources(session, Map.get(filter, "resourceSubscriptions", []))
@@ -440,16 +441,21 @@ defmodule Phantom.Session do
 
   @doc false
   # The cancellation arrives on its own request, so the request it names is
-  # found where it runs. A stateless request has no session to scope the
-  # client's request id; closing its connection cancels it.
+  # found where it runs: through the session's in-flight requests, or, for a
+  # stateless `subscriptions/listen` stream, through the client's principal
+  # (as `requestState` is bound to it).
   def cancel_request(%__MODULE__{} = session, request_id) do
-    with false <- stateless?(session),
-         pid when is_pid(pid) <- Phantom.Tracker.in_flight(session.id, request_id) do
-      GenServer.cast(pid, {:cancel_request, request_id})
+    if stateless?(session) do
+      Phantom.Tracker.cast_listen(session.pubsub, principal(session), request_id, :finish)
     else
-      _ -> :ok
+      case Phantom.Tracker.in_flight(session.id, request_id) do
+        pid when is_pid(pid) -> GenServer.cast(pid, {:cancel_request, request_id})
+        nil -> :ok
+      end
     end
   end
+
+  defp principal(session), do: session.assigns[:request_state_principal]
 
   @doc """
   Sends response back to the stream

@@ -18,6 +18,11 @@
   go through a per-session PubSub topic in that case.
 - `logging/setLevel` replies once the level is applied, and no longer writes
   an empty `{}` event to the session stream.
+- `notifications/cancelled` reaches the request it names: a session's
+  in-flight `tools/call` or `prompts/get`, or a stateless
+  `subscriptions/listen` stream sent by the same principal
+  (`session.assigns[:request_state_principal]`). It used to be cast to the
+  cancellation's own request process and crashed it.
 - An HTTP `DELETE` closes the session's open streams on every node; it
   previously only untracked streams on the node that received it.
 - The `initialize` response stream closes after the response, as the spec

@@ -268,6 +268,18 @@ defmodule Phantom.PlugTest do
     end
   end
 
+  describe "stateless cancellation scope" do
+    test "only the same principal reaches a listen stream" do
+      :ok = Phantom.Tracker.subscribe_listen(Test.PubSub, "alice", "listen:0")
+
+      Phantom.Tracker.cast_listen(Test.PubSub, "bob", "listen:0", :finish)
+      refute_receive {:"$gen_cast", :finish}, 100
+
+      Phantom.Tracker.cast_listen(Test.PubSub, "alice", "listen:0", :finish)
+      assert_receive {:"$gen_cast", :finish}
+    end
+  end
+
   defp await_in_flight(session_id, request_id, attempts \\ 50) do
     cond do
       is_pid(Phantom.Tracker.in_flight(session_id, request_id)) -> :ok
@@ -1282,6 +1294,32 @@ defmodule Phantom.PlugTest do
                  "data" => %{"requiredCapabilities" => %{"elicitation" => %{}}}
                }
              } = JSON.decode!(conn.resp_body)
+    end
+
+    test "notifications/cancelled ends the subscriptions/listen stream it names" do
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: "listen:cancel",
+          method: "subscriptions/listen",
+          params: %{notifications: %{resourceSubscriptions: ["test:///text/1"]}}
+        },
+        [{"mcp-method", "subscriptions/listen"}]
+      )
+
+      assert_notify(%{method: "notifications/subscriptions/acknowledged"})
+
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          method: "notifications/cancelled",
+          params: %{"requestId" => "listen:cancel"}
+        },
+        [{"mcp-method", "notifications/cancelled"}]
+      )
+
+      assert_receive {:conn, %{status: 202}}, 1_000
+      assert_receive {:conn, %{status: 200}}, 1_000
     end
 
     test "subscriptions/listen rejects an invalid resource subscription filter" do
