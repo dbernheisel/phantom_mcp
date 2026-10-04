@@ -515,8 +515,12 @@ defmodule Test.MCP.Router do
 
   def input_required_prompt(_params, %Session{request: request} = session) do
     case request.params["inputResponses"] do
-      %{"context" => %{"content" => %{"context" => context}}} ->
+      %{"context" => %{"action" => "accept", "content" => %{"context" => context}}} ->
         {:reply, Prompt.response(user: Prompt.text("Context: #{context}")), session}
+
+      # Declined or cancelled: end the prompt rather than ask again.
+      %{"context" => %{"action" => _declined}} ->
+        {:error, %{code: -32602, message: "The client did not provide context"}, session}
 
       _ ->
         {:reply,

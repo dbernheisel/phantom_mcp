@@ -262,6 +262,13 @@ defmodule Phantom.TestTest do
       |> assert_tool_error("The client did not complete the requested elicitation")
     end
 
+    test "a prompt's input_required ends when the client cancels", %{session: session} do
+      expect_elicit(fn _elicit -> {:ok, %{"action" => "cancel"}} end)
+
+      assert {:jsonrpc_error, %{message: "The client did not provide context"}} =
+               get_prompt(session, :input_required_prompt, %{})
+    end
+
     test "await: true suspends the handler and resumes it", %{session: session} do
       expect_elicit(fn _elicit ->
         {:ok, %{"action" => "accept", "content" => %{"color" => "red"}}}
