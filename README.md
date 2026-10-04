@@ -630,43 +630,53 @@ URL elicitation sends the user to a page you host, such as a sign-in or
 payment flow, instead of a form in the client. The client must declare
 `elicitation: %{"url" => %{}}`; otherwise the call returns `:not_supported`.
 
-Put your own `elicitation_id` in the URL so the page knows which elicitation
-it is finishing:
+The client's `accept` only means the user agreed to open the URL, not that
+they finished. Keep your own record of the flow, tied to the signed-in user,
+and check it. The simplest shape returns `{:elicitation_required, ...}` until
+the record says the user is done; the client opens the URL and calls the tool
+again:
 
 ```elixir
 def connect_account(_params, session) do
-  elicitation_id = UUIDv7.generate()
+  user = session.assigns.user
 
-  elicitation =
-    Phantom.Elicit.url(%{
-      message: "Connect your account",
-      url: "https://myapp.example/connect?elicitation_id=#{elicitation_id}",
-      elicitation_id: elicitation_id
-    })
+  if MyApp.Accounts.connected?(user) do
+    {:reply, Tool.text("Connected"), session}
+  else
+    elicitation_id = UUIDv7.generate()
+    MyApp.Accounts.start_connect(user, elicitation_id)
 
-  case Phantom.Session.elicit(session, elicitation, await: true) do
-    # The answer has no content; the work happened on your page.
-    {:ok, %{"action" => "accept"}} -> {:reply, Tool.text("Connected"), session}
-    {:ok, _declined_or_cancelled} -> {:reply, Tool.error("Not connected"), session}
-    other -> {:reply, Tool.error("Could not connect: #{inspect(other)}"), session}
+    {:elicitation_required,
+     [
+       Phantom.Elicit.url(%{
+         message: "Connect your account",
+         url: "https://myapp.example/connect/#{elicitation_id}",
+         elicitation_id: elicitation_id
+       })
+     ]}
   end
 end
 ```
 
-When the user finishes, have the page tell the client:
+The page must check that the signed-in user is the one who started the flow.
+Otherwise someone could send their link to another user and have that user
+connect an account for them:
 
 ```elixir
-def connected(conn, %{"elicitation_id" => elicitation_id}) do
-  Phantom.Tracker.notify_elicitation_complete(elicitation_id)
-  render(conn, :connected)
+def connect(conn, %{"elicitation_id" => elicitation_id}) do
+  case MyApp.Accounts.get_connect(elicitation_id) do
+    %{user_id: user_id} = flow when user_id == conn.assigns.current_user.id ->
+      MyApp.Accounts.complete_connect(flow)
+      render(conn, :connected)
+
+    _ ->
+      conn |> put_status(:forbidden) |> render(:wrong_user)
+  end
 end
 ```
 
-Under `2026-07-28` the client answers on its follow-up call once the user is
-done instead, so no notification is needed. A tool can also end the call and
-ask the client to retry after the user finishes by returning
-`{:elicitation_required, [elicitation]}`. See `Phantom.Elicit` for both,
-including what each protocol version sends.
+See `Phantom.Elicit` for what each protocol version sends, and for waiting
+inline with `Phantom.Session.elicit/3`.
 
 ## What PhantomMCP supports
 

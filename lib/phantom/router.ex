@@ -1648,9 +1648,15 @@ defmodule Phantom.Router do
           {:ok, %Session{state: {:__phantom_await__, _pid, _ref}} = session} ->
             resume_elicitation(session, request)
 
-          {:ok, %Session{state: :__phantom_elicitation_required__} = session} ->
+          {:ok, %Session{state: {:__phantom_elicitation_required__, ids}} = session} ->
             if elicitations_completed?(request),
-              do: get_tool(router, %{session | state: nil}, params, without_state(request)),
+              do:
+                get_tool(
+                  router,
+                  %{session | state: %{elicitation_ids: ids}},
+                  params,
+                  without_state(request)
+                ),
               else:
                 {:reply, Tool.error("The client did not complete the requested elicitation"),
                  session}
@@ -1823,11 +1829,15 @@ defmodule Phantom.Router do
         end)
 
       # The state marks the follow-up call, so a declined or cancelled
-      # elicitation ends the call instead of asking again.
+      # elicitation ends the call instead of asking again. Accepting is only
+      # consent to open the URL, so the retried handler gets the IDs it
+      # issued to check whether the user finished.
+      ids = Enum.map(elicitations, & &1.elicitation_id)
+
       result = %{
         resultType: "input_required",
         inputRequests: input_requests,
-        requestState: :__phantom_elicitation_required__
+        requestState: {:__phantom_elicitation_required__, ids}
       }
 
       case validate_input_required(result, session) do

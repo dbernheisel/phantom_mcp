@@ -464,26 +464,32 @@ defmodule Test.MCP.Router do
   end
 
   # The URL is the test app's `Test.ElicitationPage`, which completes the
-  # elicitation; the retry then succeeds. Under MCP 2026-07-28 the client
-  # answers on the retry itself, and Phantom only retries once it accepts.
-  def elicitation_required_tool(_params, %Session{request: request} = session) do
-    if Test.ElicitationPage.completed?(session.id) or
-         is_map_key(request.params, "inputResponses") do
+  # elicitation. Accepting only means the user agreed to open it, so the
+  # retry checks the page's record and asks again until it is completed.
+  # The mock does not check which user completes the page; a real app must.
+  def elicitation_required_tool(_params, session) do
+    if Test.ElicitationPage.completed?(issued_elicitations(session)) do
       {:reply, Tool.text("Authenticated"), session}
     else
       elicitation_id = UUIDv7.generate()
       message = "Please authenticate first"
+      session_id = if not Session.stateless?(session), do: session.id
 
       {:elicitation_required,
        [
          Phantom.Elicit.url(%{
            message: message,
-           url: Test.ElicitationPage.start(session.id, elicitation_id, message),
+           url: Test.ElicitationPage.start(session_id, elicitation_id, message),
            elicitation_id: elicitation_id
          })
        ]}
     end
   end
+
+  # Under MCP 2026-07-28 the accepted retry carries the IDs this call issued;
+  # under 2025-11-25 it is a new call, so look them up by session.
+  defp issued_elicitations(%Session{state: %{elicitation_ids: ids}}), do: ids
+  defp issued_elicitations(session), do: Test.ElicitationPage.session_elicitations(session.id)
 
   def structured_echo_tool(params, session) do
     {:reply, Phantom.Tool.text(%{message: params["message"] || ""}), session}

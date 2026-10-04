@@ -21,38 +21,77 @@ defmodule Test.ElicitationPage do
         <form method="post"><button type="submit">Complete</button></form>
         """)
 
-      {"POST", elicitation} ->
-        Test.SessionStore.put(key(elicitation_id), %{elicitation | completed: true})
-        notify = Phantom.Request.elicitation_complete(elicitation_id)
-        Phantom.Tracker.cast_session(Test.PubSub, elicitation.session_id, {:notify, notify})
+      {"POST", _elicitation} ->
+        complete(elicitation_id)
         send_html(conn, 200, "<h1>Done</h1><p>Return to your MCP client.</p>")
     end
   end
 
-  @doc "Ask the session to complete an elicitation at this page; returns its URL."
+  @doc """
+  Records an elicitation for this page to complete; returns its URL.
+
+  A `session_id` (MCP 2025-11-25) indexes it for the session's retry, which
+  is a new call that does not carry the ID, and gets the completion
+  notification. A real app would bind it to the signed-in user instead, and
+  check that the same user completes it.
+  """
   def start(session_id, elicitation_id, message) do
     if Test.SessionStore.running?() do
       elicitation = %{session_id: session_id, message: message, completed: false}
       Test.SessionStore.put(key(elicitation_id), elicitation)
-      Test.SessionStore.put({:session_elicitation, session_id}, elicitation_id)
+
+      if session_id,
+        do: Test.SessionStore.put({:session_elicitation, session_id}, elicitation_id)
     end
 
     base_url() <> "/elicitations/" <> elicitation_id
   end
 
-  @doc "Whether the session completed its elicitation; forgets it if so."
-  def completed?(session_id) do
+  @doc "Marks the elicitation completed and notifies its session, if any."
+  def complete(elicitation_id) do
+    with %{} = elicitation <- Test.SessionStore.get(key(elicitation_id)) do
+      Test.SessionStore.put(key(elicitation_id), %{elicitation | completed: true})
+
+      if elicitation.session_id do
+        notify = Phantom.Request.elicitation_complete(elicitation_id)
+        Phantom.Tracker.cast_session(Test.PubSub, elicitation.session_id, {:notify, notify})
+      end
+    end
+
+    :ok
+  end
+
+  @doc "The elicitations the session started that its retry should check."
+  def session_elicitations(session_id) do
     with true <- Test.SessionStore.running?(),
          elicitation_id when is_binary(elicitation_id) <-
-           Test.SessionStore.get({:session_elicitation, session_id}),
-         %{completed: true} <- Test.SessionStore.get(key(elicitation_id)) do
-      Test.SessionStore.delete({:session_elicitation, session_id})
-      Test.SessionStore.delete(key(elicitation_id))
-      true
+           Test.SessionStore.get({:session_elicitation, session_id}) do
+      [elicitation_id]
     else
-      _ -> false
+      _ -> []
     end
   end
+
+  @doc "Whether every elicitation was completed; forgets them if so."
+  def completed?([_ | _] = elicitation_ids) do
+    records =
+      Enum.map(elicitation_ids, &(Test.SessionStore.running?() && Test.SessionStore.get(key(&1))))
+
+    if Enum.all?(records, &match?(%{completed: true}, &1)) do
+      for {elicitation_id, record} <- Enum.zip(elicitation_ids, records) do
+        if record.session_id,
+          do: Test.SessionStore.delete({:session_elicitation, record.session_id})
+
+        Test.SessionStore.delete(key(elicitation_id))
+      end
+
+      true
+    else
+      false
+    end
+  end
+
+  def completed?([]), do: false
 
   defp key(elicitation_id), do: {:elicitation, elicitation_id}
 

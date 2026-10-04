@@ -254,12 +254,37 @@ defmodule Phantom.TestTest do
       |> assert_tool_text(~s({"hello":"my name is Ada"}))
     end
 
-    test "an accepted elicitation_required retries the tool", %{session: session} do
-      expect_elicit_url(fn _elicit -> {:ok, %{"action" => "accept"}} end)
+    test "elicitation_required succeeds once the user completes the page",
+         %{session: session} do
+      start_elicitation_pages()
+
+      expect_elicit_url(fn %{url: url} ->
+        url |> String.split("/") |> List.last() |> Test.ElicitationPage.complete()
+        {:ok, %{"action" => "accept"}}
+      end)
 
       session
       |> call_tool(:elicitation_required_tool, %{})
       |> assert_tool_text("Authenticated")
+    end
+
+    test "accepting elicitation_required without completing the page asks again",
+         %{session: session} do
+      start_elicitation_pages()
+      test = self()
+
+      # Accepting is consent to open the URL, not proof the user finished.
+      expect_elicit_url(fn _elicit ->
+        send(test, :asked)
+        {:ok, %{"action" => "accept"}}
+      end)
+
+      assert_raise RuntimeError, ~r/still required input/, fn ->
+        call_tool(session, :elicitation_required_tool, %{})
+      end
+
+      assert_received :asked
+      assert_received :asked
     end
 
     test "a cancelled elicitation_required ends the call", %{session: session} do
@@ -291,5 +316,15 @@ defmodule Phantom.TestTest do
       call_tool(session, :client_log_tool, %{message: "modern"})
       assert_client_log_seen(level: :info, data: %{message: "modern"})
     end
+  end
+
+  defp start_elicitation_pages do
+    dir = Path.join(System.tmp_dir!(), "phantom-pages-#{System.unique_integer([:positive])}")
+    :ok = Test.SessionStore.start(dir: dir)
+
+    on_exit(fn ->
+      Test.SessionStore.stop()
+      File.rm_rf(dir)
+    end)
   end
 end

@@ -133,7 +133,7 @@ defmodule Phantom.SessionStoreTest do
         )
 
       assert response.status == 200
-      assert Test.ElicitationPage.completed?("form-session")
+      assert Test.ElicitationPage.completed?(["form-elicitation"])
     end
 
     test "an unknown elicitation is not found" do
