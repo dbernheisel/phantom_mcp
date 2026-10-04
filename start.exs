@@ -183,7 +183,7 @@ defmodule LoadBalancer do
       status when status in [200, 202] and is_struct(resp.body, Req.Response.Async) ->
         # SSE stream — pipe chunks through
         conn = Plug.Conn.send_chunked(conn, status)
-        stream_proxy(conn, resp.body.ref)
+        stream_proxy(conn, resp)
 
       status ->
         # Non-streaming response
@@ -192,18 +192,26 @@ defmodule LoadBalancer do
     end
   end
 
-  defp stream_proxy(conn, ref) do
+  # When the client goes away, close the backend's stream too; otherwise the
+  # backend keeps its session stream open, with its subscriptions.
+  defp stream_proxy(conn, %Req.Response{body: %Req.Response.Async{ref: ref}} = resp) do
     receive do
       {^ref, {:data, chunk}} ->
         case Plug.Conn.chunk(conn, chunk) do
-          {:ok, conn} -> stream_proxy(conn, ref)
-          {:error, _} -> conn
+          {:ok, conn} ->
+            stream_proxy(conn, resp)
+
+          {:error, _} ->
+            Req.cancel_async_response(resp)
+            conn
         end
 
       {^ref, :done} ->
         conn
     after
-      300_000 -> conn
+      300_000 ->
+        Req.cancel_async_response(resp)
+        conn
     end
   end
 
