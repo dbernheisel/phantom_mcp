@@ -1,0 +1,10 @@
+---
+name: refunds
+description: Process customer refund requests per company policy
+license: Apache-2.0
+metadata:
+  team: billing
+---
+# Refunds
+
+Hello <%= @user %>. Draft the reply from [the email template](examples/email.md).

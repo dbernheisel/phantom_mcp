@@ -20,6 +20,13 @@ defmodule Phantom.ResourcePlug do
     )
   end
 
+  def call(%{assigns: %{resource_template: %{scheme: "skill"} = template}} = fake_conn, _opts) do
+    %{session: session, uri: uri} = fake_conn.assigns
+    session = %{session | request: %{session.request | spec: template}}
+    result = Phantom.Router.Skills.read(template, fake_conn.path_params, uri, session)
+    assign(fake_conn, :result, wrap(result, uri, session))
+  end
+
   def call(fake_conn, _opts) do
     session = %{
       fake_conn.assigns.session

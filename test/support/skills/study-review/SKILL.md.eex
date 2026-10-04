@@ -1,0 +1,5 @@
+---
+name: study-review
+description: Review a study for gaps in its questions
+---
+# Review study <%= @study_id %>

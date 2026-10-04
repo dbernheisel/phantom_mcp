@@ -42,12 +42,15 @@ defmodule Phantom.Request do
     resources/list
     resources/templates/list
     resources/read
+    resources/directory/read
     completion/complete
     subscriptions/listen
     notifications/cancelled
     tasks/get
     tasks/update
     tasks/cancel
+    skills/list
+    skills/get
   ]
 
   @modern_cacheable_methods ~w[
@@ -57,6 +60,8 @@ defmodule Phantom.Request do
     resources/list
     resources/templates/list
     resources/read
+    skills/list
+    skills/get
   ]
 
   import Phantom.Utils

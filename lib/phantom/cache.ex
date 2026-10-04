@@ -75,6 +75,47 @@ defmodule Phantom.Cache do
   end
 
   @doc """
+  Add a skill for the given router. Takes the same arguments as
+  `Phantom.Router.skill/3`:
+
+      Phantom.Cache.add_skill(MyApp.MCP.Router,
+        path: "acme/billing/refunds",
+        handler: MyApp.MCP.Skills,
+        function: :refunds
+      )
+
+  This regenerates the router's skill routes.
+  """
+  def add_skill(router, skill_spec) do
+    skill = skill_spec |> Map.new() |> Map.put(:router, router) |> Phantom.Router.skill_template()
+    validate!([skill])
+    register(router)
+
+    # Serialize updates on this node, so concurrent calls don't lose a skill or
+    # regenerate the routes over each other.
+    :global.trans(
+      {{__MODULE__, router}, self()},
+      fn ->
+        existing = :persistent_term.get({Phantom, router, :resource_templates}, [])
+        resource_templates = Enum.sort_by(Enum.uniq([skill | existing]), & &1.name)
+        raise_if_duplicates(resource_templates)
+
+        # Regenerating the routes redefines the module on purpose; don't warn about it.
+        Code.with_diagnostics(fn ->
+          resource_templates
+          |> Enum.filter(&(&1.scheme == "skill"))
+          |> Phantom.Router.__create_resource_routers__(__ENV__)
+        end)
+
+        :persistent_term.put({Phantom, router, :resource_templates}, resource_templates)
+      end,
+      [node()]
+    )
+
+    :ok
+  end
+
+  @doc """
   List all the entities for the given type.
   """
   @spec list(Phantom.Session.t() | nil, module(), :tools | :prompts | :resource_templates) ::
