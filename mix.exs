@@ -28,9 +28,13 @@ defmodule Phantom.MixProject do
   def application do
     [
       mod: {Phantom.Application, []},
-      extra_applications: [:logger]
+      extra_applications: [:logger | extra_applications(Mix.env())]
     ]
   end
+
+  # The test app's session store (`Test.SessionStore`) uses Mnesia.
+  defp extra_applications(env) when env in [:dev, :test], do: [:mnesia]
+  defp extra_applications(_env), do: []
 
   defp elixirc_paths(:test), do: ["lib", "test/support", "test/conformance"]
 

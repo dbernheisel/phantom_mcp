@@ -40,8 +40,57 @@ defmodule Test.MCP.Router do
   def sample_app(_params, session), do: {:reply, Tool.text("Opened sample app"), session}
   def minimal_app(_params, session), do: {:reply, Tool.text("Opened minimal app"), session}
 
-  def connect(session, _conn) do
+  # With `Test.SessionStore` running (as `start.exs` does), sessions are
+  # remembered across restarts the way an app would, and unknown or deleted
+  # ones are answered with 404 so the client initializes again.
+  def connect(session, %Plug.Conn{} = conn) do
+    if Test.SessionStore.running?(), do: restore_session(session, conn), else: {:ok, session}
+  end
+
+  def connect(session, _context), do: {:ok, session}
+
+  def terminate(session) do
+    if Test.SessionStore.running?(), do: Test.SessionStore.delete(session.id)
     {:ok, session}
+  end
+
+  defp restore_session(session, conn) do
+    method =
+      case conn.body_params do
+        %{"method" => method} -> method
+        _unparsed_or_none -> nil
+      end
+
+    case {method, Plug.Conn.get_req_header(conn, "mcp-session-id")} do
+      {"initialize", _} ->
+        Test.SessionStore.put(session.id, conn.body_params["params"])
+        {:ok, session}
+
+      # Requests without a session (MCP 2026-07-28) carry what they need.
+      {_method, []} ->
+        {:ok, session}
+
+      {_method, [_session_id | _]} ->
+        case Test.SessionStore.get(session.id) do
+          nil -> {:not_found, "Session not found"}
+          params -> {:ok, restored_session(session, params)}
+        end
+    end
+  end
+
+  defp restored_session(session, params) do
+    capabilities = params["capabilities"] || %{}
+
+    %{
+      session
+      | client_info: params["clientInfo"],
+        client_capabilities: %{
+          roots: capabilities["roots"],
+          sampling: capabilities["sampling"],
+          elicitation: capabilities["elicitation"],
+          ui: get_in(capabilities, ["extensions", "io.modelcontextprotocol/ui"]) || false
+        }
+    }
   end
 
   def list_resources(cursor, session) do

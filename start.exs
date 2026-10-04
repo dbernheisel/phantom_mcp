@@ -60,6 +60,7 @@ Application.put_env(:phantom_mcp, Test.Endpoint,
 
 Enum.each(
   ~w[
+  test/support/app/session_store.ex
   test/support/app/mcp/layouts.ex
   test/support/app/mcp/sample_app.ex
   test/support/app/mcp/minimal_app.ex
@@ -251,6 +252,7 @@ defmodule PeerNode do
     cwd = File.cwd!()
 
     for file <- ~w[
+          test/support/app/session_store.ex
           test/support/app/mcp/layouts.ex
           test/support/app/mcp/sample_app.ex
           test/support/app/mcp/minimal_app.ex
@@ -307,6 +309,9 @@ plug_opts = [router: Test.MCP.Router, pubsub: Test.PubSub, validate_origin: fals
   )
 
 peer = PeerNode.spawn!(4003)
+
+# Sessions outlive restarts: the primary keeps them on disk, the peer in memory.
+:ok = Test.SessionStore.start(dir: "tmp/mnesia", nodes: [node(), peer])
 
 {:ok, _lb} =
   Supervisor.start_link(
