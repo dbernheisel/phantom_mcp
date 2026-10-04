@@ -62,9 +62,10 @@
   uses true stateless re-entry: the handler returns
   `{:noreply, Session.elicit(session, elicit, state: %{...})}`, Phantom
   authenticates and encrypts that state into `requestState`, and any node can
-  re-invoke the handler with `session.state` populated. Inline `await: true`
-  remains available on legacy transports and returns `:not_supported` under
-  stateless core because a running BEAM continuation is not serializable.
+  re-invoke the handler with `session.state` populated. Inline `await: true`,
+  and `Session.elicit/3` from a process the handler started, work under both
+  protocols: under stateless core the process waits on its node while the
+  client answers an `input_required` result, and the follow-up call resumes it.
   - `Phantom.Tool.input_required/2` is the lower-level builder for
     constructing an `input_required` result map directly (skipping Task
     suspension).
@@ -152,11 +153,12 @@ The smallest change is to add `await: true` everywhere you currently call
 # Before: implicit inline blocking, legacy-only
 {:ok, response} = Session.elicit(session, elicit)
 
-# After: explicit inline blocking on legacy transports
+# After: explicit inline blocking, under either protocol
 {:ok, response} = Session.elicit(session, elicit, await: true)
 ```
 
-Under `2026-07-28`, use re-entry; `await: true` returns `:not_supported`.
+Under `2026-07-28`, `await: true` keeps the process waiting on its node
+until the client's follow-up call; re-entry (below) keeps nothing in memory.
 
 ### Recommendation for new PhantomMCP users targeting modern MCP clients
 
@@ -206,8 +208,9 @@ end
 Why re-entry over inline `await: true`:
 
 - **Truly stateless on the wire** — `state` is encrypted into `requestState`
-  and travels with the client. Any node can serve any follow-up call.
-  Inline `await: true` is intentionally unavailable under stateless core.
+  and travels with the client. Any node can serve any follow-up call, and a
+  node restart loses nothing; an inline `await: true` waits in a process that
+  a restart or `:timeout` ends.
 - **No resource pinning** — re-entry has no in-memory state between requests.
 - **Pattern-match clarity** — the resume clause is a function head, not a
   `case` block buried in the middle of a function.

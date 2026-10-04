@@ -106,7 +106,7 @@ defmodule Phantom.StatelessCoreTest do
              }),
              await: true
            ) do
-        {:ok, %{"color" => color}} ->
+        {:ok, %{"action" => "accept", "content" => %{"color" => color}}} ->
           {:reply, T.text("got color=#{color}"), session}
 
         other ->
@@ -323,16 +323,65 @@ defmodule Phantom.StatelessCoreTest do
   end
 
   describe "Session.elicit/3 with `await: true`" do
-    test "stateless rejects unserializable inline continuations" do
-      session = build_session()
-      request = build_request(%{"protocolVersion" => "2026-07-28"}, "await_demo")
+    @modern %{"protocolVersion" => "2026-07-28"}
+
+    defp follow_up(token, id) do
+      request = build_request(@modern, "await_demo")
+
+      params =
+        Map.merge(request.params, %{
+          "requestState" => token,
+          "inputResponses" => %{
+            "elicitation" => %{"action" => "accept", "content" => %{"color" => "red"}}
+          }
+        })
+
+      %{request | id: id, params: params}
+    end
+
+    test "stateless suspends the handler and resumes it on the follow-up call" do
+      request = build_request(@modern, "await_demo")
 
       assert {:noreply, _} =
-               Router.dispatch_method("tools/call", request.params, request, session)
+               Router.dispatch_method("tools/call", request.params, request, build_session())
 
-      response = assert_responded(2_000)
-      assert %{content: [%{type: :text, text: text}], isError: true} = response
-      assert text =~ "await failed: :not_supported"
+      assert_receive {:"$gen_cast",
+                      {:respond, 1,
+                       %{result: %{resultType: "input_required", requestState: token}}}},
+                     2_000
+
+      follow = follow_up(token, 2)
+
+      assert {:noreply, _} =
+               Router.dispatch_method("tools/call", follow.params, follow, build_session())
+
+      assert_receive {:"$gen_cast", {:respond, 2, %{result: result}}}, 2_000
+      assert %{content: [%{text: "got color=red"}]} = result
+    end
+
+    test "a follow-up after the suspended handler is gone is an error" do
+      request = build_request(@modern, "await_demo")
+      Router.dispatch_method("tools/call", request.params, request, build_session())
+
+      assert_receive {:"$gen_cast",
+                      {:respond, 1,
+                       %{result: %{resultType: "input_required", requestState: token}}}},
+                     2_000
+
+      info = Router.__phantom__(:info)
+      binding = Phantom.RequestState.binding(request, build_session())
+
+      {:ok, {:__phantom_await__, pid, _ref}} =
+        Phantom.RequestState.decode(token, info.secret_key_base, info.request_state_salt,
+          binding: binding
+        )
+
+      Process.exit(pid, :kill)
+      follow = follow_up(token, 2)
+      Router.dispatch_method("tools/call", follow.params, follow, build_session())
+
+      assert_receive {:"$gen_cast", {:respond, 2, %{error: %{message: message}}}}, 2_000
+      assert message =~ "no longer waiting"
     end
   end
 
@@ -380,6 +429,8 @@ defmodule Phantom.StatelessCoreTest do
 
   describe "Session.elicit/3 — protocol-aware default mode" do
     test "stateless: no opts annotates session with pending_elicit and nil state" do
+      # Re-entry belongs to the handler's own process, which the dispatcher marks.
+      Process.put(:phantom_handler, true)
       request = build_request(%{"protocolVersion" => "2026-07-28"})
       session = %{build_session() | request: request}
       elicit = Phantom.Elicit.form(%{message: "x", requested_schema: []})

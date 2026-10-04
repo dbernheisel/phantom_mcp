@@ -60,6 +60,7 @@ defmodule Phantom.Test do
   # other casts to the test pid are left in the mailbox.
   @session_internal_atoms [:finish, :ping, :tools_updated, :prompts_updated, :resources_updated]
   @session_internal_tags [
+    :release_worker,
     :subscribe_resource,
     :unsubscribe_resource,
     :resource_updated,

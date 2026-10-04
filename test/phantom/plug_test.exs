@@ -1189,6 +1189,52 @@ defmodule Phantom.PlugTest do
                       %{result: %{messages: [%{content: %{text: "Context: billing"}}]}}}
     end
 
+    test "await: true waits through input_required and answers the follow-up call" do
+      meta = %{
+        "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities" => %{"elicitation" => %{}}
+      }
+
+      headers = [{"mcp-method", "tools/call"}, {"mcp-name", "await_tool"}]
+
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 40,
+          method: "tools/call",
+          params: %{name: "await_tool", _meta: meta}
+        },
+        headers
+      )
+
+      assert_receive {:response, 40, "message",
+                      %{result: %{resultType: "input_required", requestState: token}}},
+                     1_000
+
+      assert_receive {:conn, %{status: 200}}, 1_000
+
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 41,
+          method: "tools/call",
+          params: %{
+            name: "await_tool",
+            _meta: meta,
+            requestState: token,
+            inputResponses: %{
+              "elicitation" => %{"action" => "accept", "content" => %{"color" => "red"}}
+            }
+          }
+        },
+        headers
+      )
+
+      assert_receive {:response, 41, "message",
+                      %{result: %{content: [%{text: "awaited color=red"}]}}},
+                     1_000
+    end
+
     test "a missing client capability is an HTTP 400 error" do
       post_stateless(
         %{jsonrpc: "2.0", id: 30, method: "tools/call", params: %{name: "resume_tool"}},

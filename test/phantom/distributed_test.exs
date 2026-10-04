@@ -564,37 +564,50 @@ defmodule Phantom.DistributedTest do
       assert error["error"]["code"] == -32602
     end
 
-    test "inline await is rejected because a running continuation is not stateless" do
-      first_resp =
+    test "inline await suspends on node 1 and resumes from a follow-up on node 2" do
+      headers = [
+        {"mcp-protocol-version", "2026-07-28"},
+        {"mcp-method", "tools/call"},
+        {"mcp-name", "await_tool"}
+      ]
+
+      first =
         post_mcp(
           @node1_port,
           %{
             jsonrpc: "2.0",
             id: 10,
             method: "tools/call",
+            params: %{"name" => "await_tool", "arguments" => %{}, "_meta" => @modern_meta}
+          },
+          headers: headers
+        )
+
+      %{"result" => %{"resultType" => "input_required", "requestState" => token}} =
+        poll_for_sse_event(first, 5_000, &(&1["id"] == 10))
+
+      second =
+        post_mcp(
+          @node2_port,
+          %{
+            jsonrpc: "2.0",
+            id: 11,
+            method: "tools/call",
             params: %{
               "name" => "await_tool",
               "arguments" => %{},
-              "_meta" => @modern_meta
+              "_meta" => @modern_meta,
+              "requestState" => token,
+              "inputResponses" => %{
+                "elicitation" => %{"action" => "accept", "content" => %{"color" => "red"}}
+              }
             }
           },
-          headers: [
-            {"mcp-protocol-version", "2026-07-28"},
-            {"mcp-method", "tools/call"},
-            {"mcp-name", "await_tool"}
-          ]
+          headers: headers
         )
 
-      assert first_resp.status == 200
-
-      result =
-        poll_for_sse_event(first_resp, 5_000, fn msg ->
-          get_in(msg, ["result", "content"]) != nil
-        end)
-
-      text = get_in(result, ["result", "content", Access.at(0), "text"])
-      assert text =~ "await failed: :not_supported"
-      assert result["result"]["isError"] == true
+      result = poll_for_sse_event(second, 5_000, &(&1["id"] == 11))
+      assert get_in(result, ["result", "content", Access.at(0), "text"]) == "awaited color=red"
     end
   end
 end

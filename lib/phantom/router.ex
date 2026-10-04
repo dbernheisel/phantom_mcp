@@ -1645,6 +1645,9 @@ defmodule Phantom.Router do
         input_response_args = input_response_args(request)
 
         case decode_request_state(router, session, request) do
+          {:ok, %Session{state: {:__phantom_await__, _pid, _ref}} = session} ->
+            resume_elicitation(session, request)
+
           {:ok, session} ->
             with {:ok, validated} <- JSONSchema.maybe_validate(tool.input_schema, args) do
               run_handler(
@@ -1689,6 +1692,8 @@ defmodule Phantom.Router do
         # result to the transport process that owns the current request.
         Process.put(:phantom_adopter, parent_pid)
         Process.put(:phantom_tool_request_id, request_id)
+        # Marks the handler's own process; see `Session.elicit/3`.
+        Process.put(:phantom_handler, true)
 
         try do
           handler_result = apply(spec.handler, spec.function, [params, task_session])
@@ -1932,6 +1937,37 @@ defmodule Phantom.Router do
     )
   end
 
+  # A follow-up to a call whose process waits in `Session.elicit/3`: hand it
+  # the client's response, and let it answer this request.
+  defp resume_elicitation(%Session{state: {:__phantom_await__, pid, ref}} = session, request) do
+    response = get_in(request.params, ["inputResponses", "elicitation"])
+    next = {session.pid, request.id, Session.progress_token(%{session | request: request})}
+    reply_to = session.pid
+
+    spawn(fn ->
+      monitor = Process.monitor(pid)
+      send(pid, {:phantom_resume, ref, response, next})
+
+      receive do
+        {:DOWN, ^monitor, :process, _pid, reason} when reason in [:noproc, :noconnection] ->
+          Session.respond_error(
+            reply_to,
+            request.id,
+            Request.internal_error("The elicitation is no longer waiting for a response")
+          )
+      after
+        :timer.seconds(5) -> :ok
+      end
+    end)
+
+    {:noreply, session}
+  end
+
+  defp maybe_resume_elicitation(%Session{state: {:__phantom_await__, _, _}} = session, request),
+    do: resume_elicitation(session, request)
+
+  defp maybe_resume_elicitation(_session, _request), do: :continue
+
   @doc false
   def decode_request_state(router, session, request) do
     meta = request.meta || %{}
@@ -1980,6 +2016,9 @@ defmodule Phantom.Router do
         input_response_args = input_response_args(request)
 
         case decode_request_state(router, session, request) do
+          {:ok, %Session{state: {:__phantom_await__, _pid, _ref}} = session} ->
+            resume_elicitation(session, request)
+
           {:ok, session} ->
             run_handler(:prompt, prompt, Map.merge(args, input_response_args), session, request)
 
@@ -2044,6 +2083,7 @@ defmodule Phantom.Router do
   @doc false
   def read_resource_request(router, session, uri, request) do
     with {:ok, session} <- decode_request_state(router, session, request),
+         :continue <- maybe_resume_elicitation(session, request),
          {:ok, %{scheme: scheme} = uri_struct} when is_binary(scheme) <- URI.new(uri),
          resource_router when not is_nil(resource_router) <-
            get_resource_router(router, session, scheme) do
@@ -2061,6 +2101,9 @@ defmodule Phantom.Router do
       result = resource_router.call(fake_conn, resource_router.init([])).assigns.result
       Request.resource_response(result, uri, session)
     else
+      {:noreply, _session} = resumed ->
+        resumed
+
       {:error, :invalid_request_state} ->
         {:error, Request.invalid_params(%{requestState: "Invalid request state"}), session}
 

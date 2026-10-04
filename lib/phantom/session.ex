@@ -136,8 +136,9 @@ defmodule Phantom.Session do
     `{:ok, response}` where `response` is the client's JSON map (`"action"`
     and `"content"` keys), or `:not_supported` / `:timeout` / `:error`.
     Under legacy MCP protocols the call blocks via the open SSE stream.
-    Stateless core cannot safely serialize a running BEAM continuation, so
-    `await: true` returns `:not_supported` there; use re-entry instead.
+    Under MCP `2026-07-28` the calling process waits: the request is answered
+    with an `input_required` result, and the client's follow-up call, on any
+    node, resumes the process and receives its eventual response.
 
   - **Re-entry** (`:state` set, or default under stateless) — returns the
     `session` struct with the pending elicit attached. The handler wraps
@@ -157,11 +158,12 @@ defmodule Phantom.Session do
     blocking. Existing legacy code that pattern-matches `{:ok, response}`
     against `Session.elicit(session, elicit)` continues to work unchanged.
   - Under MCP `2026-07-28` (stateless core) the call defaults to re-entry
-    with `state: nil`.
+    with `state: nil` in the handler, and to inline blocking in any other
+    process, such as a `Task` the handler started.
 
   Pick based on style preference:
 
-      # Inline — legacy transports only. Returns the client's response.
+      # Inline — returns the client's response.
       def my_tool(_params, session) do
         {:ok, %{"action" => "accept", "content" => %{"choice" => c}}} =
           Session.elicit(session, elicit, await: true)
@@ -179,7 +181,7 @@ defmodule Phantom.Session do
       end
 
   Options:
-    - `:await` — `true` to force inline blocking on legacy transports
+    - `:await` — `true` to force inline blocking
     - `:state` — value placed on `session.state` on re-entry; forces re-entry
       mode regardless of protocol
     - `:timeout` — max blocking time in ms (`:await` mode only; default: 5 minutes)
@@ -192,24 +194,77 @@ defmodule Phantom.Session do
           | :timeout
   def elicit(session, elicitation, opts \\ []) do
     cond do
-      # A running BEAM continuation is not serializable request state.
+      Keyword.get(opts, :await, false) and stateless?(session) ->
+        suspend_for_elicitation(session, elicitation, opts)
+
       Keyword.get(opts, :await, false) ->
-        if stateless?(session) do
-          :not_supported
-        else
-          do_elicit(session, elicitation, opts)
-        end
+        do_elicit(session, elicitation, opts)
 
       # Explicit :state — force re-entry on either protocol.
       Keyword.has_key?(opts, :state) ->
         %{session | pending_elicit: {elicitation, opts[:state]}}
 
-      # Protocol-aware default: stateless → re-entry, legacy → inline blocking.
-      stateless?(session) ->
+      # Stateless re-entry needs the handler to return the session, so only
+      # the handler's own process can use it.
+      stateless?(session) and Process.get(:phantom_handler) == true ->
         %{session | pending_elicit: {elicitation, nil}}
+
+      stateless?(session) ->
+        suspend_for_elicitation(session, elicitation, opts)
 
       true ->
         do_elicit(session, elicitation, opts)
+    end
+  end
+
+  # Under MCP 2026-07-28 nothing stays open between requests, so this process
+  # waits instead: the request is answered with an `input_required` result
+  # whose `requestState` names this process, and the client's follow-up call
+  # (on any node) sends the response here. That call then carries the request.
+  defp suspend_for_elicitation(session, elicitation, opts) do
+    if elicitation_supported?(session, elicitation) do
+      {pid, request_id, _progress_token} = route(session)
+      ref = make_ref()
+
+      # The request's stream shuts down its handler when it closes, and this
+      # process must outlive that.
+      GenServer.cast(pid, {:release_worker, request_id})
+
+      elicitation
+      |> Phantom.Tool.input_required({:__phantom_await__, self(), ref})
+      |> Phantom.Router.encode_request_state(session)
+      |> then(&respond(pid, request_id, &1))
+
+      receive do
+        {:phantom_resume, ^ref, response, next} ->
+          continue_request(session, next)
+          if is_map(response), do: {:ok, response}, else: :error
+      after
+        Keyword.get(opts, :timeout, @elicitation_timeout) -> :timeout
+      end
+    else
+      :not_supported
+    end
+  end
+
+  # Replies, progress, and logs for the session's request now go to the
+  # follow-up call.
+  defp continue_request(%__MODULE__{request: request}, {pid, request_id, _token} = next) do
+    Process.put({:phantom_route, request.id}, next)
+
+    if Process.get(:phantom_adopter) do
+      Process.put(:phantom_adopter, pid)
+      Process.put(:phantom_tool_request_id, request_id)
+    end
+  end
+
+  @doc false
+  # Where the session's request is answered: its own transport, or the
+  # follow-up call that resumed an elicitation in this process.
+  def route(%__MODULE__{pid: pid, request: request} = session) do
+    case request && Process.get({:phantom_route, request.id}) do
+      {_pid, _request_id, _token} = next -> next
+      _ -> {pid, request && request.id, request && progress_token(session)}
     end
   end
 
@@ -419,8 +474,10 @@ defmodule Phantom.Session do
   end)
   ```
   """
-  def respond(%__MODULE__{pid: pid, request: %{id: request_id}}, payload),
-    do: respond(pid, request_id, payload)
+  def respond(%__MODULE__{request: %{id: _}} = session, payload) do
+    {pid, request_id, _token} = route(session)
+    respond(pid, request_id, payload)
+  end
 
   @doc "See `respond/2`"
   def respond(%__MODULE__{pid: pid}, request_id, payload), do: respond(pid, request_id, payload)
@@ -445,6 +502,11 @@ defmodule Phantom.Session do
   with a protocol-level error rather than a Tool.error result.
   """
   @spec respond_error(pid() | t(), Request.t() | String.t() | integer(), map()) :: :ok
+  def respond_error(%__MODULE__{request: %{id: request_id}} = session, request_id, error) do
+    {pid, request_id, _token} = route(session)
+    respond_error(pid, request_id, error)
+  end
+
   def respond_error(%__MODULE__{pid: pid}, request_id, error),
     do: respond_error(pid, request_id, error)
 
@@ -464,7 +526,10 @@ defmodule Phantom.Session do
 
   @doc "Send a notification to the client"
   @spec notify(t | pid(), payload :: any()) :: :ok
-  def notify(%__MODULE__{pid: pid}, payload), do: notify(pid, payload)
+  def notify(%__MODULE__{} = session, payload) do
+    {pid, _request_id, _token} = route(session)
+    notify(pid, payload)
+  end
 
   def notify(pid, payload) when is_pid(pid) do
     GenServer.cast(pid, {:notify, payload})
@@ -487,12 +552,12 @@ defmodule Phantom.Session do
   def notify_progress(session, progress, total \\ nil, message \\ nil)
 
   def notify_progress(%__MODULE__{} = session, progress, total, message) do
-    token = progress_token(session)
+    {pid, _request_id, token} = route(session)
 
     cond do
       is_nil(token) and stateless?(session) -> :ok
-      is_nil(token) -> ping(session.pid)
-      true -> notify_progress(session.pid, token, progress, total, message)
+      is_nil(token) -> ping(pid)
+      true -> notify_progress(pid, token, progress, total, message)
     end
   end
 
@@ -692,6 +757,17 @@ defmodule Phantom.Session do
     Phantom.Tracker.untrack_in_flight(state.session.id, request_id)
     state = release_in_flight(state, request_id)
     maybe_finish(state)
+  end
+
+  def handle_cast({:release_worker, request_id}, state) do
+    case Map.pop(Map.get(state, :workers, %{}), request_id) do
+      {nil, _workers} ->
+        {:noreply, state}
+
+      {{_pid, monitor_ref}, workers} ->
+        Process.demonitor(monitor_ref, [:flush])
+        {:noreply, Map.put(state, :workers, workers)}
+    end
   end
 
   def handle_cast({:cancel_request, request_id}, state) do

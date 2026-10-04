@@ -228,6 +228,27 @@ defmodule Phantom.TestTest do
                call_tool(session, :resume_tool, %{})
     end
 
+    test "elicitation from a Task spawned by the handler suspends and resumes",
+         %{session: session} do
+      expect_elicit(fn _elicit ->
+        {:ok, %{"action" => "accept", "content" => %{"name" => "Ada"}}}
+      end)
+
+      session
+      |> call_tool(:async_elicit_tool, %{})
+      |> assert_tool_text(~s({"hello":"async my name is Ada"}))
+    end
+
+    test "await: true suspends the handler and resumes it", %{session: session} do
+      expect_elicit(fn _elicit ->
+        {:ok, %{"action" => "accept", "content" => %{"color" => "red"}}}
+      end)
+
+      session
+      |> call_tool(:await_tool, %{})
+      |> assert_tool_text("awaited color=red")
+    end
+
     test "client logs are captured", %{session: session} do
       call_tool(session, :client_log_tool, %{message: "modern"})
       assert_client_log_seen(level: :info, data: %{message: "modern"})

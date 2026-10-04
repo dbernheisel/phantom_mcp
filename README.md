@@ -541,10 +541,9 @@ template are rejected before the callback runs.
 
 Two helpers, picked by how the dev wants to structure the handler.
 
-### Inline blocking — legacy transports only
+### Inline blocking
 
-The tool function "awaits" the response in place and continues inline on
-legacy session transports:
+The tool function "awaits" the response in place and continues inline:
 
 ```elixir
 def my_tool(params, session) do
@@ -561,9 +560,12 @@ def my_tool(params, session) do
 end
 ```
 
-Under MCP `2026-07-28`, `await: true` returns `:not_supported`. A running
-BEAM continuation cannot be serialized into request state, so modern handlers
-must use the re-entry pattern below.
+Under MCP `2026-07-28` the call is answered with an `input_required` result
+while the calling process waits; the client's follow-up call, on any node in
+the cluster, resumes it and receives the tool's response. The process lives on
+the node that started it, so a follow-up after that node restarts, or after
+`:timeout` (default 5 minutes), gets an error. The same holds for
+`Session.elicit/2` called from a process the handler started, such as a `Task`.
 
 ### Re-entry — `Session.elicit/3` (no `:await`)
 

@@ -38,6 +38,9 @@ defmodule Phantom.ResourcePlug do
         [path_params, session]
       end
 
+    # Marks the handler's own process; see `Session.elicit/3`.
+    handler? = Process.put(:phantom_handler, true)
+
     result =
       try do
         apply(handler, function, args)
@@ -48,6 +51,8 @@ defmodule Phantom.ResourcePlug do
              %{uri: fake_conn.assigns.uri},
              fake_conn.assigns.session
            ), fake_conn.assigns.session}
+      after
+        if handler?, do: :ok, else: Process.delete(:phantom_handler)
       end
 
     assign(
