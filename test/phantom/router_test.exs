@@ -450,6 +450,19 @@ defmodule Phantom.RouterTest do
     end
   end
 
+  describe "inline elicitation" do
+    test "await: true returns the client's response to the handler" do
+      Phantom.Test.expect_elicit(fn _elicit ->
+        {:ok, %{"action" => "accept", "content" => %{"color" => "red"}}}
+      end)
+
+      Test.MCP.Router
+      |> Phantom.Test.build_session()
+      |> Phantom.Test.call_tool(:await_tool, %{})
+      |> Phantom.Test.assert_tool_text("awaited color=red")
+    end
+  end
+
   describe "elicitation re-entry" do
     test "a legacy session resumes the handler with the accepted content" do
       session = Phantom.Test.build_session(Test.MCP.Router)

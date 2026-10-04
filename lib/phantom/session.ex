@@ -161,9 +161,11 @@ defmodule Phantom.Session do
 
   Pick based on style preference:
 
-      # Inline — legacy transports only
+      # Inline — legacy transports only. Returns the client's response.
       def my_tool(_params, session) do
-        {:ok, %{"choice" => c}} = Session.elicit(session, elicit, await: true)
+        {:ok, %{"action" => "accept", "content" => %{"choice" => c}}} =
+          Session.elicit(session, elicit, await: true)
+
         {:reply, Tool.text("got \#{c}"), session}
       end
 

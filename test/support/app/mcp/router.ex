@@ -323,7 +323,7 @@ defmodule Test.MCP.Router do
            }),
            await: true
          ) do
-      {:ok, %{"color" => color}} ->
+      {:ok, %{"action" => "accept", "content" => %{"color" => color}}} ->
         {:reply, Tool.text("awaited color=#{color}"), session}
 
       other ->
