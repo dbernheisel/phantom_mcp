@@ -1007,7 +1007,6 @@ defmodule Phantom.Router do
   end
 
   @doc false
-  # The resource template that routes a skill's files to its action.
   def skill_template(attrs) do
     attrs = Map.new(attrs)
     [first | rest] = segments = String.split(attrs.path, "/")
@@ -1032,7 +1031,7 @@ defmodule Phantom.Router do
       name: attrs.path,
       router: Module.concat([attrs.router, ResourceRouter, "Skill"]),
       handler: attrs.handler,
-      function: attrs[:function] || String.to_atom(String.replace(name, "-", "_")),
+      function: attrs[:function] || Skill.function_name(name),
       meta: attrs[:meta] || %{file: "nofile", line: 0}
     )
   end
@@ -1338,8 +1337,7 @@ defmodule Phantom.Router do
     )
   end
 
-  # A request still running the router's old code blocks replacing it, so wait
-  # for it to finish rather than kill it.
+  # Wait for old code to finish, because a hard purge kills the processes that run it.
   defp soft_purge!(module, attempts \\ 50) do
     cond do
       :code.soft_purge(module) ->
@@ -1354,7 +1352,7 @@ defmodule Phantom.Router do
     end
   end
 
-  # A skill's route globs its files, so a skill nested within it must match first.
+  # A nested skill must match before its parent, because the parent route globs all files.
   defp sort_skill_routes([%ResourceTemplate{scheme: "skill"} | _] = skills) do
     Phantom.Router.Skills.validate_nesting!(skills)
     Enum.sort_by(skills, &Phantom.Router.Skills.route_order/1)

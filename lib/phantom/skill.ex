@@ -158,14 +158,21 @@ defmodule Phantom.Skill do
     skill
   end
 
-  defp validate_path!(path) do
-    segments = if is_binary(path), do: String.split(path, "/"), else: [""]
-
-    if Enum.any?(segments, &(&1 in ["", ".", ".."] or String.contains?(&1, "\\"))) do
-      raise ArgumentError,
-            "invalid file path #{inspect(path)}: paths are relative to the skill's root, " <>
-              "separated by /, without empty, . or .. segments or backslashes"
+  defp validate_path!(path) when is_binary(path) do
+    if path |> String.split("/") |> Enum.any?(&invalid_segment?/1) do
+      raise_invalid_path!(path)
     end
+  end
+
+  defp validate_path!(path), do: raise_invalid_path!(path)
+
+  defp invalid_segment?(segment),
+    do: segment in ["", ".", ".."] or String.contains?(segment, "\\")
+
+  defp raise_invalid_path!(path) do
+    raise ArgumentError,
+          "invalid file path #{inspect(path)}: paths are relative to the skill's root, " <>
+            "separated by /, without empty, . or .. segments or backslashes"
   end
 
   @doc """
@@ -192,26 +199,6 @@ defmodule Phantom.Skill do
       _ ->
         raise ArgumentError,
               "with_cache/2 requires :ttl_ms, a non-negative integer, and :scope, :public or :private"
-    end
-  end
-
-  @doc false
-  # Cache hints for a result built from these skills. A listing is only public when
-  # every skill is and the session sees every skill.
-  def cache_hints(skills, session) do
-    hints = Enum.map(skills, & &1.cache)
-
-    if hints == [] or nil in hints do
-      [ttl_ms: 0, scope: :private]
-    else
-      public? =
-        is_nil(session.allowed_resource_templates) and
-          Enum.all?(hints, &(&1[:scope] == :public))
-
-      [
-        ttl_ms: hints |> Enum.map(& &1[:ttl_ms]) |> Enum.min(),
-        scope: if(public?, do: :public, else: :private)
-      ]
     end
   end
 
@@ -252,15 +239,12 @@ defmodule Phantom.Skill do
     skill_md_path =
       Enum.find([Path.join(dir, "SKILL.md.eex"), Path.join(dir, "SKILL.md")], &File.exists?/1)
 
-    {frontmatter, body} = embed_skill_md(skill_md_path)
+    {frontmatter, skill_md} = embed_skill_md(skill_md_path)
 
-    skill_md =
-      case body do
-        {:static, body} -> {"SKILL.md", {:static, frontmatter_block(frontmatter) <> body}, body}
-        eex -> {"SKILL.md", eex, nil}
-      end
-
-    embedded = [skill_md | for(path <- files, path != skill_md_path, do: embed_file(path, dir))]
+    embedded = [
+      {"SKILL.md", skill_md}
+      | for(path <- files, path != skill_md_path, do: embed_file(path, dir))
+    ]
 
     embedded
     |> Enum.map(&elem(&1, 0))
@@ -270,12 +254,12 @@ defmodule Phantom.Skill do
       {path, _} -> raise ArgumentError, "#{dir}: more than one file is served at #{path}"
     end)
 
-    contents = for {path, content, body} <- embedded, do: {path, embed_content(content, body)}
+    contents = for {path, content} <- embedded, do: {path, embed_content(content)}
 
     quote do
       unquote_splicing(Enum.map(files, &quote(do: @external_resource(unquote(&1)))))
 
-      def unquote(String.to_atom(String.replace(name, "-", "_")))(var!(assigns)) do
+      def unquote(function_name(name))(var!(assigns)) do
         _ = var!(assigns)
 
         Phantom.Skill.new(unquote(Macro.escape(frontmatter)), %{unquote_splicing(contents)})
@@ -283,7 +267,6 @@ defmodule Phantom.Skill do
     end
   end
 
-  # Returns the parsed frontmatter and the body: `{:eex, quoted}` or `{:static, binary}`.
   defp embed_skill_md(path) do
     source = File.read!(path)
 
@@ -309,40 +292,32 @@ defmodule Phantom.Skill do
             "#{path}: frontmatter name #{inspect(frontmatter["name"])} must match its directory #{inspect(name)}"
     end
 
-    if eex?,
-      do:
-        {frontmatter, {:eex, EEx.compile_string(body, file: path, line: count_lines(header) + 1)}},
-      else: {frontmatter, {:static, body}}
+    content =
+      if eex?,
+        do: {:eex, EEx.compile_string(body, file: path, line: count_lines(header) + 1)},
+        else: {:static, body}
+
+    {frontmatter, content}
   end
 
-  # EEx renders lazily, in a function that closes over the assigns. A static SKILL.md
-  # is stored without its frontmatter, which `new/2` adds when it's served.
-  defp embed_content({:eex, quoted}, _body), do: quote(do: fn -> unquote(quoted) end)
-  defp embed_content({:static, _served}, body) when is_binary(body), do: body
-  defp embed_content({:static, served}, nil), do: served
+  defp embed_content({:eex, quoted}), do: quote(do: fn -> unquote(quoted) end)
+  defp embed_content({:static, iodata}), do: iodata
 
-  # Returns `{served_path, content, skill_md_body}`. A nested skill's SKILL.md is also
-  # served by its own route, so it's written out the same way to serve the same bytes
-  # at the same URI.
   defp embed_file(path, dir) do
     relative = Path.relative_to(path, dir)
     served_path = if Path.extname(relative) == ".eex", do: Path.rootname(relative), else: relative
 
     cond do
+      # A nested SKILL.md keeps its frontmatter, because its own route serves the same bytes.
       Path.basename(served_path) == "SKILL.md" ->
-        content =
-          case embed_skill_md(path) do
-            {frontmatter, {:eex, quoted}} -> {:eex, [frontmatter_block(frontmatter), quoted]}
-            {frontmatter, {:static, body}} -> {:static, frontmatter_block(frontmatter) <> body}
-          end
-
-        {served_path, content, nil}
+        {frontmatter, {kind, body}} = embed_skill_md(path)
+        {served_path, {kind, [frontmatter_block(frontmatter), body]}}
 
       Path.extname(relative) == ".eex" ->
-        {served_path, {:eex, EEx.compile_file(path)}, nil}
+        {served_path, {:eex, EEx.compile_file(path)}}
 
       true ->
-        {served_path, {:static, File.read!(path)}, nil}
+        {served_path, {:static, File.read!(path)}}
     end
   end
 
@@ -381,19 +356,10 @@ defmodule Phantom.Skill do
     catch
       _kind, _reason -> {:error, "invalid YAML frontmatter"}
     else
-      [%{} = frontmatter] -> {:ok, normalize_yaml(frontmatter)}
+      [%{} = frontmatter] -> {:ok, stringify_keys(frontmatter)}
       _ -> {:error, "frontmatter must be a YAML mapping"}
     end
   end
-
-  # JSON objects have string keys, and YAML's null is nil.
-  defp normalize_yaml(:null), do: nil
-
-  defp normalize_yaml(map) when is_map(map),
-    do: Map.new(map, fn {k, v} -> {to_string(normalize_yaml(k)), normalize_yaml(v)} end)
-
-  defp normalize_yaml(list) when is_list(list), do: Enum.map(list, &normalize_yaml/1)
-  defp normalize_yaml(value), do: value
 
   @doc """
   The skill's files as served, with the frontmatter written ahead of `SKILL.md`.
@@ -404,21 +370,22 @@ defmodule Phantom.Skill do
     Map.new(files, fn {path, _content} -> {path, render(skill, path)} end)
   end
 
-  defp render(%__MODULE__{frontmatter: frontmatter, files: files}, "SKILL.md"),
+  @doc false
+  def render(%__MODULE__{frontmatter: frontmatter, files: files}, "SKILL.md"),
     do: frontmatter_block(frontmatter) <> render_content(files["SKILL.md"])
 
-  defp render(%__MODULE__{files: files}, path), do: render_content(files[path])
+  def render(%__MODULE__{files: files}, path), do: render_content(files[path])
 
   defp render_content(fun) when is_function(fun, 0), do: IO.iodata_to_binary(fun.())
   defp render_content(binary), do: binary
 
-  # Each value is written as JSON, which YAML 1.2 parses back to the same value.
+  # YAML 1.2 parses each JSON value back to the same value.
   defp frontmatter_block(frontmatter) do
     {first, rest} = Map.split(frontmatter, ["name", "description"])
 
     lines =
       Enum.map(
-        [{"name", first["name"]}, {"description", first["description"]}] ++ Enum.sort(rest),
+        [{"name", first["name"]}, {"description", first["description"]} | Enum.sort(rest)],
         fn {key, value} -> [yaml_key(key), ": ", JSON.encode!(value), "\n"] end
       )
 
@@ -449,114 +416,33 @@ defmodule Phantom.Skill do
     end
   end
 
-  # Only static files are counted towards the size limit; rendering the others
-  # here would defeat rendering them lazily.
+  # This check counts only static files, so that file functions stay lazy.
   defp validate_limits!(%__MODULE__{files: files}) do
-    if map_size(files) > @max_files do
-      raise ArgumentError, "a skill may have at most #{@max_files} files"
-    end
+    static_bytes = files |> Map.values() |> Enum.filter(&is_binary/1) |> Enum.map(&byte_size/1)
 
-    if files |> Map.values() |> Enum.filter(&is_binary/1) |> Enum.map(&byte_size/1) |> Enum.sum() >
-         @max_size do
-      raise ArgumentError, "a skill's files may total at most #{@max_size} bytes"
+    case check_limits(map_size(files), Enum.sum(static_bytes)) do
+      :ok -> :ok
+      {:error, reason} -> raise ArgumentError, "a skill has #{reason}"
     end
   end
 
+  @doc false
+  def check_limits(file_count, _bytes) when file_count > @max_files,
+    do: {:error, "more than #{@max_files} files"}
+
+  def check_limits(_file_count, bytes) when bytes > @max_size,
+    do: {:error, "more than #{@max_size} bytes of files"}
+
+  def check_limits(_file_count, _bytes), do: :ok
+
+  @doc false
+  def function_name(skill_name), do: skill_name |> String.replace("-", "_") |> String.to_atom()
+
+  defp stringify_keys(:null), do: nil
+
   defp stringify_keys(map) when is_map(map),
-    do: Map.new(map, fn {k, v} -> {to_string(k), stringify_keys(v)} end)
+    do: Map.new(map, fn {k, v} -> {to_string(stringify_keys(k)), stringify_keys(v)} end)
 
   defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
   defp stringify_keys(value), do: value
-
-  @doc false
-  # The URI of a file or directory within the skill at `base_uri`.
-  def uri(base_uri, ""), do: base_uri
-
-  def uri(base_uri, path) do
-    base_uri <> "/" <> Enum.map_join(String.split(path, "/"), "/", &encode_segment/1)
-  end
-
-  @doc false
-  def encode_segment(segment), do: URI.encode(segment, &URI.char_unreserved?/1)
-
-  defp digest(bytes), do: "sha256:" <> Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
-
-  @doc false
-  # The manifest of a skill's files. `files` maps each path within the skill to the
-  # skill that serves it and the file's path within that skill.
-  def manifest(files, base_uri) do
-    resources =
-      for {path, {skill, own_path}} <- Enum.sort(files) do
-        bytes = render(skill, own_path)
-
-        %{
-          uri: uri(base_uri, path),
-          digest: digest(bytes),
-          size: byte_size(bytes)
-        }
-      end
-
-    cond do
-      length(resources) > @max_files ->
-        {:error, "#{base_uri} has more than #{@max_files} files"}
-
-      resources |> Enum.map(& &1.size) |> Enum.sum() > @max_size ->
-        {:error, "#{base_uri} has more than #{@max_size} bytes of files"}
-
-      true ->
-        {:ok, resources}
-    end
-  end
-
-  @doc false
-  # The `resources/read` contents of one of the skill's own files.
-  def read(%__MODULE__{files: files} = skill, path, uri) when is_map_key(files, path) do
-    bytes = render(skill, path)
-    content = %{uri: uri, mimeType: MIME.from_path(path)}
-
-    if String.valid?(bytes),
-      do: {:ok, Map.put(content, :text, bytes)},
-      else: {:ok, Map.put(content, :blob, Base.encode64(bytes))}
-  end
-
-  def read(%__MODULE__{}, _path, _uri), do: :error
-
-  @doc false
-  # The `resources/directory/read` children of a directory, where "" is the skill's
-  # root. `files` is as in `manifest/2`. A skill's SKILL.md takes its name and
-  # description from its frontmatter.
-  def list_directory(files, base_uri, dir) do
-    prefix = if dir == "", do: "", else: dir <> "/"
-
-    children =
-      for {path, served} <- files, String.starts_with?(path, prefix), uniq: true do
-        case path |> String.replace_prefix(prefix, "") |> String.split("/", parts: 2) do
-          [file] -> {file, child(file, served)}
-          [subdir, _] -> {subdir, %{name: subdir, mimeType: "inode/directory"}}
-        end
-      end
-
-    if children == [] do
-      :error
-    else
-      dir_uri = uri(base_uri, dir)
-
-      {:ok,
-       children
-       |> Enum.sort_by(&elem(&1, 0))
-       |> Enum.map(fn {name, child} ->
-         Map.put(child, :uri, dir_uri <> "/" <> encode_segment(name))
-       end)}
-    end
-  end
-
-  defp child("SKILL.md", {%__MODULE__{frontmatter: frontmatter}, "SKILL.md"}) do
-    %{
-      name: frontmatter["name"],
-      description: frontmatter["description"],
-      mimeType: "text/markdown"
-    }
-  end
-
-  defp child(file, _served), do: %{name: file, mimeType: MIME.from_path(file)}
 end

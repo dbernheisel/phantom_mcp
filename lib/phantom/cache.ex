@@ -121,13 +121,10 @@ defmodule Phantom.Cache do
     :ok
   end
 
-  # Serializes updates to a router's resource templates on this node, which is
-  # where `:persistent_term` and the generated routers live.
+  # The lock is local, because :persistent_term and the generated routers are local to each node.
   defp with_lock(router, fun), do: :global.trans({{__MODULE__, router}, self()}, fun, [node()])
 
   @doc false
-  # Runs `fun`, which redefines modules on purpose. Drops the warning about that,
-  # and logs every other diagnostic, so a compile error isn't lost.
   def __redefine_modules__(fun) do
     {result, diagnostics} =
       Code.with_diagnostics(fn ->
