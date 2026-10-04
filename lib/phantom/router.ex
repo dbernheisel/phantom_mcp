@@ -1986,7 +1986,7 @@ defmodule Phantom.Router do
   defp elicitations_completed?(_request), do: false
 
   defp without_state(request),
-    do: %{request | params: Map.drop(request.params, ["requestState", "inputResponses"])}
+    do: %{request | params: Map.delete(request.params, "requestState")}
 
   @doc false
   def decode_request_state(router, session, request) do

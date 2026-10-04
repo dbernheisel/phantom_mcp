@@ -463,16 +463,26 @@ defmodule Test.MCP.Router do
     end
   end
 
-  def elicitation_required_tool(_params, _session) do
-    elicitations = [
-      Phantom.Elicit.url(%{
-        message: "Please authenticate first",
-        url: "https://example.com/oauth",
-        elicitation_id: "elicit-123"
-      })
-    ]
+  # The URL is the test app's `Test.ElicitationPage`, which completes the
+  # elicitation; the retry then succeeds. Under MCP 2026-07-28 the client
+  # answers on the retry itself, and Phantom only retries once it accepts.
+  def elicitation_required_tool(_params, %Session{request: request} = session) do
+    if Test.ElicitationPage.completed?(session.id) or
+         is_map_key(request.params, "inputResponses") do
+      {:reply, Tool.text("Authenticated"), session}
+    else
+      elicitation_id = UUIDv7.generate()
+      message = "Please authenticate first"
 
-    {:elicitation_required, elicitations}
+      {:elicitation_required,
+       [
+         Phantom.Elicit.url(%{
+           message: message,
+           url: Test.ElicitationPage.start(session.id, elicitation_id, message),
+           elicitation_id: elicitation_id
+         })
+       ]}
+    end
   end
 
   def structured_echo_tool(params, session) do

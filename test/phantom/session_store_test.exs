@@ -76,4 +76,50 @@ defmodule Phantom.SessionStoreTest do
     request_tool("echo_tool", %{message: "hi"}, id: 5)
     assert_response(5, %{result: %{content: [%{text: "hi"}]}})
   end
+
+  describe "URL elicitation page" do
+    test "completing the page notifies the session and lets the tool succeed" do
+      session_id = initialize()
+      request_sse_stream(session_id: session_id)
+      assert_receive {:plug_conn, :sent}, 1_000
+
+      request_tool("elicitation_required_tool", %{}, session_id: session_id, id: 7)
+
+      assert_receive {:response, 7, "message",
+                      %{
+                        error: %{
+                          code: -32042,
+                          data: %{elicitations: [%{url: url, elicitationId: elicitation_id}]}
+                        }
+                      }},
+                     1_000
+
+      assert url =~ "/elicitations/#{elicitation_id}"
+
+      page = page(:get, elicitation_id)
+      assert page.status == 200
+      assert page.resp_body =~ "Please authenticate first"
+
+      assert page(:post, elicitation_id).status == 200
+
+      assert_notify(%{
+        method: "notifications/elicitation/complete",
+        params: %{elicitationId: ^elicitation_id}
+      })
+
+      request_tool("elicitation_required_tool", %{}, session_id: session_id, id: 8)
+      assert_response(8, %{result: %{content: [%{text: "Authenticated"}]}})
+    end
+
+    test "an unknown elicitation is not found" do
+      assert page(:get, "unknown").status == 404
+      assert page(:post, "unknown").status == 404
+    end
+
+    defp page(method, elicitation_id) do
+      method
+      |> conn("/elicitations/#{elicitation_id}")
+      |> Test.ElicitationPage.call(Test.ElicitationPage.init([]))
+    end
+  end
 end

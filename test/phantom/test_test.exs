@@ -254,6 +254,14 @@ defmodule Phantom.TestTest do
       |> assert_tool_text(~s({"hello":"my name is Ada"}))
     end
 
+    test "an accepted elicitation_required retries the tool", %{session: session} do
+      expect_elicit_url(fn _elicit -> {:ok, %{"action" => "accept"}} end)
+
+      session
+      |> call_tool(:elicitation_required_tool, %{})
+      |> assert_tool_text("Authenticated")
+    end
+
     test "a cancelled elicitation_required ends the call", %{session: session} do
       expect_elicit_url(fn _elicit -> {:ok, %{"action" => "cancel"}} end)
 

@@ -61,6 +61,7 @@ Application.put_env(:phantom_mcp, Test.Endpoint,
 Enum.each(
   ~w[
   test/support/app/session_store.ex
+  test/support/app/elicitation_page.ex
   test/support/app/mcp/layouts.ex
   test/support/app/mcp/sample_app.ex
   test/support/app/mcp/minimal_app.ex
@@ -261,6 +262,7 @@ defmodule PeerNode do
 
     for file <- ~w[
           test/support/app/session_store.ex
+          test/support/app/elicitation_page.ex
           test/support/app/mcp/layouts.ex
           test/support/app/mcp/sample_app.ex
           test/support/app/mcp/minimal_app.ex

@@ -19,6 +19,9 @@ defmodule Test.Router do
     router: Test.MCP.Router,
     mcp_endpoint: "/mcp"
 
+  get "/elicitations/:id", Test.ElicitationPage, :show
+  post "/elicitations/:id", Test.ElicitationPage, :complete
+
   get "/*path", Test.FallbackPlug, :index
 end
 

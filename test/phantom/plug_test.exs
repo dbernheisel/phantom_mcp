@@ -830,8 +830,10 @@ defmodule Phantom.PlugTest do
       assert response[:error][:code] == -32042
       assert response[:error][:message] == "This request requires more information."
 
-      assert [%{mode: "url", url: "https://example.com/oauth"}] =
+      assert [%{mode: "url", url: url, elicitationId: elicitation_id}] =
                response[:error][:data][:elicitations]
+
+      assert url =~ "/elicitations/#{elicitation_id}"
     end
 
     test "initialize response advertises elicitation capability" do
