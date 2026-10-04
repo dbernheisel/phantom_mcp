@@ -1648,6 +1648,13 @@ defmodule Phantom.Router do
           {:ok, %Session{state: {:__phantom_await__, _pid, _ref}} = session} ->
             resume_elicitation(session, request)
 
+          {:ok, %Session{state: :__phantom_elicitation_required__} = session} ->
+            if elicitations_completed?(request),
+              do: get_tool(router, %{session | state: nil}, params, without_state(request)),
+              else:
+                {:reply, Tool.error("The client did not complete the requested elicitation"),
+                 session}
+
           {:ok, session} ->
             with {:ok, validated} <- JSONSchema.maybe_validate(tool.input_schema, args) do
               run_handler(
@@ -1815,10 +1822,16 @@ defmodule Phantom.Router do
           {"elicitation-#{index}", request}
         end)
 
-      result = %{resultType: "input_required", inputRequests: input_requests}
+      # The state marks the follow-up call, so a declined or cancelled
+      # elicitation ends the call instead of asking again.
+      result = %{
+        resultType: "input_required",
+        inputRequests: input_requests,
+        requestState: :__phantom_elicitation_required__
+      }
 
       case validate_input_required(result, session) do
-        :ok -> respond_to_caller(result)
+        :ok -> respond_to_caller(encode_request_state(result, session))
         {:error, error} -> respond_error_to_caller(error)
       end
     else
@@ -1965,6 +1978,15 @@ defmodule Phantom.Router do
     do: resume_elicitation(session, request)
 
   defp maybe_resume_elicitation(_session, _request), do: :continue
+
+  defp elicitations_completed?(%Request{params: %{"inputResponses" => responses}})
+       when is_map(responses) and map_size(responses) > 0,
+       do: Enum.all?(responses, fn {_key, response} -> response["action"] == "accept" end)
+
+  defp elicitations_completed?(_request), do: false
+
+  defp without_state(request),
+    do: %{request | params: Map.drop(request.params, ["requestState", "inputResponses"])}
 
   @doc false
   def decode_request_state(router, session, request) do
