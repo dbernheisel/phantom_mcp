@@ -111,7 +111,7 @@ defmodule Phantom.IconHTTPTest do
     echo_tool = Enum.find(tools, &(&1["name"] == "echo_tool"))
     assert echo_tool, "echo_tool should be in the tools list"
 
-    assert [%{"src" => "https://example.com/echo-icon.png", "mimeType" => "image/png"}] =
+    assert [%{"src" => "data:image/svg+xml;base64," <> _, "mimeType" => "image/svg+xml"}] =
              echo_tool["icons"]
 
     # Tools without icons should NOT have the icons key

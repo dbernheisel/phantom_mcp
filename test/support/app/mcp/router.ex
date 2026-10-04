@@ -200,9 +200,12 @@ defmodule Test.MCP.Router do
     field :message, :string, description: "message to log"
   end
 
+  # An inline icon, so it renders without anything serving it.
+  @echo_icon "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTQgMTJoMTJNMTIgNmw2IDYtNiA2IiBzdHJva2U9IiMyNTYzZWIiIHN0cm9rZS13aWR0aD0iMiIgZmlsbD0ibm9uZSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+"
+
   tool :echo_tool,
     description: "A test that echos your message",
-    icons: [%{src: "https://example.com/echo-icon.png", mime_type: "image/png"}] do
+    icons: [%{src: @echo_icon, mime_type: "image/svg+xml"}] do
     field :message, :string, required: true, description: "message to echo"
   end
 
