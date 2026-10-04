@@ -111,6 +111,31 @@ defmodule Phantom.SessionStoreTest do
       assert_response(8, %{result: %{content: [%{text: "Authenticated"}]}})
     end
 
+    test "the page's form submits through the endpoint" do
+      start_supervised!(
+        {Test.Endpoint,
+         url: [host: "localhost"],
+         adapter: Bandit.PhoenixAdapter,
+         render_errors: [formats: [json: Test.ErrorJSON], layout: false],
+         pubsub_server: Test.PubSub,
+         http: [ip: {127, 0, 0, 1}, port: 4045],
+         server: true,
+         secret_key_base: String.duplicate("a", 64)}
+      )
+
+      Test.ElicitationPage.start("form-session", "form-elicitation", "Sign in")
+
+      # A browser submits an HTML form as application/x-www-form-urlencoded.
+      response =
+        Req.post!("http://127.0.0.1:4045/elicitations/form-elicitation",
+          form: [],
+          retry: false
+        )
+
+      assert response.status == 200
+      assert Test.ElicitationPage.completed?("form-session")
+    end
+
     test "an unknown elicitation is not found" do
       assert page(:get, "unknown").status == 404
       assert page(:post, "unknown").status == 404

@@ -11,8 +11,9 @@ defmodule Test.Endpoint do
     plug Phoenix.CodeReloader
   end
 
+  # :urlencoded is for `Test.ElicitationPage`'s HTML form.
   plug Plug.Parsers,
-    parsers: [{:json, length: 1_000_000}],
+    parsers: [{:json, length: 1_000_000}, :urlencoded],
     pass: ["application/json"],
     json_decoder: JSON
 
