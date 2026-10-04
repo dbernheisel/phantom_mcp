@@ -538,7 +538,7 @@ defmodule Phantom.PlugTest do
                %{
                  type: :resource,
                  resource: %{
-                   uri: "myapp:///binary/foo",
+                   uri: "myapp:///binary/bar",
                    mimeType: "image/png",
                    blob: blob
                  }
@@ -549,7 +549,7 @@ defmodule Phantom.PlugTest do
     # Verify it's valid base64 encoded data
     assert is_binary(blob)
     assert {:ok, decoded} = Base.decode64(blob)
-    assert File.read!("test/support/fixtures/foo.png") == decoded
+    assert File.read!("test/support/fixtures/bar.png") == decoded
   end
 
   test "handles asynchronous resource responses" do

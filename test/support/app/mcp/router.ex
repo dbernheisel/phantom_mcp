@@ -659,7 +659,7 @@ defmodule AsyncModule do
 
   def embedded_resource_tool(_params, session) do
     with {:ok, uri, resource} <-
-           Test.MCP.Router.read_resource(session, :binary_resource, id: "bar") do
+           Test.MCP.Router.read_resource(session, :binary_resource, id: "foo") do
       {:reply, Tool.embedded_resource(uri, resource), session}
     end
   end
@@ -673,7 +673,7 @@ defmodule AsyncModule do
 
   def async_embedded_resource_tool(_params, session) do
     with {:ok, uri, resource} <-
-           Test.MCP.Router.read_resource(session, :binary_resource, id: "foo") do
+           Test.MCP.Router.read_resource(session, :binary_resource, id: "bar") do
       {:reply, Tool.embedded_resource(uri, resource), session}
     end
   end
