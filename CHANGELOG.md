@@ -1,4 +1,4 @@
-## Unreleased
+## 0.6.0 (2026-10-04)
 
 - New: `Phantom.Test` for unit-testing MCP routers without an HTTP transport.
   `build_session(router, protocol_version: "2026-07-28")` tests the stateless
