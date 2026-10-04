@@ -624,6 +624,50 @@ check.
 Each node serving the same router must share both values; clients can hop
 nodes freely.
 
+### Sending the user to a URL
+
+URL elicitation sends the user to a page you host, such as a sign-in or
+payment flow, instead of a form in the client. The client must declare
+`elicitation: %{"url" => %{}}`; otherwise the call returns `:not_supported`.
+
+Put your own `elicitation_id` in the URL so the page knows which elicitation
+it is finishing:
+
+```elixir
+def connect_account(_params, session) do
+  elicitation_id = UUIDv7.generate()
+
+  elicitation =
+    Phantom.Elicit.url(%{
+      message: "Connect your account",
+      url: "https://myapp.example/connect?elicitation_id=#{elicitation_id}",
+      elicitation_id: elicitation_id
+    })
+
+  case Phantom.Session.elicit(session, elicitation, await: true) do
+    # The answer has no content; the work happened on your page.
+    {:ok, %{"action" => "accept"}} -> {:reply, Tool.text("Connected"), session}
+    {:ok, _declined_or_cancelled} -> {:reply, Tool.error("Not connected"), session}
+    other -> {:reply, Tool.error("Could not connect: #{inspect(other)}"), session}
+  end
+end
+```
+
+When the user finishes, have the page tell the client:
+
+```elixir
+def connected(conn, %{"elicitation_id" => elicitation_id}) do
+  Phantom.Tracker.notify_elicitation_complete(elicitation_id)
+  render(conn, :connected)
+end
+```
+
+Under `2026-07-28` the client answers on its follow-up call once the user is
+done instead, so no notification is needed. A tool can also end the call and
+ask the client to retry after the user finishes by returning
+`{:elicitation_required, [elicitation]}`. See `Phantom.Elicit` for both,
+including what each protocol version sends.
+
 ## What PhantomMCP supports
 
 Phantom will implement these MCP requests on your behalf:

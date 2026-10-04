@@ -148,10 +148,11 @@ defmodule Phantom.Elicit do
         })
 
         case Phantom.Session.elicit(session, elicitation, await: true) do
-          {:ok, %{"action" => "accept", "content" => content}} ->
+          # A URL elicitation's answer has no content; the work happened at the URL.
+          {:ok, %{"action" => "accept"}} ->
             {:reply, Tool.text("Authenticated"), session}
 
-          {:ok, _rejected} ->
+          {:ok, _declined_or_cancelled} ->
             {:reply, Tool.error("Auth rejected"), session}
 
           :not_supported ->
@@ -169,6 +170,19 @@ defmodule Phantom.Elicit do
         # Render a success page for the user
       end
 
+  How the call finishes depends on the client's protocol version:
+
+  - **2025-11-25 and earlier** — Phantom sends `elicitation/create` and
+    remembers the `elicitation_id`, so `notify_elicitation_complete/1`
+    reaches the client, which then answers with `accept`.
+  - **2026-07-28** — the call is answered with an `input_required`
+    result instead; the client answers on its follow-up call once the
+    user is done, so no notification is needed (and none is sent).
+
+  `Phantom.Session.elicit_url/4` is a shortcut that generates the
+  `elicitation_id` for you. Because the URL cannot include it, your
+  callback cannot notify; use it only when the client's answer is enough.
+
   > #### URL mode client support {: .warning}
   >
   > URL mode requires the client to advertise `"url"` in its
@@ -180,19 +194,38 @@ defmodule Phantom.Elicit do
 
   For tools that cannot proceed without user interaction, you can
   return `{:elicitation_required, elicitations}` directly from
-  the tool handler. This returns a JSON-RPC error with code `-32042`
-  containing the elicitation specs, allowing the client to initiate
-  the flow:
+  the tool handler. Instead of waiting, the call ends, and the client
+  sends the user to each URL and then calls the tool again:
 
-      def my_tool(_params, _session) do
-        {:elicitation_required, [
-          Phantom.Elicit.url(%{
-            message: "Please authenticate first",
-            url: "https://example.com/oauth?elicitation_id=unique-id",
-            elicitation_id: "unique-id"
-          })
-        ]}
+  - **2025-11-25 and earlier** — a JSON-RPC error with code `-32042`
+    containing the elicitation specs.
+  - **2026-07-28** — an `input_required` result. If the client declines
+    or cancels, Phantom ends the call with a tool error; if it accepts,
+    the handler runs again.
+
+  The handler runs from the top on the retry, so it decides whether the
+  user finished by checking a record your app keeps, written by the page
+  the URL points to:
+
+      def my_tool(_params, session) do
+        if MyApp.Auth.authorized?(session.assigns.user) do
+          {:reply, Tool.text("Authenticated"), session}
+        else
+          elicitation_id = UUIDv7.generate()
+
+          {:elicitation_required, [
+            Phantom.Elicit.url(%{
+              message: "Please authenticate first",
+              url: "https://example.com/oauth?elicitation_id=\#{elicitation_id}",
+              elicitation_id: elicitation_id
+            })
+          ]}
+        end
       end
+
+  Phantom does not remember these elicitations, so
+  `Phantom.Tracker.notify_elicitation_complete/1` does not reach them;
+  the client's retry is what continues the flow.
   """
 
   @enforce_keys ~w[message]a
