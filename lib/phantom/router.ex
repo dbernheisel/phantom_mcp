@@ -1692,8 +1692,6 @@ defmodule Phantom.Router do
         # result to the transport process that owns the current request.
         Process.put(:phantom_adopter, parent_pid)
         Process.put(:phantom_tool_request_id, request_id)
-        # Marks the handler's own process; see `Session.elicit/3`.
-        Process.put(:phantom_handler, true)
 
         try do
           handler_result = apply(spec.handler, spec.function, [params, task_session])

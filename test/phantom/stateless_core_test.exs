@@ -428,9 +428,9 @@ defmodule Phantom.StatelessCoreTest do
   end
 
   describe "Session.elicit/3 — protocol-aware default mode" do
-    test "stateless: no opts annotates session with pending_elicit and nil state" do
-      # Re-entry belongs to the handler's own process, which the dispatcher marks.
-      Process.put(:phantom_handler, true)
+    # The session's pid is this process, as for a handler running in the
+    # request's own process: it cannot wait on itself.
+    test "stateless: the request's own process re-enters with nil state" do
       request = build_request(%{"protocolVersion" => "2026-07-28"})
       session = %{build_session() | request: request}
       elicit = Phantom.Elicit.form(%{message: "x", requested_schema: []})

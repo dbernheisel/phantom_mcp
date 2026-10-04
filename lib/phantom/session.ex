@@ -152,14 +152,10 @@ defmodule Phantom.Session do
     populated to whatever you passed as `:state`. Structure the handler
     with a function-head clause that matches on `%Session{state: %{...}}`.
 
-  Protocol-aware defaults — when neither `:await` nor `:state` is set:
-
-  - Under legacy protocols (`≤ 2025-11-25`) the call defaults to inline
-    blocking. Existing legacy code that pattern-matches `{:ok, response}`
-    against `Session.elicit(session, elicit)` continues to work unchanged.
-  - Under MCP `2026-07-28` (stateless core) the call defaults to re-entry
-    with `state: nil` in the handler, and to inline blocking in any other
-    process, such as a `Task` the handler started.
+  Without `:state` the call blocks inline under every protocol, so code that
+  pattern-matches `{:ok, response}` works unchanged under MCP `2026-07-28`.
+  The exception is a handler that runs in the request's own process, as
+  resource handlers do: it cannot wait on itself, so it re-enters.
 
   Pick based on style preference:
 
@@ -204,9 +200,9 @@ defmodule Phantom.Session do
       Keyword.has_key?(opts, :state) ->
         %{session | pending_elicit: {elicitation, opts[:state]}}
 
-      # Stateless re-entry needs the handler to return the session, so only
-      # the handler's own process can use it.
-      stateless?(session) and Process.get(:phantom_handler) == true ->
+      # A handler running in the request's own process cannot wait on it, so
+      # it re-enters instead.
+      stateless?(session) and route_pid(session) == self() ->
         %{session | pending_elicit: {elicitation, nil}}
 
       stateless?(session) ->
@@ -257,6 +253,8 @@ defmodule Phantom.Session do
       Process.put(:phantom_tool_request_id, request_id)
     end
   end
+
+  defp route_pid(session), do: session |> route() |> elem(0)
 
   @doc false
   # Where the session's request is answered: its own transport, or the

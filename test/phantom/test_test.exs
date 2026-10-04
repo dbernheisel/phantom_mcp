@@ -239,6 +239,21 @@ defmodule Phantom.TestTest do
       |> assert_tool_text(~s({"hello":"async my name is Ada"}))
     end
 
+    test "elicitation without options waits inline, as under older protocols",
+         %{session: session} do
+      expect_elicit(fn _elicit ->
+        {:ok,
+         %{
+           "action" => "accept",
+           "content" => %{"name" => "Ada", "email" => "ada@example.com", "role" => "dev"}
+         }}
+      end)
+
+      session
+      |> call_tool(:elicit_tool, %{})
+      |> assert_tool_text(~s({"hello":"my name is Ada"}))
+    end
+
     test "await: true suspends the handler and resumes it", %{session: session} do
       expect_elicit(fn _elicit ->
         {:ok, %{"action" => "accept", "content" => %{"color" => "red"}}}
