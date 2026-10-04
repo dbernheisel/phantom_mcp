@@ -1463,7 +1463,9 @@ defmodule Phantom.PlugTest do
       )
 
       assert_connected(_conn)
-      assert_receive {:response, 161, "message", %{result: %{content: [%{text: "acme"}]}}}
+      header = "=?base64?#{Base.encode64("acme")}?="
+      text = "tenant: acme\nMcp-Param-Tenant: #{header}"
+      assert_receive {:response, 161, "message", %{result: %{content: [%{text: ^text}]}}}
 
       post_stateless(
         %{

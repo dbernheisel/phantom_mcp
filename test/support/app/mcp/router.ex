@@ -44,6 +44,14 @@ defmodule Test.MCP.Router do
   # remembered across restarts the way an app would, and unknown or deleted
   # ones are answered with 404 so the client initializes again.
   def connect(session, %Plug.Conn{} = conn) do
+    # Handlers cannot see request headers, so keep the SEP-2243 ones for
+    # `header_echo_tool`.
+    session =
+      Session.assign(session,
+        mcp_param_headers:
+          for({"mcp-param-" <> _ = name, value} <- conn.req_headers, into: %{}, do: {name, value})
+      )
+
     if Test.SessionStore.running?(), do: restore_session(session, conn), else: {:ok, session}
   end
 
@@ -305,7 +313,8 @@ defmodule Test.MCP.Router do
   end
 
   def header_echo_tool(params, session) do
-    {:reply, Phantom.Tool.text(params["tenant"]), session}
+    header = session.assigns[:mcp_param_headers]["mcp-param-tenant"] || "(not sent)"
+    {:reply, Tool.text("tenant: #{params["tenant"]}\nMcp-Param-Tenant: #{header}"), session}
   end
 
   def client_log_tool(params, session) do
