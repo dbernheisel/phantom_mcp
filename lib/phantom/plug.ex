@@ -386,12 +386,31 @@ defmodule Phantom.Plug do
         true
 
       accept ->
-        accept
-        |> Enum.flat_map(&String.split(&1, ","))
-        |> Enum.map(&(&1 |> String.split(";") |> hd() |> String.trim() |> String.downcase()))
-        |> Enum.any?(&(&1 in ~w[text/event-stream text/* */*]))
+        ranges = accept |> Enum.flat_map(&String.split(&1, ",")) |> Enum.map(&media_range/1)
+
+        # The most specific matching range decides, and q=0 refuses it (RFC 9110 §12.5.1).
+        case Enum.find_value(~w[text/event-stream text/* */*], &List.keyfind(ranges, &1, 0)) do
+          {_type, q} -> q > 0
+          nil -> false
+        end
     end
   end
+
+  defp media_range(range) do
+    [type | params] =
+      range |> String.split(";") |> Enum.map(&(&1 |> String.trim() |> String.downcase()))
+
+    {type, Enum.find_value(params, 1.0, &quality/1)}
+  end
+
+  defp quality("q=" <> value) do
+    case Float.parse(value) do
+      {q, ""} -> q
+      _invalid -> 1.0
+    end
+  end
+
+  defp quality(_param), do: nil
 
   defp validate_protocol_request(%Plug.Conn{halted: true} = conn), do: conn
 
