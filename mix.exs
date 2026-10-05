@@ -14,7 +14,7 @@ defmodule Phantom.MixProject do
       escript: escript(Mix.env()),
       package: package(),
       start_permanent: Mix.env() == :prod,
-      version: "0.6.0",
+      version: "0.7.0",
       source_url: "https://github.com/dbernheisel/phantom_mcp"
     ]
   end
@@ -110,7 +110,7 @@ defmodule Phantom.MixProject do
   defp docs do
     [
       main: "Phantom",
-      extras: ["guides/mcp_apps.md", "guides/tasks.md", "CHANGELOG.md"],
+      extras: ["guides/mcp_apps.md", "guides/skills.md", "guides/tasks.md", "CHANGELOG.md"],
       assets: %{"assets" => "assets"},
       before_closing_body_tag: %{html: @mermaidjs}
     ]

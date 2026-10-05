@@ -1,4 +1,4 @@
-## Unreleased
+## 0.7.0 (2026-10-04)
 
 - New: the Tasks extension (`io.modelcontextprotocol/tasks`) under MCP
   2026-07-28. A tool returns `{:reply, %Phantom.Tasks{}, session}` to answer
@@ -32,7 +32,8 @@
   Files render lazily, and caching is opt-in with `Phantom.Skill.with_cache/2`.
   `c:Phantom.Router.list_skills/2` decides which skills `skills/list` returns.
   `Phantom.Cache.add_skill/2` adds a skill at runtime. The `skill://` scheme is
-  reserved for skills.
+  reserved for skills. Parsing `SKILL.md` frontmatter needs the optional
+  `:yamerl` dependency. See the Skills guide.
 
 Streamable HTTP transport fixes for the protocol versions before 2026-07-28:
 

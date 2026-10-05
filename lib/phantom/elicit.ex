@@ -10,24 +10,59 @@ defmodule Phantom.Elicit do
 
   https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation
 
+  You write the same handler code for every protocol version, and Phantom
+  picks the transport.
+
+  Under MCP 2025-11-25 and earlier, the server sends `elicitation/create` on
+  the session's open SSE stream while the call is still running:
+
   ```mermaid
   sequenceDiagram
       participant User
       participant Client
       participant Server
 
-      Note over Server,Client: Server initiates elicitation
-      Server->>Client: elicitation/create
-
-      Note over Client,User: Human interaction
+      Client->>Server: tools/call
+      Server->>Client: elicitation/create (SSE)
       Client->>User: Present elicitation UI
       User-->>Client: Provide requested information
-
-      Note over Server,Client: Complete request
-      Client-->>Server: Return user response
-
-      Note over Server: Continue processing with new information
+      Client-->>Server: Response to elicitation/create
+      Server-->>Client: tools/call result
   ```
+
+  Under MCP 2026-07-28 there is no session stream. The call ends with an
+  `input_required` result that carries the request in `inputRequests` and an
+  encrypted `requestState`. The client asks the user, then calls again with
+  the answer in `inputResponses` and the same `requestState`. Any node can
+  receive the second call:
+
+  ```mermaid
+  sequenceDiagram
+      participant User
+      participant Client
+      participant Server
+
+      Client->>Server: tools/call
+      Server-->>Client: input_required (inputRequests, requestState)
+      Client->>User: Present elicitation UI
+      User-->>Client: Provide requested information
+      Client->>Server: tools/call (inputResponses, requestState)
+      Server-->>Client: tools/call result
+  ```
+
+  `Phantom.Session.elicit/3` supports two styles. Waiting inline with
+  `await: true` returns the answer in place. Re-entry with `:state` ends the
+  call and runs the handler again with `session.state` set. Under 2026-07-28
+  they differ in what must survive between the two calls:
+
+  | | Waiting inline (`await: true`) | Re-entry (`:state`) |
+  |---|---|---|
+  | Between calls | The handler's process waits on the node that started it | `:state` travels in the encrypted `requestState` |
+  | Second call | Any node resumes the waiting process | Any node runs the handler again |
+  | Router options | None | `:secret_key_base` and `:request_state_salt`, the same on every node |
+  | Fails when | That node restarts, or `:timeout` passes (default 5 minutes) | The keys change, or the client drops `requestState` |
+
+  Prefer re-entry when you run more than one node or deploy often.
 
   ## Form mode
 
@@ -66,6 +101,10 @@ defmodule Phantom.Elicit do
         end
       end
 
+  Under 2026-07-28 this returns `:not_supported` unless the current request
+  declares elicitation in its client capabilities, because each request
+  declares its own.
+
   ### Supported property types
 
   - `:string` — options: `:min_length`, `:max_length`, `:pattern` (string or `Regex`), `:format` (`:email`, `:uri`, `:date`, `:date_time`)
@@ -91,10 +130,29 @@ defmodule Phantom.Elicit do
          Session.elicit(session, @elicit_name, state: %{step: :got_name, params: params})}
       end
 
-  The dispatcher converts the call to an `input_required` result under
-  stateless or to an SSE elicit round-trip + handler re-invocation under
-  legacy. See `Phantom.Tool.input_required/1` for the lower-level result
-  builder.
+  Under 2026-07-28, Phantom answers with an `input_required` result and
+  encrypts `:state` into its `requestState`. The client's next call carries
+  the user's answer and the `requestState` back, Phantom decrypts it onto
+  `session.state`, and the handler runs again with the answer merged into
+  its params. Under earlier versions, Phantom sends `elicitation/create`
+  over SSE and runs the handler again when the answer arrives.
+
+  The router needs `:secret_key_base` and `:request_state_salt` for
+  2026-07-28, the same on every node; see `Phantom.Router`. Keep `:state`
+  small, because it goes to the client on every round trip. It is
+  encrypted, so the client cannot read or change it.
+
+  To build the result yourself, pass `to_input_requests/1` to
+  `Phantom.Tool.input_required/1` as `:input_requests`.
+
+  ### Input requests in a task
+
+  A task in `input_required` lists its questions under keys you choose.
+  Render each one with `to_input_request/1`:
+
+      %{"confirm" => Phantom.Elicit.to_input_request(elicit)}
+
+  The client answers with `tasks/update`. See the Tasks guide.
 
   ## URL mode
 
