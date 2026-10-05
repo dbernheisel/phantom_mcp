@@ -25,6 +25,27 @@
 - `Phantom.Request.missing_capability/1` accepts a `ClientCapabilities` map,
   for capabilities whose names contain dots.
 
+Streamable HTTP transport fixes for the protocol versions before 2026-07-28:
+
+- New: `Phantom.Plug` option `validate_session: true` answers `404 Not Found`
+  to a request whose `mcp-session-id` the server did not issue, or that was
+  terminated with `DELETE`, so the client initializes again. It is off by
+  default because Phantom only keeps sessions in memory; apps that persist
+  sessions keep answering `{:not_found, message}` from `connect/2`.
+- Reject requests with an unsupported `MCP-Protocol-Version` header with
+  `400 Bad Request`. Requests without the header are still accepted.
+- Respond `200 OK` instead of `202 Accepted` when opening a GET SSE stream.
+- Respond `406 Not Acceptable` to GET requests whose `Accept` header excludes
+  `text/event-stream`. A missing `Accept`, `text/*`, or `*/*` is allowed.
+- Accept a client's JSON-RPC error response (for example, to
+  `elicitation/create`) with `202 Accepted`. The waiting `Session.elicit/3`
+  returns `:error`; it used to wait until it timed out. Over stdio too.
+- Respond `400 Bad Request` to an invalid JSON-RPC response instead of
+  `202 Accepted`.
+- Allow `DELETE` in CORS `access-control-allow-methods`.
+- Stop using JSON-RPC ids as SSE event ids, since SSE event ids must be unique
+  within a session.
+
 ## 0.6.0 (2026-10-04)
 
 - New: `Phantom.Test` for unit-testing MCP routers without an HTTP transport.

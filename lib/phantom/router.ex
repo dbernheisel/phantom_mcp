@@ -678,19 +678,13 @@ defmodule Phantom.Router do
 
       def dispatch_method(_method, _params, %{id: request_id, response: %{} = response}, session)
           when is_binary(request_id) do
-        require Logger
+        Phantom.Router.route_client_response(request_id, response)
+        {:reply, nil, session}
+      end
 
-        case Phantom.Router.await_request_meta(request_id) do
-          %{type: :elicitation, reply_ref: ref, reply_pid: pid} when is_pid(pid) ->
-            Logger.debug("Routing elicitation response #{request_id} to #{inspect(pid)}")
-
-            send(pid, {:phantom_elicitation_response, ref, response})
-            Phantom.Tracker.untrack_request(request_id)
-
-          _ ->
-            Logger.debug("No tracked handler for response #{request_id}")
-        end
-
+      def dispatch_method(_method, _params, %{id: request_id, error: %{} = error}, session)
+          when is_binary(request_id) do
+        Phantom.Router.route_client_response(request_id, {:error, error})
         {:reply, nil, session}
       end
 
@@ -1562,6 +1556,24 @@ defmodule Phantom.Router do
         {:cont, capabilities}
       end
     end)
+  end
+
+  @doc false
+  # Deliver the client's response to a server-initiated request (a result
+  # map, or `{:error, error}`) to the process waiting on it.
+  def route_client_response(request_id, response) do
+    require Logger
+
+    case await_request_meta(request_id) do
+      %{type: :elicitation, reply_ref: ref, reply_pid: pid} when is_pid(pid) ->
+        Logger.debug("Routing elicitation response #{request_id} to #{inspect(pid)}")
+
+        send(pid, {:phantom_elicitation_response, ref, response})
+        Phantom.Tracker.untrack_request(request_id)
+
+      _ ->
+        Logger.debug("No tracked handler for response #{request_id}")
+    end
   end
 
   @doc false

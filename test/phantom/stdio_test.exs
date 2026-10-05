@@ -683,6 +683,36 @@ defmodule Phantom.StdioTest do
       text = get_in(result, ["result", "content", Access.at(0), "text"])
       assert %{"hello" => "async my name is Stdio Alice"} = JSON.decode!(text)
     end
+
+    test "an error response to an elicitation fails the elicitation" do
+      ctx = start_stdio()
+      initialize_with_elicitation(ctx)
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: 43,
+        method: "tools/call",
+        params: %{name: "async_elicit_tool", arguments: %{}}
+      })
+
+      elicit =
+        find_in_output(ctx, fn r -> r["method"] == "elicitation/create" end, 2_000)
+
+      assert elicit, "expected elicitation/create on output"
+
+      send_request(ctx, %{
+        jsonrpc: "2.0",
+        id: elicit["id"],
+        error: %{code: -32603, message: "Client failed to show the form"}
+      })
+
+      result =
+        find_in_output(ctx, fn r -> r["id"] == 43 and is_map(r["result"]) end, 2_000)
+
+      assert result, "expected tool result for id=43"
+      assert result["result"]["isError"] == true
+      assert get_in(result, ["result", "content", Access.at(0), "text"]) == "Elicitation failed"
+    end
   end
 
   describe "duplicate request dedup" do

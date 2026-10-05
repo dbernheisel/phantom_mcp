@@ -1179,7 +1179,7 @@ defmodule Phantom.Session do
         {:noreply, state}
 
       {%{from: from, request_id: request_id}, state} ->
-        GenServer.reply(from, {:ok, response})
+        GenServer.reply(from, elicitation_reply(response))
         state = forget_pending_elicit(state, request_id)
         {:noreply, state |> set_activity() |> schedule_inactivity()}
     end
@@ -1447,7 +1447,7 @@ defmodule Phantom.Session do
 
     Enum.reduce(requests, {[], []}, fn raw_request, {resp_acc, other_acc} ->
       if elicit_response?(raw_request, pending) do
-        {[{raw_request["id"], raw_request["result"]} | resp_acc], other_acc}
+        {[{raw_request["id"], elicit_response(raw_request)} | resp_acc], other_acc}
       else
         {resp_acc, [raw_request | other_acc]}
       end
@@ -1457,7 +1457,13 @@ defmodule Phantom.Session do
   defp elicit_response?(%{"id" => id, "result" => result}, pending) when is_map(result),
     do: Map.has_key?(pending, id)
 
+  defp elicit_response?(%{"id" => id, "error" => error}, pending) when is_map(error),
+    do: Map.has_key?(pending, id)
+
   defp elicit_response?(_, _), do: false
+
+  defp elicit_response(%{"result" => result}) when is_map(result), do: result
+  defp elicit_response(%{"error" => error}), do: {:error, error}
 
   defp route_local_elicit_response({request_id, response}, state) do
     {ref, state} = pop_in(state, [Access.key(:pending_elicit_ids, %{}), request_id])
@@ -1466,6 +1472,11 @@ defmodule Phantom.Session do
 
     state
   end
+
+  # The client answers `elicitation/create` with a result, or with a JSON-RPC
+  # error when it could not handle the request.
+  defp elicitation_reply({:error, _error}), do: :error
+  defp elicitation_reply(response), do: {:ok, response}
 
   defp forget_pending_elicit(state, request_id) do
     Map.update(state, :pending_elicit_ids, %{}, &Map.delete(&1, request_id))
