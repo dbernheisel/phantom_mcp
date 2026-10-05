@@ -24,6 +24,15 @@
   only runs as a task when the client did not declare the extension.
 - `Phantom.Request.missing_capability/1` accepts a `ClientCapabilities` map,
   for capabilities whose names contain dots.
+- New: Skills, with the MCP Skills extension (`io.modelcontextprotocol/skills`).
+  `Phantom.Router.skill/3` routes a `skill://` path to an action that returns a
+  `Phantom.Skill`, and `Phantom.Skill.embed_skills/1` compiles skill
+  directories, rendering `.eex` files with assigns. Phantom serves
+  `skills/list`, `skills/get`, `resources/read`, and `resources/directory/read`.
+  Files render lazily, and caching is opt-in with `Phantom.Skill.with_cache/2`.
+  `c:Phantom.Router.list_skills/2` decides which skills `skills/list` returns.
+  `Phantom.Cache.add_skill/2` adds a skill at runtime. The `skill://` scheme is
+  reserved for skills.
 
 Streamable HTTP transport fixes for the protocol versions before 2026-07-28:
 

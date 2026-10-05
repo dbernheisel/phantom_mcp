@@ -41,6 +41,7 @@ defmodule Phantom.Router do
   alias Phantom.Resource
   alias Phantom.ResourceTemplate
   alias Phantom.Session
+  alias Phantom.Skill
   alias Phantom.Tasks
   alias Phantom.Tool
   alias Phantom.Tool.JSONSchema
@@ -160,6 +161,28 @@ defmodule Phantom.Router do
               | {:error, any(), Session.t()}
 
   @doc """
+  List the skills that `skills/list` returns, as `SKILL.md` URIs.
+
+  Return `Phantom.Skill.list/2` with the URIs of one page and the cursor of the next
+  page. The cursor is opaque to Phantom. Phantom builds each entry as `skills/get` does,
+  and leaves out a URI that serves no skill to the session.
+
+  The default implementation lists every skill route without path params, by path.
+
+      def list_skills(cursor, session) do
+        {studies, next_cursor} = MyApp.Studies.page(session.assigns.user, cursor)
+        uris = Enum.map(studies, &"skill://studies/\#{&1.id}/study-review/SKILL.md")
+
+        {:reply, Phantom.Skill.list(["skill://git-workflow/SKILL.md" | uris], next_cursor),
+         session}
+      end
+  """
+  @callback list_skills(String.t() | nil, Session.t()) ::
+              {:reply, %{required(:skills) => [String.t()], optional(:nextCursor) => String.t()},
+               Session.t()}
+              | {:error, any(), Session.t()}
+
+  @doc """
   Authorize subscriptions and update notifications for resolved resources.
 
   Each resource is represented as `{uri, path_params, resource_template}`. Return either the
@@ -268,7 +291,9 @@ defmodule Phantom.Router do
           resource: 3,
           resource: 4,
           prompt: 2,
-          prompt: 3
+          prompt: 3,
+          skill: 2,
+          skill: 3
         ]
 
       require Phantom.ClientLogger
@@ -322,6 +347,10 @@ defmodule Phantom.Router do
 
       def list_resources(_cursor, session) do
         {:error, Request.not_found(), session}
+      end
+
+      def list_skills(cursor, session) do
+        Phantom.Router.Skills.default_list(__MODULE__, session, cursor)
       end
 
       @doc """
@@ -505,7 +534,8 @@ defmodule Phantom.Router do
                |> Phantom.Router.resource_capability(__MODULE__, session)
                |> Phantom.Router.completion_capability(__MODULE__, session)
                |> Phantom.Router.logging_capability(__MODULE__, session)
-               |> Phantom.Router.ui_capability(__MODULE__, session),
+               |> Phantom.Router.ui_capability(__MODULE__, session)
+               |> Phantom.Router.skill_capability(__MODULE__, session),
              serverInfo: server_info,
              instructions: instructions
            }, session}
@@ -534,6 +564,7 @@ defmodule Phantom.Router do
           |> Phantom.Router.logging_capability(__MODULE__, session)
           |> Phantom.Router.ui_capability(__MODULE__, session)
           |> Phantom.Router.tasks_capability(__MODULE__)
+          |> Phantom.Router.skill_capability(__MODULE__, session)
 
         {:reply,
          %{
@@ -672,6 +703,25 @@ defmodule Phantom.Router do
         list_resources(params["cursor"], %{session | request: request})
       end
 
+      def dispatch_method("skills/list", params, request, session) do
+        Phantom.Router.Skills.list(__MODULE__, %{session | request: request}, params["cursor"])
+      end
+
+      def dispatch_method("skills/get", %{"uri" => uri}, request, session)
+          when is_binary(uri) do
+        Phantom.Router.Skills.get(__MODULE__, %{session | request: request}, uri)
+      end
+
+      def dispatch_method("resources/directory/read", %{"uri" => uri}, request, session)
+          when is_binary(uri) do
+        Phantom.Router.Skills.read_directory(__MODULE__, %{session | request: request}, uri)
+      end
+
+      def dispatch_method(method, _params, _request, session)
+          when method in ["skills/get", "resources/directory/read"] do
+        {:error, Request.invalid_params(%{uri: "is required"}), session}
+      end
+
       def dispatch_method("notification" <> type, _params, _request, session) do
         {:reply, nil, session}
       end
@@ -694,6 +744,7 @@ defmodule Phantom.Router do
 
       @doc false
       defoverridable list_resources: 2,
+                     list_skills: 2,
                      authorize_resource_subscriptions: 2,
                      authorize_task_subscriptions: 2,
                      server_info: 1,
@@ -913,6 +964,9 @@ defmodule Phantom.Router do
         {:ok, %{scheme: "ui"}} ->
           raise "The ui:// scheme is reserved for MCP Apps"
 
+        {:ok, %{scheme: "skill"}} ->
+          raise "The skill:// scheme is reserved for skills, see `Phantom.Router.skill/3`"
+
         {:ok, %{scheme: scheme, host: host, path: path}}
         when is_binary(scheme) and (is_binary(path) or (is_binary(host) and host != "")) ->
           scheme
@@ -950,6 +1004,63 @@ defmodule Phantom.Router do
     quote do
       resource(unquote(pattern), unquote(handler), [], [])
     end
+  end
+
+  @doc """
+  Route a skill to an action that returns a `Phantom.Skill`.
+
+  The path locates the skill under `skill://` and ends in the skill's name.
+  Segments after the first may be path params. The function defaults to the
+  skill's name with hyphens replaced by underscores.
+
+      skill "git-workflow", MyApp.MCP.Skills
+      skill "acme/billing/refunds", MyApp.MCP.Skills, :refunds
+      skill "studies/:study_id/study-review", MyApp.MCP.Skills, :study_review
+
+  See `Phantom.Skill` for writing actions.
+  """
+  defmacro skill(path, handler, function \\ nil) do
+    meta = %{line: __CALLER__.line, file: __CALLER__.file}
+
+    quote line: meta.line, file: meta.file, generated: true do
+      @phantom_resource_templates Phantom.Router.skill_template(
+                                    path: unquote(path),
+                                    handler: unquote(handler),
+                                    function: unquote(function),
+                                    router: __MODULE__,
+                                    meta: unquote(Macro.escape(meta))
+                                  )
+    end
+  end
+
+  @doc false
+  def skill_template(attrs) do
+    attrs = Map.new(attrs)
+    [first | rest] = segments = String.split(attrs.path, "/")
+
+    if String.starts_with?(first, ":") do
+      raise ArgumentError,
+            "skill #{inspect(attrs.path)}: the first segment of a skill path can't be a path param"
+    end
+
+    if not (Regex.match?(~r/\A[a-z0-9._~-]+\z/, first) and
+              Enum.all?(rest, &Regex.match?(~r/\A(:[a-z_][A-Za-z0-9_]*|[A-Za-z0-9._~-]+)\z/, &1))) do
+      raise ArgumentError,
+            "invalid skill path #{inspect(attrs.path)}: segments are letters, digits, " <>
+              "- . _ ~ or path params, and the first segment is lowercase"
+    end
+
+    name = List.last(segments)
+    Skill.validate_name!(name, "skill #{inspect(attrs.path)}")
+
+    ResourceTemplate.build(
+      uri: "skill://#{attrs.path}/*file",
+      name: attrs.path,
+      router: Module.concat([attrs.router, ResourceRouter, "Skill"]),
+      handler: attrs.handler,
+      function: attrs[:function] || Skill.function_name(name),
+      meta: attrs[:meta] || %{file: "nofile", line: 0}
+    )
   end
 
   @doc false
@@ -1236,7 +1347,8 @@ defmodule Phantom.Router do
             plug :match
             plug :dispatch
 
-            for resource_template <- unquote(Macro.escape(resource_templates)) do
+            for resource_template <-
+                  unquote(Macro.escape(sort_skill_routes(resource_templates))) do
               match(Phantom.ResourceTemplate.route(resource_template),
                 to: Phantom.ResourcePlug,
                 assigns: %{resource_template: resource_template}
@@ -1246,11 +1358,34 @@ defmodule Phantom.Router do
             match(_, to: Phantom.ResourcePlug.NotFound)
           end
 
-        true = :code.soft_purge(resource_router)
+        soft_purge!(resource_router)
         Module.create(resource_router, body, Macro.Env.location(env))
       end
     )
   end
+
+  # Wait for old code to finish, because a hard purge kills the processes that run it.
+  defp soft_purge!(module, attempts \\ 50) do
+    cond do
+      :code.soft_purge(module) ->
+        :ok
+
+      attempts > 0 ->
+        Process.sleep(20)
+        soft_purge!(module, attempts - 1)
+
+      true ->
+        raise "can't replace #{inspect(module)}: requests are still running its old code"
+    end
+  end
+
+  # A nested skill must match before its parent, because the parent route globs all files.
+  defp sort_skill_routes([%ResourceTemplate{scheme: "skill"} | _] = skills) do
+    Phantom.Router.Skills.validate_nesting!(skills)
+    Enum.sort_by(skills, &Phantom.Router.Skills.route_order/1)
+  end
+
+  defp sort_skill_routes(resource_templates), do: resource_templates
 
   @doc """
   Constructs a response map for the given resource with the provided parameters. This
@@ -1421,7 +1556,8 @@ defmodule Phantom.Router do
 
   def validate_task_subscriptions(_notifications, _session), do: :ok
 
-  defp resolve_resource(router, session, uri) when is_binary(uri) do
+  @doc false
+  def resolve_resource(router, session, uri) when is_binary(uri) do
     with {:ok, %{scheme: scheme} = uri_struct} when is_binary(scheme) <- URI.new(uri),
          resource_router when not is_nil(resource_router) <-
            get_resource_router(router, session, scheme) do
@@ -1443,7 +1579,7 @@ defmodule Phantom.Router do
     _ -> :error
   end
 
-  defp resolve_resource(_router, _session, _uri), do: :error
+  def resolve_resource(_router, _session, _uri), do: :error
 
   defp normalize_authorized_resources(_resources, nil), do: []
 
@@ -1539,6 +1675,21 @@ defmodule Phantom.Router do
     if tasks_enabled?(router) do
       extensions = Map.get(capabilities, :extensions, %{})
       Map.put(capabilities, :extensions, Map.put(extensions, Tasks.extension(), %{}))
+    else
+      capabilities
+    end
+  end
+
+  @doc false
+  def skill_capability(capabilities, router, session) do
+    if Enum.any?(Cache.list(session, router, :resource_templates), &(&1.scheme == "skill")) do
+      extensions = Map.get(capabilities, :extensions, %{})
+
+      Map.put(
+        capabilities,
+        :extensions,
+        Map.put(extensions, "io.modelcontextprotocol/skills", %{directoryRead: true})
+      )
     else
       capabilities
     end
@@ -1722,7 +1873,8 @@ defmodule Phantom.Router do
 
   def encode_request_state(result, _session), do: result
 
-  defp paginate(entities, cursor, fun) do
+  @doc false
+  def paginate(entities, cursor, fun) do
     if not is_nil(cursor) and not Enum.any?(entities, &(&1.name == cursor)) do
       {:error, Request.invalid_params(%{cursor: "Invalid cursor"})}
     else
@@ -1779,6 +1931,7 @@ defmodule Phantom.Router do
     result =
       session
       |> Cache.list(router, :resource_templates)
+      |> Enum.reject(&(&1.scheme == "skill"))
       |> paginate(cursor, &ResourceTemplate.to_json/1)
 
     case result do

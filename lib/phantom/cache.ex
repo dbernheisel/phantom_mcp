@@ -7,6 +7,8 @@ defmodule Phantom.Cache do
   to use the functions herein.
   """
 
+  require Logger
+
   @doc """
   Initialize the cache with compiled tooling for the given router.
 
@@ -63,16 +65,96 @@ defmodule Phantom.Cache do
     resource_templates =
       resource_template_spec |> List.wrap() |> Enum.map(&Phantom.ResourceTemplate.build/1)
 
-    existing = :persistent_term.get({Phantom, router, :resource_templates}, [])
+    with_lock(router, fn ->
+      existing = :persistent_term.get({Phantom, router, :resource_templates}, [])
 
-    resource_templates =
-      Enum.sort_by(Enum.uniq(resource_templates ++ existing), &{&1.scheme, &1.name})
+      resource_templates =
+        Enum.sort_by(Enum.uniq(resource_templates ++ existing), &{&1.scheme, &1.name})
 
-    validate!(resource_templates)
-    raise_if_duplicates(resource_templates)
-    :persistent_term.put({Phantom, router, :resource_templates}, resource_templates)
-    Phantom.Router.__create_resource_routers__(resource_templates, __CALLER__)
+      validate!(resource_templates)
+      raise_if_duplicates(resource_templates)
+      :persistent_term.put({Phantom, router, :resource_templates}, resource_templates)
+      Phantom.Router.__create_resource_routers__(resource_templates, __CALLER__)
+    end)
   end
+
+  @doc """
+  Add one skill, or a list of skills, for the given router. Each takes the same
+  arguments as `Phantom.Router.skill/3`:
+
+      Phantom.Cache.add_skill(MyApp.MCP.Router,
+        path: "acme/billing/refunds",
+        handler: MyApp.MCP.Skills,
+        function: :refunds
+      )
+
+  This regenerates the router's skill routes once for each call.
+  """
+  def add_skill(router, skill_specs) do
+    skill_specs =
+      if is_map(skill_specs) or Keyword.keyword?(skill_specs),
+        do: [skill_specs],
+        else: skill_specs
+
+    skills =
+      Enum.map(skill_specs, fn spec ->
+        spec |> Map.new() |> Map.put(:router, router) |> Phantom.Router.skill_template()
+      end)
+
+    validate!(skills)
+    register(router)
+
+    with_lock(router, fn ->
+      existing = :persistent_term.get({Phantom, router, :resource_templates}, [])
+      resource_templates = Enum.sort_by(Enum.uniq(skills ++ existing), & &1.name)
+      raise_if_duplicates(resource_templates)
+
+      __redefine_modules__(fn ->
+        resource_templates
+        |> Enum.filter(&(&1.scheme == "skill"))
+        |> Phantom.Router.__create_resource_routers__(__ENV__)
+      end)
+
+      :persistent_term.put({Phantom, router, :resource_templates}, resource_templates)
+    end)
+
+    :ok
+  end
+
+  # The lock is local, because :persistent_term and the generated routers are local to each node.
+  defp with_lock(router, fun), do: :global.trans({{__MODULE__, router}, self()}, fun, [node()])
+
+  @doc false
+  def __redefine_modules__(fun) do
+    {result, diagnostics} =
+      Code.with_diagnostics(fn ->
+        try do
+          {:ok, fun.()}
+        rescue
+          exception -> {:error, exception, __STACKTRACE__}
+        end
+      end)
+
+    for %{message: message, severity: severity} = diagnostic <- diagnostics,
+        not String.starts_with?(message, "redefining module") do
+      Logger.log(
+        if(severity == :error, do: :error, else: :warning),
+        Exception.format_file_line(
+          Path.relative_to_cwd(diagnostic.file || "nofile"),
+          line(diagnostic)
+        ) <>
+          " " <> message
+      )
+    end
+
+    case result do
+      {:ok, value} -> value
+      {:error, exception, stacktrace} -> reraise exception, stacktrace
+    end
+  end
+
+  defp line(%{position: {line, _column}}), do: line
+  defp line(%{position: line}), do: line
 
   @doc """
   List all the entities for the given type.

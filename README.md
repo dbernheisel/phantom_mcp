@@ -537,6 +537,50 @@ It may return the allowed tuples or just their URI strings. Returning `nil` or `
 returning an invalid value rejects the resources. URIs that do not resolve to an available resource
 template are rejected before the callback runs.
 
+## Defining Skills
+
+Phantom serves [Agent Skills](https://agentskills.io/) with the MCP Skills
+extension. Route a skill path under `skill://` to an action, the way a
+Phoenix router routes to a controller:
+
+```elixir
+defmodule MyApp.MCP.Router do
+  # ...
+
+  # skill://acme/billing/refunds/SKILL.md
+  skill "acme/billing/refunds", MyApp.MCP.Skills, :refunds
+  skill "studies/:study_id/study-review", MyApp.MCP.Skills, :study_review
+end
+```
+
+The action returns a `Phantom.Skill`. `embed_skills/1` compiles skill
+directories into functions; files ending in `.eex` render with assigns.
+
+```elixir
+defmodule MyApp.MCP.Skills do
+  use Phantom.Skill
+
+  # skills/refunds/SKILL.md.eex, skills/refunds/examples/email.md, ...
+  embed_skills "skills/*"
+
+  def refunds(_params, session) do
+    {:reply, refunds(%{user: session.assigns.user}), session}
+  end
+end
+```
+
+Phantom calls the action for `skills/list`, `skills/get`, `resources/read`,
+and `resources/directory/read`, and computes the digests clients verify from
+what it returns. A file can be a binary or a function that renders it when
+needed. Caching is opt-in with `Phantom.Skill.with_cache/2`. Parsing
+`SKILL.md` frontmatter needs the optional `{:yamerl, "~> 0.10"}` dependency.
+Skill routes are resource templates named by their path: they share names and
+allow-lists with your resource templates, and are not listed in
+`resources/templates/list`. Override `list_skills/2` in your router to decide
+which skills `skills/list` returns; by default it lists every skill route without
+path params. To add skills at runtime, use `Phantom.Cache.add_skill/2`. See
+`Phantom.Skill`.
+
 ## Eliciting input
 
 Two helpers, picked by how the dev wants to structure the handler.
@@ -702,6 +746,7 @@ Phantom will implement these MCP requests on your behalf:
 - `resources/read` dispatch the request to your handler. `Phantom.Resource`.
 - `resources/subscribe` available if the MCP router is configured with `pubsub`. To notify of updates, prefer `Phantom.Tracker.notify_resources_updated(uris)`; `notify_resource_updated(uri)` remains available for individual changes.
 - `resources/unsubscribe` see above.
+- `skills/list`, `skills/get`, and `resources/directory/read` serve skills from your router. Skills are resource templates, so `allow_resource_templates/2` limits them too. Read more in `Phantom.Skill`.
 - `logging/setLevel` available if the MCP router is configured with `pubsub`. Logs can be sent to client with `Session.log_{level}(session, map_content)`. [See docs](https://modelcontextprotocol.io/specification/20.6.03-26/server/utilities/logging#log-levels).
 - `tools/list` list either the allowed tools as provided in the `connect/2` callback or all tools by default. To disable, return `allow_tools(session, [])` in the `connect/2` callback.
 - `tools/call` dispatch the request to your handler. Read more in `Phantom.Tool`.
