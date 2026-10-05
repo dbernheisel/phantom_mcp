@@ -19,8 +19,9 @@ defmodule Phantom.Skill do
 
   The final segment of the path is the skill's name, and must equal the `name` in its
   frontmatter. Earlier segments organize skills and may contain path params, except the
-  first. Skills with path params are left out of `skills/list`, but clients can still
-  get them by URI.
+  first. The router's `c:Phantom.Router.list_skills/2` decides which skills
+  `skills/list` returns; by default, every route without path params. Clients can get
+  any served skill by URI.
 
   Each skill is a resource template named by its path, so skill paths share names with
   resource templates, and `Phantom.Session.allow_resource_templates/2` limits skills too.
@@ -183,6 +184,18 @@ defmodule Phantom.Skill do
   """
   @spec dynamic(t()) :: t()
   def dynamic(%__MODULE__{} = skill), do: %{skill | dynamic: true}
+
+  @doc """
+  The result of `c:Phantom.Router.list_skills/2`: the `SKILL.md` URIs to list, and
+  the cursor of the next page, or `nil` on the last page.
+  """
+  @spec list([String.t()], String.t() | nil) :: %{
+          required(:skills) => [String.t()],
+          optional(:nextCursor) => String.t()
+        }
+  def list(uris, next_cursor) do
+    Phantom.Utils.remove_nils(%{skills: List.wrap(uris), nextCursor: next_cursor})
+  end
 
   @doc """
   Let clients cache the skill's `skills/list` and `skills/get` entries.

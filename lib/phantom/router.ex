@@ -161,6 +161,28 @@ defmodule Phantom.Router do
               | {:error, any(), Session.t()}
 
   @doc """
+  List the skills that `skills/list` returns, as `SKILL.md` URIs.
+
+  Return `Phantom.Skill.list/2` with the URIs of one page and the cursor of the next
+  page. The cursor is opaque to Phantom. Phantom builds each entry as `skills/get` does,
+  and leaves out a URI that serves no skill to the session.
+
+  The default implementation lists every skill route without path params, by path.
+
+      def list_skills(cursor, session) do
+        {studies, next_cursor} = MyApp.Studies.page(session.assigns.user, cursor)
+        uris = Enum.map(studies, &"skill://studies/\#{&1.id}/study-review/SKILL.md")
+
+        {:reply, Phantom.Skill.list(["skill://git-workflow/SKILL.md" | uris], next_cursor),
+         session}
+      end
+  """
+  @callback list_skills(String.t() | nil, Session.t()) ::
+              {:reply, %{required(:skills) => [String.t()], optional(:nextCursor) => String.t()},
+               Session.t()}
+              | {:error, any(), Session.t()}
+
+  @doc """
   Authorize subscriptions and update notifications for resolved resources.
 
   Each resource is represented as `{uri, path_params, resource_template}`. Return either the
@@ -325,6 +347,10 @@ defmodule Phantom.Router do
 
       def list_resources(_cursor, session) do
         {:error, Request.not_found(), session}
+      end
+
+      def list_skills(cursor, session) do
+        Phantom.Router.Skills.default_list(__MODULE__, session, cursor)
       end
 
       @doc """
@@ -718,6 +744,7 @@ defmodule Phantom.Router do
 
       @doc false
       defoverridable list_resources: 2,
+                     list_skills: 2,
                      authorize_resource_subscriptions: 2,
                      authorize_task_subscriptions: 2,
                      server_info: 1,

@@ -19,6 +19,8 @@ defmodule Phantom.Router.Skills do
   defp param?(":" <> _), do: true
   defp param?(_segment), do: false
 
+  defp static?(route), do: not Enum.any?(segments(route), &param?/1)
+
   # A nested route cannot have path params, because its files are in the manifest of its parent.
   def validate_nesting!(routes) do
     for outer <- routes, inner <- routes, outer != inner do
@@ -41,10 +43,6 @@ defmodule Phantom.Router.Skills do
 
   defp skill_routes(router) do
     Enum.filter(Cache.list(nil, router, :resource_templates), &(&1.scheme == "skill"))
-  end
-
-  defp listable?(route) do
-    route.scheme == "skill" and not Enum.any?(segments(route), &param?/1)
   end
 
   defp concrete(route, params) do
@@ -235,39 +233,54 @@ defmodule Phantom.Router.Skills do
     end
   end
 
-  def list(router, session, cursor) do
-    routes = session |> Cache.list(router, :resource_templates) |> Enum.filter(&listable?/1)
+  def default_list(router, session, cursor) do
+    routes =
+      session
+      |> Cache.list(router, :resource_templates)
+      |> Enum.filter(&(&1.scheme == "skill" and static?(&1)))
 
-    case Phantom.Router.paginate(routes, cursor, & &1) do
-      {:ok, page, next_cursor} ->
-        all_routes = skill_routes(router)
-        results = Enum.map(page, &list_entry(router, all_routes, &1, session))
-        listed = for {:ok, entry, skills} <- results, do: {entry, skills}
-
-        # The listing is private when a route serves no skill to this session.
-        hints =
-          if length(listed) == length(page),
-            do: cache_hints(Enum.flat_map(listed, &elem(&1, 1)), session),
-            else: [ttl_ms: 0, scope: :private]
-
-        {:reply,
-         %{skills: Enum.map(listed, &elem(&1, 0))}
-         |> Map.merge(next_cursor || %{})
-         |> Request.with_cache(hints), session}
+    case Phantom.Router.paginate(routes, cursor, &(base_uri(segments(&1)) <> "/SKILL.md")) do
+      {:ok, uris, next_cursor} ->
+        {:reply, Skill.list(uris, next_cursor[:nextCursor]), session}
 
       {:error, error} ->
         {:error, error, session}
     end
   end
 
-  defp list_entry(router, routes, route, session) do
-    with {:ok, skill, session} <- call(route, %{}, session) do
-      entry(router, routes, skill, segments(route), session)
+  def list(router, session, cursor) do
+    case router.list_skills(cursor, session) do
+      {:reply, %{skills: uris} = page, session} ->
+        routes = skill_routes(router)
+        results = Enum.map(uris, &list_entry(router, routes, &1, session))
+        listed = for {:ok, entry, skills} <- results, do: {entry, skills}
+
+        # The listing is private when a URI serves no skill to this session.
+        hints =
+          if length(listed) == length(uris),
+            do: cache_hints(Enum.flat_map(listed, &elem(&1, 1)), session),
+            else: [ttl_ms: 0, scope: :private]
+
+        {:reply,
+         %{skills: Enum.map(listed, &elem(&1, 0))}
+         |> Map.merge(Map.take(page, [:nextCursor]))
+         |> Request.with_cache(hints), session}
+
+      {:error, _error, %Session{}} = error ->
+        error
+    end
+  end
+
+  defp list_entry(router, routes, uri, session) do
+    with {:ok, route, params, segments, "SKILL.md"} <- resolve(router, uri),
+         true <- accessible?(router, session, route, segments),
+         {:ok, skill, session} <- call(route, params, session) do
+      entry(router, routes, skill, segments, session)
     end
   catch
     kind, reason ->
       Logger.error(
-        "Skill #{inspect(route.name)} was left out of skills/list: " <>
+        "Skill #{uri} was left out of skills/list: " <>
           Exception.format(kind, reason, __STACKTRACE__)
       )
 

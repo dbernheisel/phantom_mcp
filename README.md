@@ -576,8 +576,10 @@ needed. Caching is opt-in with `Phantom.Skill.with_cache/2`. Parsing
 `SKILL.md` frontmatter needs the optional `{:yamerl, "~> 0.10"}` dependency.
 Skill routes are resource templates named by their path: they share names and
 allow-lists with your resource templates, and are not listed in
-`resources/templates/list`. To add skills at runtime, use
-`Phantom.Cache.add_skill/2`. See `Phantom.Skill`.
+`resources/templates/list`. Override `list_skills/2` in your router to decide
+which skills `skills/list` returns; by default it lists every skill route without
+path params. To add skills at runtime, use `Phantom.Cache.add_skill/2`. See
+`Phantom.Skill`.
 
 ## Eliciting input
 

@@ -30,6 +30,7 @@
   directories, rendering `.eex` files with assigns. Phantom serves
   `skills/list`, `skills/get`, `resources/read`, and `resources/directory/read`.
   Files render lazily, and caching is opt-in with `Phantom.Skill.with_cache/2`.
+  `c:Phantom.Router.list_skills/2` decides which skills `skills/list` returns.
   `Phantom.Cache.add_skill/2` adds a skill at runtime. The `skill://` scheme is
   reserved for skills.
 
