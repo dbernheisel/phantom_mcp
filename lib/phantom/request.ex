@@ -1,6 +1,6 @@
 defmodule Phantom.Request do
   @moduledoc "Standard requests and responses for the MCP protocol"
-  defstruct [:id, :type, :method, :params, :response, :spec, meta: %{}]
+  defstruct [:id, :type, :method, :params, :response, :error, :spec, meta: %{}]
 
   @opaque t :: %__MODULE__{
             id: String.t(),
@@ -8,6 +8,7 @@ defmodule Phantom.Request do
             method: String.t(),
             params: map(),
             response: map(),
+            error: map() | nil,
             spec: Phantom.ResourceTemplate.t() | Phantom.Tool.t() | Phantom.Prompt.t(),
             meta: map()
           }
@@ -186,6 +187,15 @@ defmodule Phantom.Request do
     {:ok,
      struct!(__MODULE__,
        response: result,
+       id: response["id"]
+     )}
+  end
+
+  def build(%{"jsonrpc" => "2.0", "error" => error} = response)
+      when is_map(error) do
+    {:ok,
+     struct!(__MODULE__,
+       error: error,
        id: response["id"]
      )}
   end

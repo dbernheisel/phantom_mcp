@@ -37,6 +37,9 @@ defmodule Phantom.SessionMeta do
     end
   end
 
+  @doc "Whether session metadata is kept on this node."
+  def available?, do: table?()
+
   @doc "Remove a session's metadata from every node."
   def delete(pubsub, session_id) do
     if table?(), do: :ets.delete(@table, session_id)
