@@ -590,6 +590,202 @@ defmodule Phantom.Conformance.MCP.Router do
 
   defp roots_request, do: %{method: "roots/list", params: %{}}
 
+  ## Tasks
+
+  # A global Agent lets every node in the cluster answer `tasks/*`.
+  @tasks {:global, Phantom.Conformance.Tasks}
+
+  tool :greet, description: "Returns a greeting without a task" do
+    field :name, :string, required: true
+  end
+
+  tool :slow_compute, description: "Sleeps for the given seconds, then returns a result" do
+    field :seconds, :integer, required: true
+    field :label, :string
+  end
+
+  tool :failing_job, description: "Requires a task; ends with a tool error after about a second"
+  tool :protocol_error_job, description: "Runs as a task that fails with a protocol error"
+
+  tool :confirm_delete, description: "Asks to confirm, then deletes a file" do
+    field :filename, :string, required: true
+  end
+
+  tool :multi_input, description: "Asks for two inputs at once, then completes"
+  tool :test_tool_with_task, description: "Asks for a name, then greets it from a task"
+
+  def greet(%{"name" => name}, session), do: {:reply, Tool.text("Hello, #{name}!"), session}
+
+  def slow_compute(%{"seconds" => seconds} = params, session) do
+    label = params["label"] || "compute"
+
+    if seconds > 0 and Session.tasks_supported?(session) do
+      task =
+        start_task(fn ->
+          Process.sleep(:timer.seconds(seconds))
+          {:completed, Tool.response(Tool.text("Computed #{label}"))}
+        end)
+
+      {:reply, task, session}
+    else
+      Process.sleep(:timer.seconds(seconds))
+      {:reply, Tool.text("Computed #{label}"), session}
+    end
+  end
+
+  def failing_job(_params, session) do
+    if Session.tasks_supported?(session) do
+      task =
+        start_task(fn ->
+          Process.sleep(1_000)
+          {:completed, Tool.error("failing_job failed")}
+        end)
+
+      {:reply, task, session}
+    else
+      {:error, Phantom.Request.missing_task_capability(), session}
+    end
+  end
+
+  def protocol_error_job(_params, session) do
+    if Session.tasks_supported?(session) do
+      task =
+        start_task(fn ->
+          {:failed, Phantom.Request.internal_error("protocol_error_job failed")}
+        end)
+
+      {:reply, task, session}
+    else
+      {:error, Phantom.Request.missing_task_capability(), session}
+    end
+  end
+
+  def confirm_delete(%{"filename" => filename}, session) do
+    if Session.tasks_supported?(session) do
+      requests = %{"confirm" => elicit_request("Delete #{filename}?", "confirm", "boolean")}
+      {:reply, await_input_task(requests, "Deleted #{filename}"), session}
+    else
+      {:error, Phantom.Request.missing_task_capability(), session}
+    end
+  end
+
+  def multi_input(_params, session) do
+    if Session.tasks_supported?(session) do
+      requests = %{
+        "name" => elicit_request("What is your name?", "name"),
+        "confirm" => elicit_request("Continue?", "confirm", "boolean")
+      }
+
+      {:reply, await_input_task(requests, "Received all input"), session}
+    else
+      {:error, Phantom.Request.missing_task_capability(), session}
+    end
+  end
+
+  def test_tool_with_task(_params, session) do
+    case {session.state, input_responses(session)} do
+      {%{step: :named}, %{"user_name" => response}} ->
+        name = input_text(response, "name")
+        task = start_task(fn -> {:completed, Tool.response(Tool.text("Hello, #{name}!"))} end)
+        {:reply, task, session}
+
+      _ ->
+        {:reply,
+         Tool.input_required(
+           input_requests: %{"user_name" => elicit_request("What is your name?", "name")},
+           state: %{step: :named}
+         ), session}
+    end
+  end
+
+  def get_task(task_id, _session) do
+    case Agent.get(tasks(), &Map.get(&1, task_id)) do
+      nil -> {:error, :not_found}
+      %{task: task} -> {:ok, task}
+    end
+  end
+
+  def update_task(task, responses, _session) do
+    update_stored_task(task.id, fn %{task: task, on_input: result} = entry ->
+      remaining = Map.drop(task.input_requests, Map.keys(responses))
+
+      task =
+        if map_size(remaining) == 0,
+          do: %{task | status: :completed, input_requests: %{}, result: Tool.response(result)},
+          else: %{task | input_requests: remaining}
+
+      %{entry | task: task}
+    end)
+  end
+
+  def cancel_task(task, _session) do
+    update_stored_task(task.id, fn %{task: task} = entry ->
+      %{entry | task: %{task | status: :cancelled, status_message: "Cancelled by the client"}}
+    end)
+  end
+
+  defp start_task(work) do
+    task = new_task(:working, %{})
+    Agent.update(tasks(), &Map.put(&1, task.id, %{task: task, on_input: nil}))
+
+    spawn(fn ->
+      outcome = work.()
+
+      update_stored_task(task.id, fn
+        %{task: %{status: :working} = task} = entry -> %{entry | task: finish(task, outcome)}
+        entry -> entry
+      end)
+    end)
+
+    task
+  end
+
+  defp await_input_task(requests, result) do
+    task = new_task(:input_required, requests)
+    Agent.update(tasks(), &Map.put(&1, task.id, %{task: task, on_input: Tool.text(result)}))
+    task
+  end
+
+  defp new_task(status, input_requests) do
+    Phantom.Tasks.new(
+      id: Phantom.Tasks.generate_id(),
+      status: status,
+      created_at: DateTime.utc_now(),
+      ttl_ms: :timer.minutes(5),
+      poll_interval_ms: 200,
+      input_requests: input_requests
+    )
+  end
+
+  defp finish(task, {:completed, result}), do: %{task | status: :completed, result: result}
+  defp finish(task, {:failed, error}), do: %{task | status: :failed, error: error}
+
+  # A terminal task never changes, so a late update or cancel is a no-op.
+  defp update_stored_task(task_id, fun) do
+    updated =
+      Agent.get_and_update(tasks(), fn tasks ->
+        case Map.fetch(tasks, task_id) do
+          {:ok, %{task: %{status: status}} = entry} when status in [:working, :input_required] ->
+            entry = fun.(entry)
+            entry = put_in(entry.task.last_updated_at, DateTime.utc_now())
+            {entry.task, Map.put(tasks, task_id, entry)}
+
+          _ ->
+            {nil, tasks}
+        end
+      end)
+
+    if updated, do: Phantom.Tracker.notify_task_updated(updated)
+    :ok
+  end
+
+  defp tasks do
+    case Agent.start(fn -> %{} end, name: @tasks) do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
+    end
+  end
+
   ## Resources
 
   resource "test://static-text", :static_text,

@@ -275,6 +275,21 @@ defmodule Phantom.Session do
 
   def stateless?(_), do: false
 
+  @doc """
+  Whether the client declared the Tasks extension on the current request, so
+  a tool may answer it with a `Phantom.Tasks`. The extension requires MCP
+  `2026-07-28`, and only the current request counts.
+  """
+  def tasks_supported?(%__MODULE__{request: request} = session) do
+    stateless?(session) and
+      is_map(
+        get_in(Request.client_capabilities(request) || %{}, [
+          "extensions",
+          Phantom.Tasks.extension()
+        ])
+      )
+  end
+
   defp do_elicit(session, elicitation, opts) do
     timeout = Keyword.get(opts, :timeout, @elicitation_timeout)
 
@@ -387,6 +402,16 @@ defmodule Phantom.Session do
       |> Phantom.Router.resolve_resources(session, Map.get(filter, "resourceSubscriptions", []))
       |> then(&Phantom.Router.authorize_resource_subscriptions(session.router, &1, session))
       |> Enum.each(&Phantom.Tracker.subscribe_resource/1)
+
+      task_ids =
+        Phantom.Router.authorize_task_subscriptions(
+          session.router,
+          Map.get(filter, "taskIds", []),
+          session
+        )
+
+      Enum.each(task_ids, &Phantom.Tracker.subscribe_task/1)
+      filter = filter |> Map.delete("taskIds") |> maybe_put_subscription("taskIds", task_ids)
 
       session = %{
         session
@@ -551,15 +576,72 @@ defmodule Phantom.Session do
   def ping(pid) when is_pid(pid), do: GenServer.cast(pid, :ping)
 
   @doc """
+  A reference to the current request that another process, on any node, can
+  pass to `notify_progress/4`. It is a JSON-safe map, so it can travel in job
+  arguments, such as an Oban job's.
+
+  Returns `nil` when the client did not ask for progress or the session has
+  no PubSub, and `notify_progress/4` does nothing with `nil`.
+
+      args = %{report_id: id, progress: Phantom.Session.progress_ref(session)}
+
+      # In the job, on any node:
+      Phantom.Session.notify_progress(args["progress"], 50, 100, "Halfway")
+  """
+  @spec progress_ref(t()) :: map() | nil
+  def progress_ref(%__MODULE__{pubsub: pubsub, request: %Request{id: request_id}} = session)
+      when is_atom(pubsub) and not is_nil(pubsub) do
+    case progress_token(session) do
+      nil ->
+        nil
+
+      token ->
+        %{
+          "pubsub" => Atom.to_string(pubsub),
+          "session_id" => session.id,
+          "request_id" => request_id,
+          "progress_token" => token
+        }
+    end
+  end
+
+  def progress_ref(%__MODULE__{}), do: nil
+
+  @doc """
   Send a progress notification to the client
 
   the `progress` and `total` can be a integer or float, but must be ever-increasing.
   the `total` is optional.
 
+  Pass the session, or a reference from `progress_ref/1` to notify from
+  another process or node.
+
   https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/progress
   """
-  @spec notify_progress(t, number(), nil | number(), String.t() | nil) :: :ok
+  @spec notify_progress(t | map() | nil, number(), nil | number(), String.t() | nil) :: :ok
   def notify_progress(session, progress, total \\ nil, message \\ nil)
+
+  def notify_progress(nil, _progress, _total, _message), do: :ok
+
+  def notify_progress(
+        %{
+          "pubsub" => pubsub,
+          "session_id" => session_id,
+          "request_id" => request_id,
+          "progress_token" => token
+        },
+        progress,
+        total,
+        message
+      ) do
+    pubsub
+    |> String.to_existing_atom()
+    |> Phantom.Tracker.cast_request(
+      session_id,
+      request_id,
+      {:progress, token, progress, total, message}
+    )
+  end
 
   def notify_progress(%__MODULE__{} = session, progress, total, message) do
     {pid, _request_id, token} = route(session)
@@ -635,6 +717,8 @@ defmodule Phantom.Session do
 
     {request, ref} =
       Phantom.Elicit.prepare_request(state.session.id, tool_call_id, elicitation)
+
+    Phantom.Tracker.subscribe_client_response(state.session.pubsub, request.id)
 
     caller = %{from: from, request_id: request.id}
 
@@ -869,6 +953,33 @@ defmodule Phantom.Session do
     end
   end
 
+  def handle_cast({:task_updated, task_id}, state) do
+    notifications =
+      case Phantom.Router.get_task_for_notification(state.session.router, task_id, state.session) do
+        {:ok, task} ->
+          if task.status in [:completed, :failed, :cancelled],
+            do: Phantom.Tracker.unsubscribe_task(task.id)
+
+          subscription_notifications(
+            state.session,
+            "taskIds",
+            task.id,
+            Request.task_updated(Phantom.Tasks.to_json(task))
+          )
+
+        :error ->
+          []
+      end
+
+    if notifications != [] do
+      cancel_inactivity(state)
+      state = stream_notifications(state, notifications)
+      {:noreply, state |> set_activity() |> schedule_inactivity()}
+    else
+      {:noreply, state}
+    end
+  end
+
   def handle_cast({:resource_updated, uri}, state),
     do: handle_cast({:resources_updated, [uri]}, state)
 
@@ -945,20 +1056,24 @@ defmodule Phantom.Session do
 
   defp normalize_subscription_filter(filter) do
     resource_subscriptions = Map.get(filter, "resourceSubscriptions", [])
+    task_ids = Map.get(filter, "taskIds", [])
 
-    if is_list(resource_subscriptions) and Enum.all?(resource_subscriptions, &is_binary/1) do
+    if string_list?(resource_subscriptions) and string_list?(task_ids) do
       normalized =
         %{}
         |> maybe_put_subscription("toolsListChanged", filter["toolsListChanged"] == true)
         |> maybe_put_subscription("promptsListChanged", filter["promptsListChanged"] == true)
         |> maybe_put_subscription("resourcesListChanged", filter["resourcesListChanged"] == true)
         |> maybe_put_subscription("resourceSubscriptions", Enum.uniq(resource_subscriptions))
+        |> maybe_put_subscription("taskIds", Enum.uniq(task_ids))
 
       {:ok, normalized}
     else
       :error
     end
   end
+
+  defp string_list?(list), do: is_list(list) and Enum.all?(list, &is_binary/1)
 
   defp maybe_put_subscription(filter, _key, false), do: filter
   defp maybe_put_subscription(filter, _key, []), do: filter
@@ -1058,6 +1173,12 @@ defmodule Phantom.Session do
       |> Map.new()
 
     {:noreply, Map.put(state, :workers, workers)}
+  end
+
+  def handle_info({:phantom_client_response, request_id, response}, state) do
+    Phantom.Tracker.unsubscribe_client_response(state.session.pubsub, request_id)
+    Phantom.Tracker.untrack_request(request_id)
+    {:noreply, route_local_elicit_response({request_id, response}, state)}
   end
 
   def handle_info({:phantom_elicitation_response, ref, response}, state) do
@@ -1203,6 +1324,8 @@ defmodule Phantom.Session do
       error = Request.error(request_id, Request.duplicate_request())
       state.stream_fun.(state, request_id, "message", error)
     else
+      Phantom.Tracker.subscribe_request(state.session.pubsub, state.session.id, request_id)
+
       state
       |> claim_in_flight(request_id)
       |> do_dispatch_stdio_request(request)

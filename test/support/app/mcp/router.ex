@@ -57,6 +57,11 @@ defmodule Test.MCP.Router do
 
   def connect(session, _context), do: {:ok, session}
 
+  def get_task("task-" <> _ = id, _session),
+    do: {:ok, Phantom.Tasks.new(id: id, status: :working, created_at: ~U[2025-11-25 10:30:00Z])}
+
+  def get_task(_id, _session), do: {:error, :not_found}
+
   def terminate(session) do
     if Test.SessionStore.running?(), do: Test.SessionStore.delete(session.id)
     {:ok, session}
@@ -247,6 +252,7 @@ defmodule Test.MCP.Router do
   tool :really_long_async_tool, AsyncModule, description: "this will notify of progress"
   tool :timeout_async_tool, AsyncModule, description: "this will timeout!"
   tool :hanging_tool, description: "Never responds, so only cancellation ends it"
+  tool :remote_progress_tool, description: "Reports progress from another node, then responds"
 
   @audio File.read!(@base <> "/game-over.wav")
   def audio_tool(_params, session) do
@@ -319,6 +325,20 @@ defmodule Test.MCP.Router do
   end
 
   def hanging_tool(_params, session), do: {:noreply, session}
+
+  # Another node stands in for a job that only has the progress reference.
+  def remote_progress_tool(_params, session) do
+    ref = Session.progress_ref(session)
+    target = Enum.find(Node.list(), node(), &String.starts_with?(Atom.to_string(&1), "node"))
+
+    Node.spawn(target, fn ->
+      Session.notify_progress(ref, 50, 100, "Halfway on #{node()}")
+      Process.sleep(200)
+      Session.respond(session, Tool.text("Done"))
+    end)
+
+    {:noreply, session}
+  end
 
   def client_log_tool(params, session) do
     message = params["message"] || "client-log-test"

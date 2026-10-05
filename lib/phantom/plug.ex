@@ -386,12 +386,31 @@ defmodule Phantom.Plug do
         true
 
       accept ->
-        accept
-        |> Enum.flat_map(&String.split(&1, ","))
-        |> Enum.map(&(&1 |> String.split(";") |> hd() |> String.trim() |> String.downcase()))
-        |> Enum.any?(&(&1 in ~w[text/event-stream text/* */*]))
+        ranges = accept |> Enum.flat_map(&String.split(&1, ",")) |> Enum.map(&media_range/1)
+
+        # The most specific matching range decides, and q=0 refuses it (RFC 9110 §12.5.1).
+        case Enum.find_value(~w[text/event-stream text/* */*], &List.keyfind(ranges, &1, 0)) do
+          {_type, q} -> q > 0
+          nil -> false
+        end
     end
   end
+
+  defp media_range(range) do
+    [type | params] =
+      range |> String.split(";") |> Enum.map(&(&1 |> String.trim() |> String.downcase()))
+
+    {type, Enum.find_value(params, 1.0, &quality/1)}
+  end
+
+  defp quality("q=" <> value) do
+    case Float.parse(value) do
+      {q, ""} -> q
+      _invalid -> 1.0
+    end
+  end
+
+  defp quality(_param), do: nil
 
   defp validate_protocol_request(%Plug.Conn{halted: true} = conn), do: conn
 
@@ -596,7 +615,16 @@ defmodule Phantom.Plug do
     header_method = mcp_header(conn, "mcp-method")
     body_name = name_from_params(body_method, Map.get(params, "params"))
     header_name = mcp_header(conn, "mcp-name") |> decode_header_value()
-    needs_name? = body_method in ["tools/call", "prompts/get", "resources/read"]
+
+    needs_name? =
+      body_method in [
+        "tools/call",
+        "prompts/get",
+        "resources/read",
+        "tasks/get",
+        "tasks/update",
+        "tasks/cancel"
+      ]
 
     cond do
       is_nil(header_method) ->
@@ -623,6 +651,7 @@ defmodule Phantom.Plug do
   end
 
   defp name_from_params("resources/read", params) when is_map(params), do: params["uri"]
+  defp name_from_params("tasks/" <> _, params) when is_map(params), do: params["taskId"]
   defp name_from_params(_method, params) when is_map(params), do: params["name"]
   defp name_from_params(_method, _params), do: nil
 
@@ -859,6 +888,7 @@ defmodule Phantom.Plug do
         {state, exceptions}
 
       :ok ->
+        subscribe_request(state.session, request)
         run_dispatch(state, request, exceptions)
     end
   end
@@ -1269,6 +1299,13 @@ defmodule Phantom.Plug do
        do: Phantom.Tracker.track_in_flight(session_id, id)
 
   defp claim_in_flight(_session_id, _request), do: :ok
+
+  # `Phantom.Session.notify_progress/4` reaches the request through this topic.
+  defp subscribe_request(session, %Request{id: id, method: method})
+       when method in @dedupable_methods and not is_nil(id),
+       do: Phantom.Tracker.subscribe_request(session.pubsub, session.id, id)
+
+  defp subscribe_request(_session, _request), do: :ok
 
   defp release_in_flight(session_id, %Request{id: id, method: method})
        when method in @dedupable_methods and not is_nil(id),

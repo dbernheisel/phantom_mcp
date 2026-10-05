@@ -41,6 +41,7 @@ defmodule Phantom.Router do
   alias Phantom.Resource
   alias Phantom.ResourceTemplate
   alias Phantom.Session
+  alias Phantom.Tasks
   alias Phantom.Tool
   alias Phantom.Tool.JSONSchema
 
@@ -176,6 +177,60 @@ defmodule Phantom.Router do
   @callback authorize_resource_subscriptions([resolved_resource()], Session.t()) ::
               [resolved_resource() | String.t()] | nil
 
+  @doc """
+  Fetch a task the client asked about with `tasks/get`, `tasks/update`, or
+  `tasks/cancel`. Implementing it enables the Tasks extension
+  (`io.modelcontextprotocol/tasks`); see `Phantom.Tasks`.
+
+  This is where you check that the session may access the task. Return
+  `{:error, :not_found}` when it may not, so the client cannot tell the task
+  exists. Return `{:error, :expired}` for a task past its TTL, or a JSON-RPC
+  error map for anything else.
+  """
+  @callback get_task(task_id :: String.t(), Session.t()) ::
+              {:ok, Phantom.Tasks.t()} | {:error, :not_found | :expired | map()}
+
+  @doc """
+  Receive the client's responses to a task's `input_requests` from
+  `tasks/update`, such as to resume the work.
+
+  The task is the one `c:get_task/2` returned. Only responses for keys still
+  outstanding on it are passed; Phantom acknowledges the request without
+  calling this when none are, or when this callback is not implemented.
+  """
+  @callback update_task(Phantom.Tasks.t(), input_responses :: map(), Session.t()) ::
+              :ok | {:error, map()}
+
+  @doc """
+  Cancel a task, such as by cancelling its job, when the client sends
+  `tasks/cancel`.
+
+  The task is the one `c:get_task/2` returned. Cancellation is cooperative:
+  the task may still finish with another status. Without this callback,
+  Phantom acknowledges the request and the task carries on.
+  """
+  @callback cancel_task(Phantom.Tasks.t(), Session.t()) :: :ok | {:error, map()}
+
+  @doc """
+  Authorize task status notifications for task IDs a client listens to with
+  `subscriptions/listen`.
+
+  Return the allowed task IDs. Returning `nil` or an empty list, raising, or
+  returning an invalid value rejects them all, and IDs the client did not ask
+  for are ignored.
+
+  Phantom invokes this callback when a client listens. Override it to check
+  many tasks with one query. Before each `notifications/tasks`, Phantom fetches
+  the task with `c:get_task/2`, so revoked access takes effect on the next
+  update and the client gets the stored task.
+
+  The default implementation allows the tasks `c:get_task/2` returns.
+  """
+  @callback authorize_task_subscriptions([task_id :: String.t()], Session.t()) ::
+              [String.t()] | nil
+
+  @optional_callbacks get_task: 2, update_task: 3, cancel_task: 2
+
   @dialyzer {:nowarn_function, default_vsn: 1}
   defp default_vsn(nil) do
     Mix.Project.config()[:version]
@@ -240,6 +295,10 @@ defmodule Phantom.Router do
       def connect(session, _auth_info), do: {:ok, session}
       def disconnect(session), do: {:ok, session}
       def authorize_resource_subscriptions(resources, _session), do: resources
+
+      def authorize_task_subscriptions(task_ids, session),
+        do: Phantom.Router.authorize_gettable_tasks(__MODULE__, task_ids, session)
+
       def terminate(session), do: {:error, nil}
 
       def instructions(_session), do: {:ok, @instructions}
@@ -474,6 +533,7 @@ defmodule Phantom.Router do
           |> Phantom.Router.completion_capability(__MODULE__, session)
           |> Phantom.Router.logging_capability(__MODULE__, session)
           |> Phantom.Router.ui_capability(__MODULE__, session)
+          |> Phantom.Router.tasks_capability(__MODULE__)
 
         {:reply,
          %{
@@ -504,8 +564,11 @@ defmodule Phantom.Router do
             request,
             session
           ) do
-        case Session.listen(session, request.id, notifications) do
-          {:ok, session} -> {:noreply, session}
+        with :ok <- Phantom.Router.validate_task_subscriptions(notifications, session),
+             {:ok, session} <- Session.listen(session, request.id, notifications) do
+          {:noreply, session}
+        else
+          {:error, error} -> {:error, error, session}
           :error -> {:error, Request.invalid_params(), session}
         end
       end
@@ -523,6 +586,10 @@ defmodule Phantom.Router do
 
       def dispatch_method("tools/call", %{"name" => name} = params, request, session) do
         Phantom.Router.get_tool(__MODULE__, session, params, request)
+      end
+
+      def dispatch_method("tasks/" <> _ = method, params, _request, session) do
+        Phantom.Router.task_request(__MODULE__, method, params, session)
       end
 
       def dispatch_method(
@@ -611,13 +678,13 @@ defmodule Phantom.Router do
 
       def dispatch_method(_method, _params, %{id: request_id, response: %{} = response}, session)
           when is_binary(request_id) do
-        Phantom.Router.route_client_response(request_id, response)
+        Phantom.Router.route_client_response(session.pubsub, request_id, response)
         {:reply, nil, session}
       end
 
       def dispatch_method(_method, _params, %{id: request_id, error: %{} = error}, session)
           when is_binary(request_id) do
-        Phantom.Router.route_client_response(request_id, {:error, error})
+        Phantom.Router.route_client_response(session.pubsub, request_id, {:error, error})
         {:reply, nil, session}
       end
 
@@ -628,6 +695,7 @@ defmodule Phantom.Router do
       @doc false
       defoverridable list_resources: 2,
                      authorize_resource_subscriptions: 2,
+                     authorize_task_subscriptions: 2,
                      server_info: 1,
                      disconnect: 1,
                      connect: 2,
@@ -1283,6 +1351,76 @@ defmodule Phantom.Router do
       []
   end
 
+  @doc false
+  def authorize_task_subscriptions(_router, [], _session), do: []
+
+  def authorize_task_subscriptions(router, task_ids, session) do
+    case router.authorize_task_subscriptions(task_ids, session) do
+      allowed when is_list(allowed) ->
+        allowed = MapSet.new(allowed)
+        Enum.filter(task_ids, &MapSet.member?(allowed, &1))
+
+      _invalid ->
+        []
+    end
+  rescue
+    exception ->
+      Logger.error(
+        "Task subscription authorization failed closed in #{inspect(router)}: " <>
+          Exception.message(exception)
+      )
+
+      []
+  catch
+    kind, reason ->
+      Logger.error(
+        "Task subscription authorization failed closed in #{inspect(router)}: " <>
+          Exception.format_banner(kind, reason)
+      )
+
+      []
+  end
+
+  # Fails closed, as a stream must not crash on the user's callback.
+  @doc false
+  def get_task_for_notification(router, task_id, session) do
+    case router.get_task(task_id, session) do
+      {:ok, %Tasks{} = task} -> {:ok, task}
+      _ -> :error
+    end
+  rescue
+    exception ->
+      Logger.error(
+        "Task notification failed closed in #{inspect(router)}: " <> Exception.message(exception)
+      )
+
+      :error
+  catch
+    kind, reason ->
+      Logger.error(
+        "Task notification failed closed in #{inspect(router)}: " <>
+          Exception.format_banner(kind, reason)
+      )
+
+      :error
+  end
+
+  @doc false
+  def authorize_gettable_tasks(router, task_ids, session) do
+    if tasks_enabled?(router),
+      do: Enum.filter(task_ids, &match?({:ok, _}, router.get_task(&1, session))),
+      else: []
+  end
+
+  @doc false
+  def validate_task_subscriptions(%{"taskIds" => [_ | _]}, session) do
+    if Session.tasks_supported?(session),
+      do: :ok,
+      else: {:error, Request.missing_task_capability()}
+  end
+
+  def validate_task_subscriptions(_notifications, _session), do: :ok
+
   defp resolve_resource(router, session, uri) when is_binary(uri) do
     with {:ok, %{scheme: scheme} = uri_struct} when is_binary(scheme) <- URI.new(uri),
          resource_router when not is_nil(resource_router) <-
@@ -1397,6 +1535,16 @@ defmodule Phantom.Router do
   end
 
   @doc false
+  def tasks_capability(capabilities, router) do
+    if tasks_enabled?(router) do
+      extensions = Map.get(capabilities, :extensions, %{})
+      Map.put(capabilities, :extensions, Map.put(extensions, Tasks.extension(), %{}))
+    else
+      capabilities
+    end
+  end
+
+  @doc false
   def completion_capability(capabilities, router, session) do
     resource_templates = Cache.list(session, router, :resource_templates)
     prompts = Cache.list(session, router, :prompts)
@@ -1412,8 +1560,9 @@ defmodule Phantom.Router do
 
   @doc false
   # Deliver the client's response to a server-initiated request (a result
-  # map, or `{:error, error}`) to the process waiting on it.
-  def route_client_response(request_id, response) do
+  # map, or `{:error, error}`) to the process waiting on it. PubSub reaches it
+  # at once on any node; a Tracker lookup can miss an unreplicated request.
+  def route_client_response(nil, request_id, response) do
     require Logger
 
     case await_request_meta(request_id) do
@@ -1427,6 +1576,9 @@ defmodule Phantom.Router do
         Logger.debug("No tracked handler for response #{request_id}")
     end
   end
+
+  def route_client_response(pubsub, request_id, response),
+    do: Phantom.Tracker.cast_client_response(pubsub, request_id, response)
 
   @doc false
   # Wait for a tracked request to become visible via Tracker replication.
@@ -1819,6 +1971,14 @@ defmodule Phantom.Router do
     end
   end
 
+  defp finalize_result(:tool, {:reply, %Tasks{} = task, %Session{}}, _spec, _params, session) do
+    if Session.tasks_supported?(session) do
+      task |> Tasks.to_create_result() |> respond_to_caller()
+    else
+      respond_error_to_caller(Request.missing_task_capability())
+    end
+  end
+
   defp finalize_result(kind, {:reply, result, %Session{}}, spec, _params, session) do
     formatted = format_response(kind, result, session)
 
@@ -1849,7 +2009,7 @@ defmodule Phantom.Router do
         elicitations
         |> Enum.with_index()
         |> Map.new(fn {elicit, index} ->
-          request = elicit |> Elicit.to_input_requests() |> Map.fetch!("elicitation")
+          request = Elicit.to_input_request(elicit)
           {"elicitation-#{index}", request}
         end)
 
@@ -2071,6 +2231,96 @@ defmodule Phantom.Router do
   defp elicit_response_args(%{"content" => content}) when is_map(content), do: content
   defp elicit_response_args(response) when is_map(response), do: response
   defp elicit_response_args(_response), do: %{}
+
+  @doc false
+  def task_request(router, method, params, session) do
+    with :ok <- validate_task_method(router, method, session),
+         :ok <- validate_tasks_supported(session),
+         {:ok, task_id} <- fetch_task_id(params),
+         {:ok, task} <- fetch_task(router, task_id, session) do
+      run_task_method(method, router, task, params, session)
+    else
+      {:error, error} -> {:error, error, session}
+    end
+  end
+
+  @doc false
+  def tasks_enabled?(router), do: function_exported?(router, :get_task, 2)
+
+  @task_methods ["tasks/get", "tasks/update", "tasks/cancel"]
+
+  # The extension exists only under MCP 2026-07-28.
+  defp validate_task_method(router, method, session) do
+    if method in @task_methods and tasks_enabled?(router) and Session.stateless?(session),
+      do: :ok,
+      else: {:error, Request.not_found()}
+  end
+
+  defp validate_tasks_supported(session) do
+    if Session.tasks_supported?(session),
+      do: :ok,
+      else: {:error, Request.missing_task_capability()}
+  end
+
+  defp fetch_task_id(%{"taskId" => task_id}) when is_binary(task_id), do: {:ok, task_id}
+
+  defp fetch_task_id(_params),
+    do: {:error, Request.invalid_params(%{taskId: "must be a string"})}
+
+  defp fetch_task(router, task_id, session) do
+    case router.get_task(task_id, session) do
+      {:ok, %Tasks{} = task} -> {:ok, task}
+      {:error, :not_found} -> {:error, Request.task_not_found()}
+      {:error, :expired} -> {:error, Request.task_expired()}
+      {:error, error} when is_map(error) -> {:error, error}
+      other -> raise_callback_result!(router, "get_task/2", other)
+    end
+  end
+
+  defp run_task_method("tasks/get", _router, task, _params, session),
+    do: {:reply, Tasks.to_json(task), session}
+
+  # The spec recommends ignoring responses to keys the task is not waiting on.
+  defp run_task_method("tasks/update", router, task, %{"inputResponses" => responses}, session)
+       when is_map(responses) do
+    outstanding =
+      if task.status == :input_required,
+        do: Map.take(responses, Map.keys(task.input_requests)),
+        else: %{}
+
+    if map_size(outstanding) > 0 and function_exported?(router, :update_task, 3),
+      do:
+        task_callback_result(
+          router,
+          "update_task/3",
+          router.update_task(task, outstanding, session),
+          session
+        ),
+      else: {:reply, %{}, session}
+  end
+
+  defp run_task_method("tasks/update", _router, _task, _params, session),
+    do: {:error, Request.invalid_params(%{inputResponses: "must be an object"}), session}
+
+  defp run_task_method("tasks/cancel", router, task, _params, session) do
+    if function_exported?(router, :cancel_task, 2),
+      do:
+        task_callback_result(router, "cancel_task/2", router.cancel_task(task, session), session),
+      else: {:reply, %{}, session}
+  end
+
+  defp task_callback_result(_router, _callback, :ok, session), do: {:reply, %{}, session}
+
+  defp task_callback_result(_router, _callback, {:error, error}, session) when is_map(error),
+    do: {:error, error, session}
+
+  defp task_callback_result(router, callback, other, _session),
+    do: raise_callback_result!(router, callback, other)
+
+  defp raise_callback_result!(router, callback, value) do
+    raise ArgumentError,
+          "#{inspect(router)}.#{callback} returned an unexpected value: #{inspect(value)}"
+  end
 
   @doc false
   def get_prompt(router, session, name) do

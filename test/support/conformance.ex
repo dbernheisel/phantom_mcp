@@ -58,13 +58,34 @@ defmodule Phantom.Test.Conformance do
   end
 
   defp npx(args) do
+    results =
+      Path.join(System.tmp_dir!(), "phantom-conformance-#{System.unique_integer([:positive])}")
+
     {output, status} =
-      System.cmd("npx", ["conformance", "server", "--timeout", "15000" | args],
+      System.cmd(
+        "npx",
+        ["conformance", "server", "--timeout", "15000", "--output-dir", results | args],
         stderr_to_stdout: true,
         env: [{"NO_COLOR", "1"}, {"FORCE_COLOR", "0"}]
       )
 
+    output = if status == 0, do: output, else: output <> failed_checks(results)
+    File.rm_rf(results)
     {status, output}
+  end
+
+  # The summary names only the scenario, so the report adds each failed check.
+  defp failed_checks(results) do
+    failures =
+      for path <- Path.wildcard(Path.join(results, "*/checks.json")),
+          check <- path |> File.read!() |> JSON.decode!(),
+          check["status"] == "FAILURE" do
+        scenario = path |> Path.dirname() |> Path.basename()
+        details = if check["details"], do: "\n      " <> JSON.encode!(check["details"]), else: ""
+        "  #{scenario} #{check["id"]}: #{check["errorMessage"]}#{details}"
+      end
+
+    Enum.join(["\nFailed checks (expected failures included):" | failures], "\n")
   end
 
   # The CLI takes one baseline file, so the topology's additions are appended

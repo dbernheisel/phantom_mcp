@@ -717,6 +717,10 @@ Phantom will implement these MCP requests on your behalf:
   `input_required` result + encrypted `requestState`; both flows go through
   `Phantom.Session.elicit/3` and behave identically from the tool's point
   of view.
+- `tasks/get`, `tasks/update`, `tasks/cancel` - the Tasks extension under MCP
+  `2026-07-28`, when the router implements `c:Phantom.Router.get_task/2`. A tool
+  answers with a `Phantom.Tasks` and you store and run the task, such as with
+  Oban. See the [Tasks guide](guides/tasks.md).
 
 Phantom **does not yet support these methods**:
 
@@ -872,8 +876,10 @@ the JSON-RPC body into HTTP headers so load balancers, proxies, and WAFs
 can route on the operation without parsing the body:
 
 - `Mcp-Method` — mirrors `method`. Required on every POST.
-- `Mcp-Name` — mirrors `params.name` (for `tools/call`, `prompts/get`)
-  or `params.uri` (for `resources/read`).
+- `Mcp-Name` — mirrors `params.name` (for `tools/call`, `prompts/get`),
+  `params.uri` (for `resources/read`), or `params.taskId` (for `tasks/get`,
+  `tasks/update`, `tasks/cancel`). Route on it when tasks live in one node's
+  memory.
 
 Header names are case-insensitive; values are case-sensitive (so
 `Mcp-Method: TOOLS/CALL` does *not* match a body method of `tools/call`).

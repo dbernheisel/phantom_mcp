@@ -235,6 +235,32 @@ defmodule Phantom.ElicitTest do
     end
   end
 
+  describe "to_input_request/1" do
+    test "builds one embedded elicitation request" do
+      elicit =
+        Elicit.form(%{
+          message: "Continue?",
+          requested_schema: [%{type: :boolean, name: "confirm", required: true}]
+        })
+
+      assert %{
+               method: "elicitation/create",
+               params: %{mode: "form", message: "Continue?", requestedSchema: %{type: "object"}}
+             } = Elicit.to_input_request(elicit)
+    end
+
+    test "omits the legacy elicitation id from a URL request" do
+      elicit =
+        Elicit.url(%{
+          message: "Authenticate",
+          url: "https://example.com",
+          elicitation_id: "legacy-id"
+        })
+
+      refute Map.has_key?(Elicit.to_input_request(elicit).params, :elicitationId)
+    end
+  end
+
   describe "to_input_requests/1" do
     test "builds the modern embedded elicitation request map" do
       elicit =

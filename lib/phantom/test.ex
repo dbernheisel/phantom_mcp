@@ -203,6 +203,9 @@ defmodule Phantom.Test do
   Options:
     * `:timeout` - ms to wait for an async response (default: 1000)
     * `:progress_token` - sets `params._meta.progressToken` on the request
+    * `:tasks` - declares the Tasks extension on the request, so the tool may
+      answer with a `Phantom.Tasks`. Requires a session built with
+      `:protocol_version`.
   """
   @spec call_tool(Session.t(), atom() | String.t(), map() | keyword(), keyword()) :: any()
   def call_tool(session, name, args \\ %{}, opts \\ []) do
@@ -288,6 +291,33 @@ defmodule Phantom.Test do
     dispatch_blocking(session, "resources/list", %{"cursor" => cursor}, opts)
   end
 
+  @doc """
+  Dispatch `tasks/get` for a task. Declares the Tasks extension on the
+  request, so the session must be built with `:protocol_version`.
+
+  Returns the task as the client sees it, or `{:jsonrpc_error, error_map}`.
+  """
+  @spec get_task(Session.t(), String.t(), keyword()) :: any()
+  def get_task(session, task_id, opts \\ []) do
+    dispatch_blocking(session, "tasks/get", %{"taskId" => task_id}, [tasks: true] ++ opts)
+  end
+
+  @doc """
+  Dispatch `tasks/update` with responses to a task's input requests. See
+  `get_task/3`.
+  """
+  @spec update_task(Session.t(), String.t(), map() | keyword(), keyword()) :: any()
+  def update_task(session, task_id, input_responses, opts \\ []) do
+    params = %{"taskId" => task_id, "inputResponses" => stringify_keys(input_responses)}
+    dispatch_blocking(session, "tasks/update", params, [tasks: true] ++ opts)
+  end
+
+  @doc "Dispatch `tasks/cancel` for a task. See `get_task/3`."
+  @spec cancel_task(Session.t(), String.t(), keyword()) :: any()
+  def cancel_task(session, task_id, opts \\ []) do
+    dispatch_blocking(session, "tasks/cancel", %{"taskId" => task_id}, [tasks: true] ++ opts)
+  end
+
   @doc false
   def invoke_elicit_responder(%Phantom.Elicit{mode: mode} = elicitation) do
     case Process.get({__MODULE__, :elicit_responder, mode}) do
@@ -347,7 +377,13 @@ defmodule Phantom.Test do
 
   defp dispatch_once(session, method, params, opts) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
-    meta = Map.merge(session_meta(session), progress_meta(opts))
+
+    meta =
+      session
+      |> session_meta()
+      |> Map.merge(progress_meta(opts))
+      |> put_tasks_capability(opts[:tasks])
+
     request = %{build_request(method, params: Map.put(params, "_meta", meta)) | meta: meta}
 
     session = %{
@@ -370,6 +406,25 @@ defmodule Phantom.Test do
 
   defp session_meta(%Session{request: %Request{meta: meta}}) when is_map(meta), do: meta
   defp session_meta(_session), do: %{}
+
+  @protocol_version_key "io.modelcontextprotocol/protocolVersion"
+  @client_capabilities_key "io.modelcontextprotocol/clientCapabilities"
+
+  defp put_tasks_capability(meta, true) do
+    if not is_map_key(meta, @protocol_version_key) do
+      raise ArgumentError,
+            "the Tasks extension requires a session built with :protocol_version, such as \"2026-07-28\""
+    end
+
+    capabilities = Map.get(meta, @client_capabilities_key, %{})
+
+    extensions =
+      capabilities |> Map.get("extensions", %{}) |> Map.put(Phantom.Tasks.extension(), %{})
+
+    Map.put(meta, @client_capabilities_key, Map.put(capabilities, "extensions", extensions))
+  end
+
+  defp put_tasks_capability(meta, _tasks), do: meta
 
   defp progress_meta(opts) do
     case Keyword.get(opts, :progress_token) do
@@ -604,6 +659,32 @@ defmodule Phantom.Test do
 
       other ->
         flunk("expected tool error response, got: #{inspect(other)}")
+    end
+  end
+
+  @doc """
+  Assert the result is a task, from a tool that answered with one or from
+  `get_task/3`.
+
+  Options: `:id` matches the task ID, `:status` the status (such as
+  `:completed`).
+  """
+  def assert_task(result, opts \\ []) do
+    case result do
+      %{taskId: id, status: status} ->
+        if expected = opts[:id] do
+          assert id == expected, "expected task id #{inspect(expected)}, got: #{inspect(id)}"
+        end
+
+        if expected = opts[:status] do
+          assert status == to_string(expected),
+                 "expected task status #{inspect(to_string(expected))}, got: #{inspect(status)}"
+        end
+
+        result
+
+      other ->
+        flunk("expected a task, got: #{inspect(other)}")
     end
   end
 

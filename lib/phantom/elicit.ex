@@ -429,13 +429,18 @@ defmodule Phantom.Elicit do
   Render an `Elicit` struct as the MCP `2026-07-28` `inputRequests` map,
   which a tool or prompt returns in an `input_required` result.
   """
-  def to_input_requests(%__MODULE__{} = elicit) do
-    %{
-      "elicitation" => %{
-        method: "elicitation/create",
-        params: Map.delete(to_json(elicit), :elicitationId)
-      }
-    }
+  def to_input_requests(%__MODULE__{} = elicit),
+    do: %{"elicitation" => to_input_request(elicit)}
+
+  @doc """
+  Render an `Elicit` struct as one embedded `elicitation/create` request, to
+  place under a key of your choosing in `inputRequests`, such as a task's
+  `:input_requests` (see `Phantom.Tasks`).
+
+      %{"confirm" => Phantom.Elicit.to_input_request(elicit)}
+  """
+  def to_input_request(%__MODULE__{} = elicit) do
+    %{method: "elicitation/create", params: Map.delete(to_json(elicit), :elicitationId)}
   end
 
   def to_json(%__MODULE__{mode: :url} = elicit) do

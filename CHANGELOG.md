@@ -1,5 +1,30 @@
 ## Unreleased
 
+- New: the Tasks extension (`io.modelcontextprotocol/tasks`) under MCP
+  2026-07-28. A tool returns `{:reply, %Phantom.Tasks{}, session}` to answer
+  with a task, and the router implements `c:Phantom.Router.get_task/2`, and
+  optionally `update_task/3`, `cancel_task/2`, and
+  `authorize_task_subscriptions/2`, for `tasks/get`, `tasks/update`, and
+  `tasks/cancel`. Phantom does not store tasks. See the Tasks guide for Ecto
+  and Oban examples.
+- New: `Phantom.Session.tasks_supported?/1`, and
+  `Phantom.Tracker.notify_task_updated/1`. Each `subscriptions/listen` stream
+  that follows the task fetches it with `get_task/2` and sends
+  `notifications/tasks`.
+- New: `Phantom.Test.get_task/3`, `update_task/4`, `cancel_task/3`,
+  `assert_task/2`, and a `:tasks` option for `call_tool/4`.
+- New: `Phantom.Session.progress_ref/1` returns a JSON-safe reference to the
+  current request. `Phantom.Session.notify_progress/4` accepts it, so a job
+  on any node can report progress to a waiting `tools/call` or `prompts/get`
+  through PubSub.
+- New: `Phantom.Elicit.to_input_request/1` renders one embedded
+  `elicitation/create` request to place under your own `inputRequests` key,
+  such as a task's input requests.
+- New: `Phantom.Request.missing_task_capability/0`, the error for a tool that
+  only runs as a task when the client did not declare the extension.
+- `Phantom.Request.missing_capability/1` accepts a `ClientCapabilities` map,
+  for capabilities whose names contain dots.
+
 Streamable HTTP transport fixes for the protocol versions before 2026-07-28:
 
 - New: `Phantom.Plug` option `validate_session: true` answers `404 Not Found`

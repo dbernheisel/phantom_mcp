@@ -581,6 +581,34 @@ defmodule Phantom.PlugTest do
       assert error["error"]["code"] == -32600
     end
 
+    test "GET request that refuses text/event-stream with q=0 returns 406" do
+      for accept <- [
+            "text/event-stream;q=0",
+            "application/json, text/event-stream; q=0.0",
+            "text/*;q=0",
+            "*/*;q=0.5, text/event-stream;q=0"
+          ] do
+        :get
+        |> conn("/mcp")
+        |> put_req_header("accept", accept)
+        |> call()
+
+        assert_receive {:conn, conn}
+        assert conn.status == 406, "expected 406 for Accept: #{accept}"
+      end
+    end
+
+    test "GET request accepting text/event-stream with a nonzero q opens a stream" do
+      for accept <- ["text/event-stream;q=0.5", "application/json, */*;q=0.1"] do
+        :get
+        |> conn("/mcp")
+        |> put_req_header("accept", accept)
+        |> call()
+
+        assert_sse_connected()
+      end
+    end
+
     test "GET request accepting any media type opens a stream" do
       :get
       |> conn("/mcp")
@@ -1613,6 +1641,55 @@ defmodule Phantom.PlugTest do
       assert_receive {:response, 22, "message", %{result: %{resultType: "complete"}}}
       refute_receive {:response, nil, "closed", _}
       refute_receive {:response, nil, "message", %{method: "notifications/message"}}
+    end
+
+    test "tasks methods require Mcp-Name to carry the taskId" do
+      for method <- ~w[tasks/get tasks/update tasks/cancel] do
+        post_stateless(
+          %{jsonrpc: "2.0", id: 20, method: method, params: %{"taskId" => "task-1"}},
+          [{"mcp-method", method}]
+        )
+
+        assert_receive {:conn, conn}
+        assert conn.status == 400
+        error = JSON.decode!(conn.resp_body)
+        assert error["error"]["code"] == -32020
+        assert error["error"]["message"] =~ "Mcp-Name"
+      end
+    end
+
+    test "tasks methods reject an Mcp-Name that is not the taskId" do
+      post_stateless(
+        %{jsonrpc: "2.0", id: 21, method: "tasks/get", params: %{"taskId" => "task-1"}},
+        [{"mcp-method", "tasks/get"}, {"mcp-name", "task-2"}]
+      )
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["code"] == -32020
+    end
+
+    test "tasks methods with a matching Mcp-Name reach the router" do
+      meta = %{
+        "io.modelcontextprotocol/clientCapabilities" => %{
+          "extensions" => %{"io.modelcontextprotocol/tasks" => %{}}
+        }
+      }
+
+      post_stateless(
+        %{
+          jsonrpc: "2.0",
+          id: 22,
+          method: "tasks/get",
+          params: %{"taskId" => "task-1", "_meta" => meta}
+        },
+        [{"mcp-method", "tasks/get"}, {"mcp-name", "task-1"}]
+      )
+
+      assert_connected(_conn)
+
+      assert_receive {:response, 22, "message",
+                      %{result: %{taskId: "task-1", status: "working", resultType: "complete"}}}
     end
 
     test "missing Mcp-Method rejects with 400 + -32020 HeaderMismatch" do

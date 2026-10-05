@@ -159,6 +159,18 @@ defmodule Phantom.RequestTest do
     end
   end
 
+  describe "missing_task_capability/0" do
+    test "names the Tasks extension" do
+      assert Request.missing_task_capability() == %{
+               code: -32021,
+               message: "Missing required client capability",
+               data: %{
+                 requiredCapabilities: %{extensions: %{"io.modelcontextprotocol/tasks" => %{}}}
+               }
+             }
+    end
+  end
+
   describe "trace_context/1" do
     test "extracts the three W3C fields when present" do
       {:ok, request} =

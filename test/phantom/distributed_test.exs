@@ -447,6 +447,96 @@ defmodule Phantom.DistributedTest do
     end
   end
 
+  describe "cross-node task notifications" do
+    test "a task update on node 2 reaches a subscriptions/listen stream on node 1" do
+      task_id = "task-cross-node"
+
+      meta = %{
+        "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities" => %{
+          "extensions" => %{"io.modelcontextprotocol/tasks" => %{}}
+        }
+      }
+
+      stream_resp =
+        post_mcp(
+          @node1_port,
+          %{
+            jsonrpc: "2.0",
+            id: "listen:tasks",
+            method: "subscriptions/listen",
+            params: %{"notifications" => %{"taskIds" => [task_id]}, "_meta" => meta}
+          },
+          headers: [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "subscriptions/listen"}
+          ]
+        )
+
+      await_task_tracked(@node2, task_id)
+
+      assert {:ok, 1} = :rpc.call(@node2, Phantom.Tracker, :notify_task_updated, [task_id])
+
+      notification =
+        poll_for_sse_event(stream_resp, 10_000, &(&1["method"] == "notifications/tasks"))
+
+      assert notification, "Expected notifications/tasks on the node 1 listen stream"
+      assert notification["params"]["taskId"] == task_id
+      assert notification["params"]["status"] == "working"
+    end
+  end
+
+  describe "cross-node progress" do
+    test "a progress reference reaches the request's stream from another node" do
+      resp =
+        post_mcp(
+          @node1_port,
+          %{
+            jsonrpc: "2.0",
+            id: "progress-1",
+            method: "tools/call",
+            params: %{
+              "name" => "remote_progress_tool",
+              "arguments" => %{},
+              "_meta" => Map.put(@modern_meta, "progressToken", "remote-token")
+            }
+          },
+          headers: [
+            {"mcp-protocol-version", "2026-07-28"},
+            {"mcp-method", "tools/call"},
+            {"mcp-name", "remote_progress_tool"}
+          ]
+        )
+
+      notification =
+        poll_for_sse_event(resp, 10_000, &(&1["method"] == "notifications/progress"))
+
+      assert notification, "Expected notifications/progress from another node"
+
+      assert %{"progressToken" => "remote-token", "progress" => 50, "total" => 100} =
+               notification["params"]
+
+      assert notification["params"]["message"] =~ "node"
+      refute notification["params"]["message"] =~ "#{@node1}"
+    end
+  end
+
+  defp await_task_tracked(node, task_id, attempts \\ 100)
+
+  defp await_task_tracked(node, task_id, attempts) when attempts > 0 do
+    listeners = :rpc.call(node, Phantom.Tracker, :list_task_listeners, [])
+
+    if Enum.any?(listeners, &match?({^task_id, _}, &1)) do
+      :ok
+    else
+      Process.sleep(50)
+      await_task_tracked(node, task_id, attempts - 1)
+    end
+  end
+
+  defp await_task_tracked(node, task_id, 0),
+    do: flunk("Task #{task_id} not visible on #{node} within timeout")
+
   describe "stateless core (2026-07-28) — no Tracker, no sticky session" do
     # Node A returns `inputRequired` with an encrypted `requestState`.
     # Node B — with no prior knowledge of the original call — decodes the

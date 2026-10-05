@@ -45,6 +45,9 @@ defmodule Phantom.Request do
     completion/complete
     subscriptions/listen
     notifications/cancelled
+    tasks/get
+    tasks/update
+    tasks/cancel
   ]
 
   @modern_cacheable_methods ~w[
@@ -102,23 +105,42 @@ defmodule Phantom.Request do
   A request omitted a client capability required to process it.
 
   Capabilities are named by path, such as `"sampling"` or `"elicitation.url"`,
-  and reported to the client as a `ClientCapabilities` object.
+  and reported to the client as a `ClientCapabilities` object. Pass that
+  object directly when a name contains dots, such as an extension.
   """
-  def missing_capability(capabilities) do
-    required =
-      capabilities
-      |> List.wrap()
-      |> Enum.reduce(%{}, fn capability, acc ->
-        path = String.split(capability, ".")
-        update_in(acc, Enum.map(path, &Access.key(&1, %{})), & &1)
-      end)
-
+  def missing_capability(required) when is_map(required) do
     %{
       code: @missing_capability,
       message: "Missing required client capability",
       data: %{requiredCapabilities: required}
     }
   end
+
+  def missing_capability(capabilities) do
+    capabilities
+    |> List.wrap()
+    |> Enum.reduce(%{}, fn capability, acc ->
+      path = String.split(capability, ".")
+      update_in(acc, Enum.map(path, &Access.key(&1, %{})), & &1)
+    end)
+    |> missing_capability()
+  end
+
+  @doc false
+  def task_not_found,
+    do: %{code: @invalid_params, message: "Failed to retrieve task: Task not found"}
+
+  @doc false
+  def task_expired,
+    do: %{code: @invalid_params, message: "Failed to retrieve task: Task has expired"}
+
+  @doc """
+  The request did not declare the Tasks extension
+  (`io.modelcontextprotocol/tasks`), such as when a tool only runs as a task.
+  See `Phantom.Tasks`.
+  """
+  def missing_task_capability,
+    do: missing_capability(%{extensions: %{Phantom.Tasks.extension() => %{}}})
 
   @doc "The requested MCP protocol version is unsupported."
   def unsupported_protocol(requested) do
@@ -575,6 +597,11 @@ defmodule Phantom.Request do
   @doc "Resource updated notification"
   def resource_updated(content) do
     %{jsonrpc: "2.0", method: "notifications/resources/updated", params: content}
+  end
+
+  @doc "Task status notification"
+  def task_updated(content) do
+    %{jsonrpc: "2.0", method: "notifications/tasks", params: content}
   end
 
   @doc "Tools List updated notification"
