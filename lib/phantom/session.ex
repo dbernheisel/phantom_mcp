@@ -718,6 +718,8 @@ defmodule Phantom.Session do
     {request, ref} =
       Phantom.Elicit.prepare_request(state.session.id, tool_call_id, elicitation)
 
+    Phantom.Tracker.subscribe_client_response(state.session.pubsub, request.id)
+
     caller = %{from: from, request_id: request.id}
 
     state =
@@ -1171,6 +1173,12 @@ defmodule Phantom.Session do
       |> Map.new()
 
     {:noreply, Map.put(state, :workers, workers)}
+  end
+
+  def handle_info({:phantom_client_response, request_id, response}, state) do
+    Phantom.Tracker.unsubscribe_client_response(state.session.pubsub, request_id)
+    Phantom.Tracker.untrack_request(request_id)
+    {:noreply, route_local_elicit_response({request_id, response}, state)}
   end
 
   def handle_info({:phantom_elicitation_response, ref, response}, state) do

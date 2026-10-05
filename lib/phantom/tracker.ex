@@ -355,6 +355,8 @@ defmodule Phantom.Tracker do
     "phantom:request:" <> Base.url_encode64(key, padding: false)
   end
 
+  defp client_response_topic(request_id), do: "phantom:client_response:#{request_id}"
+
   if @available do
     @doc false
     def subscribe_session(nil, _session_id), do: :ok
@@ -404,6 +406,33 @@ defmodule Phantom.Tracker do
     end
 
     @doc false
+    def subscribe_client_response(nil, _request_id), do: :ok
+
+    def subscribe_client_response(pubsub, request_id) do
+      Phoenix.PubSub.subscribe(pubsub, client_response_topic(request_id))
+    rescue
+      ArgumentError -> :ok
+    end
+
+    @doc false
+    def unsubscribe_client_response(nil, _request_id), do: :ok
+
+    def unsubscribe_client_response(pubsub, request_id) do
+      Phoenix.PubSub.unsubscribe(pubsub, client_response_topic(request_id))
+    rescue
+      ArgumentError -> :ok
+    end
+
+    @doc false
+    def cast_client_response(pubsub, request_id, response) do
+      Phoenix.PubSub.broadcast(
+        pubsub,
+        client_response_topic(request_id),
+        {:phantom_client_response, request_id, response}
+      )
+    end
+
+    @doc false
     def subscribe_request(nil, _session_id, _request_id), do: :ok
 
     # Progress is best-effort, so a missing PubSub must not fail the request.
@@ -434,6 +463,9 @@ defmodule Phantom.Tracker do
     def subscribe_listen(_pubsub, _principal, _request_id), do: :ok
     def cast_listen(_pubsub, _principal, _request_id, _message), do: :ok
     def subscribe_request(_pubsub, _session_id, _request_id), do: :ok
+    def subscribe_client_response(_pubsub, _request_id), do: :ok
+    def unsubscribe_client_response(_pubsub, _request_id), do: :ok
+    def cast_client_response(_pubsub, _request_id, _response), do: :ok
     def cast_request(_pubsub, _session_id, _request_id, _message), do: :ok
   end
 

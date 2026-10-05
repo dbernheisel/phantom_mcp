@@ -678,13 +678,13 @@ defmodule Phantom.Router do
 
       def dispatch_method(_method, _params, %{id: request_id, response: %{} = response}, session)
           when is_binary(request_id) do
-        Phantom.Router.route_client_response(request_id, response)
+        Phantom.Router.route_client_response(session.pubsub, request_id, response)
         {:reply, nil, session}
       end
 
       def dispatch_method(_method, _params, %{id: request_id, error: %{} = error}, session)
           when is_binary(request_id) do
-        Phantom.Router.route_client_response(request_id, {:error, error})
+        Phantom.Router.route_client_response(session.pubsub, request_id, {:error, error})
         {:reply, nil, session}
       end
 
@@ -1560,8 +1560,9 @@ defmodule Phantom.Router do
 
   @doc false
   # Deliver the client's response to a server-initiated request (a result
-  # map, or `{:error, error}`) to the process waiting on it.
-  def route_client_response(request_id, response) do
+  # map, or `{:error, error}`) to the process waiting on it. PubSub reaches it
+  # at once on any node; a Tracker lookup can miss an unreplicated request.
+  def route_client_response(nil, request_id, response) do
     require Logger
 
     case await_request_meta(request_id) do
@@ -1575,6 +1576,9 @@ defmodule Phantom.Router do
         Logger.debug("No tracked handler for response #{request_id}")
     end
   end
+
+  def route_client_response(pubsub, request_id, response),
+    do: Phantom.Tracker.cast_client_response(pubsub, request_id, response)
 
   @doc false
   # Wait for a tracked request to become visible via Tracker replication.
