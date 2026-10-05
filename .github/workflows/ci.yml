@@ -19,6 +19,8 @@ jobs:
             otp: "27"
           - elixir: "1.20"
             otp: "29"
+            # Formatter output differs between Elixir versions.
+            check_format: true
 
     steps:
       - uses: actions/checkout@v7
@@ -52,6 +54,7 @@ jobs:
         run: mix deps.unlock --check-unused
 
       - name: Check formatting
+        if: matrix.check_format
         run: mix format --check-formatted
 
       - name: Compile (warnings as errors)
