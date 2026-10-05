@@ -377,15 +377,29 @@ defmodule Phantom.Tracker do
       # stream answer.
       reply_to = Process.alias([:reply])
       call = {:"$gen_call", {reply_to, reply_to}, message}
+      deadline = System.monotonic_time(:millisecond) + timeout
+      await_session_reply(pubsub, session_id, call, reply_to, deadline, 50)
+    end
+
+    # A client may send a request before its GET stream subscribes, and a
+    # broadcast reaches only current subscribers, so the call repeats.
+    defp await_session_reply(pubsub, session_id, call, reply_to, deadline, interval) do
       Phoenix.PubSub.broadcast_from(pubsub, self(), session_topic(session_id), call)
+      remaining = deadline - System.monotonic_time(:millisecond)
 
       receive do
         {^reply_to, reply} -> reply
       after
-        timeout ->
-          Process.unalias(reply_to)
-          :error
+        max(min(interval, remaining), 0) ->
+          if remaining > interval,
+            do: await_session_reply(pubsub, session_id, call, reply_to, deadline, interval * 2),
+            else: give_up(reply_to)
       end
+    end
+
+    defp give_up(reply_to) do
+      Process.unalias(reply_to)
+      :error
     end
 
     @doc false
