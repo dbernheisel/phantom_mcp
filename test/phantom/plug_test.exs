@@ -40,7 +40,11 @@ defmodule Phantom.PlugTest do
       assert conn.status == 204
 
       assert get_resp_header(conn, "access-control-allow-origin") == ["http://localhost:4000"]
-      assert get_resp_header(conn, "access-control-allow-methods") == ["GET, POST, OPTIONS"]
+
+      assert get_resp_header(conn, "access-control-allow-methods") == [
+               "GET, POST, DELETE, OPTIONS"
+             ]
+
       assert get_resp_header(conn, "access-control-allow-credentials") == ["true"]
 
       allowed_headers =
@@ -97,7 +101,10 @@ defmodule Phantom.PlugTest do
 
       assert get_resp_header(conn, "access-control-allow-origin") == ["http://localhost:4000"]
       assert get_resp_header(conn, "access-control-allow-credentials") == ["true"]
-      assert get_resp_header(conn, "access-control-allow-methods") == ["GET, POST, OPTIONS"]
+
+      assert get_resp_header(conn, "access-control-allow-methods") == [
+               "GET, POST, DELETE, OPTIONS"
+             ]
 
       allowed_headers =
         String.split(
@@ -412,9 +419,177 @@ defmodule Phantom.PlugTest do
 
       assert_receive {:response, nil, "closed", "finished"}
     end
+
+    test "returns 400 when a response is not valid JSON-RPC" do
+      :post
+      |> conn("/mcp", %{jsonrpc: "2.0", id: "abc", result: "not a map"})
+      |> put_req_header("content-type", "application/json")
+      |> call()
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+
+      error = JSON.decode!(conn.resp_body)
+      assert error["error"]["code"] == -32600
+    end
+  end
+
+  describe "MCP-Protocol-Version header" do
+    test "accepts a supported protocol version" do
+      request_ping(before_call: &put_req_header(&1, "mcp-protocol-version", "2025-06-18"))
+
+      assert_receive {:conn, conn}
+      assert conn.status == 200
+      assert_receive {:response, 1, "message", %{result: %{}}}
+    end
+
+    test "accepts requests without the header" do
+      request_ping()
+
+      assert_receive {:conn, conn}
+      assert conn.status == 200
+    end
+
+    test "rejects an unsupported protocol version with 400" do
+      request_ping(before_call: &put_req_header(&1, "mcp-protocol-version", "1999-01-01"))
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+
+      error = JSON.decode!(conn.resp_body)
+      assert error["error"]["code"] == -32600
+      assert error["error"]["message"] == "Unsupported protocol version"
+      assert error["error"]["data"]["requested"] == "1999-01-01"
+      assert "2025-11-25" in error["error"]["data"]["supported"]
+      refute_receive {:response, 1, _, _}
+    end
+
+    test "rejects an unsupported protocol version on GET" do
+      :get
+      |> conn("/mcp")
+      |> put_req_header("accept", "text/event-stream")
+      |> put_req_header("mcp-protocol-version", "1999-01-01")
+      |> call()
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+    end
+  end
+
+  describe "session ids with validate_session: true" do
+    defp initialize_session(session_id) do
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: %{
+          protocolVersion: "2025-11-25",
+          capabilities: %{},
+          clientInfo: %{name: "Client", version: "1.0"}
+        }
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(%{session_id: session_id})
+
+      assert_receive {:response, 1, "message", %{result: _}}, 500
+      assert_receive {:conn, %{status: 200}}, 500
+    end
+
+    test "a session the server issued is accepted", context do
+      session_id = to_string(context.test)
+      initialize_session(session_id)
+
+      request_ping(session_id: session_id, validate_session: true)
+
+      assert_receive {:conn, conn}
+      assert conn.status == 200
+    end
+
+    test "a POST with an unknown session id returns 404", context do
+      request_ping(session_id: to_string(context.test), validate_session: true)
+
+      assert_receive {:conn, conn}, 500
+      assert conn.status == 404
+
+      error = JSON.decode!(conn.resp_body)
+      assert error["error"]["message"] == "Session not found"
+      refute_receive {:response, 1, _, _}
+    end
+
+    test "a GET with an unknown session id returns 404", context do
+      request_sse_stream(session_id: to_string(context.test), validate_session: true)
+
+      assert_receive {:conn, conn}, 500
+      assert conn.status == 404
+    end
+
+    test "a session terminated with DELETE returns 404", context do
+      session_id = to_string(context.test)
+      initialize_session(session_id)
+
+      :delete
+      |> conn("/mcp")
+      |> call(session_id: session_id)
+
+      assert_receive {:conn, %{status: status}}
+      assert status in [200, 204]
+
+      request_ping(session_id: session_id, validate_session: true)
+
+      assert_receive {:conn, conn}, 500
+      assert conn.status == 404
+    end
+
+    test "an initialize request is not checked", context do
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: %{
+          protocolVersion: "2025-11-25",
+          capabilities: %{},
+          clientInfo: %{name: "Client", version: "1.0"}
+        }
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(%{session_id: to_string(context.test), validate_session: true})
+
+      assert_receive {:conn, conn}
+      assert conn.status == 200
+    end
+
+    test "an unknown session id is accepted by default", context do
+      request_ping(session_id: to_string(context.test))
+
+      assert_receive {:conn, conn}
+      assert conn.status == 200
+    end
   end
 
   describe "SSE handling" do
+    test "GET request without text/event-stream in Accept returns 406" do
+      :get
+      |> conn("/mcp")
+      |> put_req_header("accept", "application/json")
+      |> call()
+
+      assert_receive {:conn, conn}
+      assert conn.status == 406
+      error = JSON.decode!(conn.resp_body)
+      assert error["error"]["code"] == -32600
+    end
+
+    test "GET request accepting any media type opens a stream" do
+      :get
+      |> conn("/mcp")
+      |> put_req_header("accept", "*/*")
+      |> call()
+
+      assert_sse_connected()
+    end
+
     test "GET request returns error" do
       :get
       |> conn("/mcp")
@@ -793,6 +968,32 @@ defmodule Phantom.PlugTest do
 
       assert_response(43, response)
       assert %{result: %{isError: true}} = response
+    end
+
+    test "an error response to an elicitation is accepted and fails the elicitation", context do
+      session_id = to_string(context.test)
+      initialize_with_elicitation(session_id)
+
+      request_tool("elicit_tool", %{}, session_id: session_id, id: 45)
+
+      assert_receive {:response, elicit_id, "message", %{"method" => "elicitation/create"}},
+                     500
+
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: elicit_id,
+        error: %{code: -32603, message: "Client failed to show the form"}
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(%{session_id: session_id})
+
+      assert_receive {:conn, %{status: 202}}, 500
+
+      assert_response(45, response)
+
+      assert %{result: %{isError: true, content: [%{text: "Elicitation failed"}]}} =
+               response
     end
 
     test "elicitation without client capability returns fallback", context do

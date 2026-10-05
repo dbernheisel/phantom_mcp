@@ -3,6 +3,7 @@ defmodule Phantom.Plug do
     pubsub: nil,
     origins: ["http://localhost:4000"],
     validate_origin: true,
+    validate_session: false,
     hosts: :all,
     session_timeout: :timer.seconds(30),
     max_request_size: 1_048_576
@@ -145,6 +146,7 @@ defmodule Phantom.Plug do
           router: module(),
           origins: [String.t()] | :all | mfa(),
           validate_origin: boolean(),
+          validate_session: boolean(),
           hosts: [String.t()] | :all | mfa(),
           session_timeout: pos_integer(),
           max_request_size: pos_integer()
@@ -160,6 +162,12 @@ defmodule Phantom.Plug do
   - `:validate_origin` - Whether to validate the Origin header (default: true). Requests
     without one are allowed: only browsers send it, and only browsers can be used for DNS
     rebinding.
+  - `:validate_session` - Whether to answer `404 Not Found` to a request whose
+    `mcp-session-id` this server did not issue in an `initialize` response, or that was
+    terminated with `DELETE`, so the client initializes again (default: false). Phantom
+    keeps that record in memory, so a restart forgets every session. Apps that persist
+    sessions across restarts should leave this off and answer `{:not_found, message}` from
+    `c:Phantom.Router.connect/2` instead.
   - `:hosts` - List of allowed hosts (from the `Host` header, without the port), `:all`, or an
     MFA called with the host prepended to its arguments (default: `:all`). A server bound to
     localhost should set `hosts: ["localhost", "127.0.0.1", "[::1]"]` to reject DNS
@@ -210,7 +218,7 @@ defmodule Phantom.Plug do
       )
 
     try do
-      case router.connect(session, conn) do
+      case session |> router.connect(conn) |> validate_session(conn, opts) do
         {:ok, session} ->
           session = inherit_session_meta(session)
 
@@ -267,6 +275,41 @@ defmodule Phantom.Plug do
     end
   end
 
+  # A session id the server did not issue (or terminated) is answered with
+  # 404 so the client initializes again. `initialize` itself starts a session,
+  # and requests without a session id are not checked.
+  defp validate_session({:ok, session} = result, conn, %{validate_session: true} = opts) do
+    session_id = get_req_header(conn, "mcp-session-id") |> List.first()
+
+    cond do
+      is_nil(session_id) or conn.private.phantom.modern -> result
+      conn.body_params["method"] == "initialize" -> result
+      known_session?(session.id, opts.pubsub) -> result
+      true -> {:not_found, "Session not found"}
+    end
+  end
+
+  defp validate_session(result, _conn, _opts), do: result
+
+  # Without the table (an escript), sessions cannot be told apart. With a
+  # pubsub, another node's `initialize` may not have replicated here yet.
+  defp known_session?(session_id, pubsub, retries \\ 5) do
+    cond do
+      not Phantom.SessionMeta.available?() ->
+        true
+
+      Phantom.SessionMeta.get(session_id) ->
+        true
+
+      is_nil(pubsub) or retries == 0 ->
+        false
+
+      true ->
+        Process.sleep(20)
+        known_session?(session_id, pubsub, retries - 1)
+    end
+  end
+
   defp validate_request(conn, opts) do
     cond do
       not valid_host?(conn.host, opts[:hosts]) ->
@@ -289,6 +332,22 @@ defmodule Phantom.Plug do
         |> put_status(405)
         |> request_error(Request.not_found("Method not allowed"))
 
+      not supported_protocol_version?(conn) ->
+        conn
+        |> put_status(400)
+        |> request_error(
+          Request.invalid("Unsupported protocol version")
+          |> Map.put(:data, %{
+            supported: Request.supported_protocols(),
+            requested: mcp_header(conn, "mcp-protocol-version")
+          })
+        )
+
+      conn.method == "GET" and not accepts_event_stream?(conn) ->
+        conn
+        |> put_status(406)
+        |> request_error(Request.invalid("Accept header must include text/event-stream"))
+
       conn.method not in ~w[DELETE GET OPTIONS] and map_size(conn.body_params) == 0 ->
         conn
         |> put_status(400)
@@ -301,6 +360,36 @@ defmodule Phantom.Plug do
 
       true ->
         conn
+    end
+  end
+
+  defp client_response?(params),
+    do:
+      (is_map_key(params, "result") or is_map_key(params, "error")) and
+        not is_map_key(params, "method")
+
+  # Clients before 2025-06-18 do not send the header, so its absence is allowed.
+  # `validate_protocol_request/1` checks the version of a 2026-07-28 request.
+  defp supported_protocol_version?(%Plug.Conn{private: %{phantom: %{modern: true}}}), do: true
+
+  defp supported_protocol_version?(conn) do
+    case mcp_header(conn, "mcp-protocol-version") do
+      nil -> true
+      version -> version in Request.supported_protocols()
+    end
+  end
+
+  # A missing Accept header means the client accepts any media type.
+  defp accepts_event_stream?(conn) do
+    case get_req_header(conn, "accept") do
+      [] ->
+        true
+
+      accept ->
+        accept
+        |> Enum.flat_map(&String.split(&1, ","))
+        |> Enum.map(&(&1 |> String.split(";") |> hd() |> String.trim() |> String.downcase()))
+        |> Enum.any?(&(&1 in ~w[text/event-stream text/* */*]))
     end
   end
 
@@ -319,7 +408,7 @@ defmodule Phantom.Plug do
       not is_map(conn.body_params) ->
         protocol_error(conn, nil, Request.invalid())
 
-      is_map_key(conn.body_params, "result") and not is_map_key(conn.body_params, "method") ->
+      client_response?(conn.body_params) ->
         protocol_error(conn, conn.body_params["id"], Request.invalid())
 
       is_nil(version) ->
@@ -383,7 +472,7 @@ defmodule Phantom.Plug do
           |> put_resp_header("cache-control", "no-cache, no-transform")
           |> put_resp_content_type("text/event-stream")
           |> put_resp_header("x-accel-buffering", "no")
-          |> send_chunked(202)
+          |> send_chunked(200)
           |> stream_loop(opts)
       end
     else
@@ -395,7 +484,8 @@ defmodule Phantom.Plug do
 
   # JSON-RPC response POST (e.g. elicitation response) → 202 Accepted per MCP spec §4
   defp dispatch(%Plug.Conn{body_params: params, method: "POST"} = conn, _opts)
-       when is_map(params) and is_map_key(params, "result") and
+       when is_map(params) and
+              (is_map_key(params, "result") or is_map_key(params, "error")) and
               not is_map_key(params, "method") do
     session = conn.private.phantom.session
 
@@ -403,13 +493,13 @@ defmodule Phantom.Plug do
       {:ok, request} ->
         session.router.dispatch_method([request.method, request.params, request, session])
 
-      {:error, _} ->
-        :ok
-    end
+        conn
+        |> maybe_put_session_header(params, session.id)
+        |> send_resp(202, "")
 
-    conn
-    |> maybe_put_session_header(params, session.id)
-    |> send_resp(202, "")
+      {:error, _request} ->
+        protocol_error(conn, nil, Request.invalid())
+    end
   end
 
   # JSON-RPC notification POST (method, no id) → 202 Accepted per MCP spec §4
@@ -891,7 +981,7 @@ defmodule Phantom.Plug do
     )
     |> put_resp_header("access-control-allow-origin", origin || "*")
     |> put_resp_header("access-control-allow-credentials", "true")
-    |> put_resp_header("access-control-allow-methods", "GET, POST, OPTIONS")
+    |> put_resp_header("access-control-allow-methods", "GET, POST, DELETE, OPTIONS")
     |> put_resp_header(
       "access-control-allow-headers",
       allowed_headers
@@ -921,9 +1011,8 @@ defmodule Phantom.Plug do
 
   defp stream_fun(%{conn: %{state: :sent}} = state, _id, _event, _payload), do: state
 
-  defp stream_fun(%{conn: %{halted: false} = conn} = state, id, event, payload) do
-    id = if Session.stateless?(state.session), do: nil, else: id
-    conn = send_sse_event(conn, id, event, payload)
+  defp stream_fun(%{conn: %{halted: false} = conn} = state, _id, event, payload) do
+    conn = send_sse_event(conn, event, payload)
     put_in(state.conn, conn)
   end
 
@@ -993,7 +1082,10 @@ defmodule Phantom.Plug do
     end
   end
 
-  defp send_sse_event(conn, _id, "comment", _data) do
+  # SSE event ids must be unique within a session, so JSON-RPC ids (chosen by
+  # the client, and free to repeat) are not used. Streams are not resumable,
+  # so events carry no id.
+  defp send_sse_event(conn, "comment", _data) do
     case chunk(conn, ": keepalive\n\n") do
       {:ok, conn} ->
         conn
@@ -1004,9 +1096,8 @@ defmodule Phantom.Plug do
     end
   end
 
-  defp send_sse_event(conn, id, _event_type, nil) do
-    id = if id, do: ["id: #{id}\n"], else: []
-    data = id ++ ["event: message\n", "data: \"\"\n\n"]
+  defp send_sse_event(conn, _event_type, nil) do
+    data = ["event: message\n", "data: \"\"\n\n"]
 
     case chunk(conn, data) do
       {:ok, conn} ->
@@ -1018,13 +1109,12 @@ defmodule Phantom.Plug do
     end
   end
 
-  defp send_sse_event(conn, id, event_type, %{} = data) do
-    send_sse_event(conn, id, event_type, JSON.encode!(data))
+  defp send_sse_event(conn, event_type, %{} = data) do
+    send_sse_event(conn, event_type, JSON.encode!(data))
   end
 
-  defp send_sse_event(conn, id, event_type, data) when is_binary(data) do
-    id = if id, do: ["id: #{id}\n"], else: []
-    data = id ++ ["event: #{event_type}\n", "data: #{data}\n\n"]
+  defp send_sse_event(conn, event_type, data) when is_binary(data) do
+    data = ["event: #{event_type}\n", "data: #{data}\n\n"]
 
     case chunk(conn, data) do
       {:ok, conn} ->
