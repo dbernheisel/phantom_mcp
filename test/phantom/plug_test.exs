@@ -664,7 +664,9 @@ defmodule Phantom.PlugTest do
       assert_sse_connected()
     end
 
-    test "second GET on same session returns 409 without raising AlreadySentError" do
+    # A client that drops its GET stream is not noticed until the next write,
+    # so a reconnect must not be refused because of the stale stream.
+    test "a second GET on the same session replaces the first stream" do
       session_id = "019dd3d8-0000-0000-0000-000000000001"
 
       :get
@@ -673,17 +675,22 @@ defmodule Phantom.PlugTest do
       |> call(session_id: session_id)
 
       assert_sse_connected()
+      [{_, %{pid: first}}] = Phantom.Tracker.list_session_streams(session_id)
+      ref = Process.monitor(first)
 
       :get
       |> conn("/mcp")
       |> put_req_header("accept", "text/event-stream")
       |> call(session_id: session_id)
 
-      assert_receive {:conn, conn}
-      assert conn.status == 409
-      error = JSON.decode!(conn.resp_body)
-      assert error["error"]["code"] == -32000
-      assert error["error"]["message"] == "Only one SSE stream is allowed per session"
+      assert_receive {:response, nil, "closed", "replaced"}
+      assert_receive {:DOWN, ^ref, :process, ^first, _}
+      assert_receive {:conn, %{status: 200}}
+      assert_receive {:plug_conn, :sent}
+      refute_receive {:conn, _}
+
+      assert [{_, %{pid: second}}] = Phantom.Tracker.list_session_streams(session_id)
+      assert second != first
     end
   end
 

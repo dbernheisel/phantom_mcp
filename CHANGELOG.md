@@ -1,3 +1,10 @@
+## Unreleased
+
+- A GET SSE stream for a session that already has one replaces it instead of
+  being refused with `409 Conflict`. A client that drops its stream is not
+  noticed until the next write, so its reconnect was refused, failing clients
+  such as Cursor.
+
 ## 0.7.0 (2026-10-04)
 
 - New: the Tasks extension (`io.modelcontextprotocol/tasks`) under MCP
