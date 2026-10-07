@@ -755,6 +755,12 @@ defmodule Phantom.Session do
     {:stop, {:shutdown, :closed}, state}
   end
 
+  # A newer GET stream for the session took over.
+  def handle_cast(:replaced, state) do
+    state = state.stream_fun.(state, nil, "closed", "replaced")
+    {:stop, {:shutdown, :closed}, state}
+  end
+
   @doc false
   def handle_cast({:log_legacy, level, level_name, domain, payload}, state)
       when level <= state.log_level do

@@ -479,21 +479,15 @@ defmodule Phantom.Plug do
 
   defp dispatch(%Plug.Conn{method: "GET"} = conn, opts) do
     if opts.pubsub do
-      case maybe_track_session_stream(conn) do
-        %Plug.Conn{halted: true} = conn ->
-          conn
+      conn = maybe_track_session_stream(conn)
 
-        conn ->
-          session = conn.private.phantom.session
-
-          conn
-          |> put_resp_header("mcp-session-id", session.id)
-          |> put_resp_header("cache-control", "no-cache, no-transform")
-          |> put_resp_content_type("text/event-stream")
-          |> put_resp_header("x-accel-buffering", "no")
-          |> send_chunked(200)
-          |> stream_loop(opts)
-      end
+      conn
+      |> put_resp_header("mcp-session-id", conn.private.phantom.session.id)
+      |> put_resp_header("cache-control", "no-cache, no-transform")
+      |> put_resp_content_type("text/event-stream")
+      |> put_resp_header("x-accel-buffering", "no")
+      |> send_chunked(200)
+      |> stream_loop(opts)
     else
       conn
       |> put_status(405)
@@ -1332,36 +1326,22 @@ defmodule Phantom.Plug do
 
   # The GET stream is the session's stream for server-initiated messages.
   # A POST's stream, `initialize` included, closes after its response.
-  defp maybe_track_session_stream(conn) do
-    session_id = conn.private.phantom.session.id
+  #
+  # A client that drops its GET stream is not noticed until the next write,
+  # so a GET for a session that already has one replaces it (on any node)
+  # rather than being refused while the stale stream lingers.
+  defp maybe_track_session_stream(%Plug.Conn{method: "GET"} = conn) do
+    session = %{conn.private.phantom.session | close_after_complete: false}
 
-    case {conn.method, Phantom.Tracker.list_session_streams(session_id)} do
-      # Only if no stream exists for the session (on any node)
-      {"GET", []} ->
-        session = %{conn.private.phantom.session | close_after_complete: false}
+    session.id
+    |> Phantom.Tracker.list_session_streams()
+    |> Enum.each(fn {_key, %{pid: pid}} -> GenServer.cast(pid, :replaced) end)
 
-        Phantom.Tracker.track_session(
-          self(),
-          session.id,
-          %{}
-        )
+    Phantom.Tracker.track_session(self(), session.id, %{})
+    Phantom.Tracker.subscribe_session(session.pubsub, session.id)
 
-        Phantom.Tracker.subscribe_session(session.pubsub, session.id)
-
-        put_in(conn.private.phantom.session, session)
-
-      {"GET", _existing} ->
-        conn
-        |> put_status(409)
-        |> json_error(
-          Request.error(%{
-            code: -32000,
-            message: "Only one SSE stream is allowed per session"
-          })
-        )
-
-      _ ->
-        conn
-    end
+    put_in(conn.private.phantom.session, session)
   end
+
+  defp maybe_track_session_stream(conn), do: conn
 end
