@@ -281,19 +281,8 @@ defmodule Phantom.StatelessCoreTest do
 
   describe "trace context propagation" do
     test "[:phantom, :dispatch] span metadata includes trace_context from _meta" do
-      handler_id = "trace-ctx-test-#{System.unique_integer()}"
-      test_pid = self()
-
-      :telemetry.attach(
-        handler_id,
-        [:phantom, :dispatch, :start],
-        fn _event, _measurements, metadata, _ ->
-          send(test_pid, {:span_metadata, metadata})
-        end,
-        nil
-      )
-
-      on_exit(fn -> :telemetry.detach(handler_id) end)
+      ref = :telemetry_test.attach_event_handlers(self(), [[:phantom, :dispatch, :start]])
+      on_exit(fn -> :telemetry.detach(ref) end)
 
       session = build_session()
 
@@ -308,7 +297,7 @@ defmodule Phantom.StatelessCoreTest do
 
       Router.dispatch_method(["tools/call", request.params, request, session])
 
-      assert_receive {:span_metadata, %{trace_context: trace_context}}
+      assert_receive {[:phantom, :dispatch, :start], ^ref, _, %{trace_context: trace_context}}
 
       assert trace_context == %{
                traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",

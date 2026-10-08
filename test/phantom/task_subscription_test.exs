@@ -240,6 +240,9 @@ defmodule Phantom.TaskSubscriptionTest do
     end
   end
 
+  defp wait_for_task_listeners(expected, 0),
+    do: flunk("task listeners were not tracked: #{inspect(expected)}")
+
   defp wait_for_no_task_listeners(task_id, attempts \\ 50)
 
   defp wait_for_no_task_listeners(task_id, attempts) when attempts > 0 do
@@ -253,7 +256,4 @@ defmodule Phantom.TaskSubscriptionTest do
 
   defp wait_for_no_task_listeners(task_id, 0),
     do: flunk("task listener was still tracked: #{inspect(task_id)}")
-
-  defp wait_for_task_listeners(expected, 0),
-    do: flunk("task listeners were not tracked: #{inspect(expected)}")
 end

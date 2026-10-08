@@ -1,6 +1,8 @@
 defmodule Phantom.StdioTest do
   use ExUnit.Case
 
+  import ExUnit.CaptureIO
+
   alias Phantom.MockIO
 
   defp start_stdio(opts \\ []) do
@@ -364,16 +366,21 @@ defmodule Phantom.StdioTest do
     test "returns error when resource handler raises" do
       ctx = start_stdio()
 
-      send_request(ctx, %{
-        jsonrpc: "2.0",
-        id: 1,
-        method: "resources/read",
-        params: %{uri: "explode:///1"}
-      })
+      stderr =
+        capture_io(:stderr, fn ->
+          send_request(ctx, %{
+            jsonrpc: "2.0",
+            id: 1,
+            method: "resources/read",
+            params: %{uri: "explode:///1"}
+          })
 
-      response = read_response(ctx)
-      assert response["id"] == 1
-      assert response["error"]["code"] == -32603
+          response = read_response(ctx)
+          assert response["id"] == 1
+          assert response["error"]["code"] == -32603
+        end)
+
+      assert stderr =~ ~r/Phantom.Stdio dispatch error: .*boom/
       assert Process.alive?(ctx.pid)
     end
   end
