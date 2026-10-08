@@ -2028,9 +2028,11 @@ defmodule Phantom.Router do
     request_id = request.id
     parent_pid = session.pid
     task_session = %{session | request: %{request | spec: spec}}
+    callers = [self() | Process.get(:"$callers", [])]
 
     worker =
       spawn(fn ->
+        Process.put(:"$callers", callers)
         # The isolated handler uses these process keys to return its eventual
         # result to the transport process that owns the current request.
         Process.put(:phantom_adopter, parent_pid)
