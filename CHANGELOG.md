@@ -1,4 +1,4 @@
-## Unreleased
+## 0.7.1 (2026-10-08)
 
 - A GET SSE stream for a session that already has one replaces it instead of
   being refused with `409 Conflict`. A client that drops its stream is not
