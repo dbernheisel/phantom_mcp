@@ -2198,6 +2198,8 @@ defmodule Phantom.Router do
 
   defp validate_output(:tool, %{output_schema: nil}, _formatted), do: :ok
 
+  defp validate_output(:tool, _spec, %{isError: true}), do: :ok
+
   defp validate_output(:tool, %{output_schema: schema}, formatted) do
     content = formatted[:structuredContent] || formatted["structuredContent"]
 

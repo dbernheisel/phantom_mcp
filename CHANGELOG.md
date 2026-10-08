@@ -4,6 +4,9 @@
   being refused with `409 Conflict`. A client that drops its stream is not
   noticed until the next write, so its reconnect was refused, failing clients
   such as Cursor.
+- A tool error reply (`isError: true`) from a tool with an `output_schema` is
+  no longer checked against the schema. The client gets the tool's error text
+  instead of `Invalid tool output: $: expected object`.
 
 ## 0.7.0 (2026-10-04)
 
