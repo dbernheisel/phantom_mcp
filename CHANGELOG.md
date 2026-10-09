@@ -1,3 +1,10 @@
+## Unreleased
+
+- Tool and prompt handlers run with the dispatching process in `$callers`, as
+  in a `Task`. Mocking and stubbing libraries and the Ecto SQL sandbox, which
+  find their owner through `$callers`, now reach handlers called with
+  `Phantom.Test` without global or shared mode.
+
 ## 0.7.1 (2026-10-08)
 
 - A GET SSE stream for a session that already has one replaces it instead of
