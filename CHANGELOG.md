@@ -1,3 +1,7 @@
+## 0.7.3 (2026-10-18)
+
+- Fixup canceling work due to inactivity
+
 ## 0.7.2 (2026-10-17)
 
 - Tool and prompt handlers run with the dispatching process in `$callers`, as
