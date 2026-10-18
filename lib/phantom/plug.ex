@@ -200,6 +200,8 @@ defmodule Phantom.Plug do
     |> dispatch(config)
   end
 
+  defp connect(%Plug.Conn{halted: true} = conn, _opts), do: conn
+
   defp connect(conn, opts) do
     router = opts[:router]
     if not Cache.initialized?(router), do: Cache.register(router)

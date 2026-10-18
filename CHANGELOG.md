@@ -1,9 +1,13 @@
-## Unreleased
+## 0.7.2 (2026-10-17)
 
 - Tool and prompt handlers run with the dispatching process in `$callers`, as
   in a `Task`. Mocking and stubbing libraries and the Ecto SQL sandbox, which
   find their owner through `$callers`, now reach handlers called with
   `Phantom.Test` without global or shared mode.
+- `Phantom.Plug` no longer calls `c:Phantom.Router.connect/2` after it has
+  already rejected a request, such as a `POST` without a JSON body or a CORS
+  preflight. A `connect/2` that rejected the request too raised
+  `Plug.Conn.AlreadySentError`.
 
 ## 0.7.1 (2026-10-08)
 

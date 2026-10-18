@@ -360,6 +360,22 @@ defmodule Phantom.PlugTest do
       assert error["error"]["message"] == "Parse error: Invalid JSON"
     end
 
+    test "does not connect after rejecting the request" do
+      defmodule UnauthorizedRouter do
+        use Phantom.Router, name: "Unauthorized", vsn: "1.0"
+
+        def connect(_session, _conn), do: {:unauthorized, "Bearer"}
+      end
+
+      :post
+      |> conn("/mcp")
+      |> call(router: UnauthorizedRouter)
+
+      assert_receive {:conn, conn}
+      assert conn.status == 400
+      assert JSON.decode!(conn.resp_body)["error"]["message"] == "Parse error: Invalid JSON"
+    end
+
     test "handles valid JSON-RPC request" do
       request_ping()
       assert_receive {:conn, conn}
