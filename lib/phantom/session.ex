@@ -663,7 +663,6 @@ defmodule Phantom.Session do
   @doc false
   def start_loop(opts) do
     session = Keyword.fetch!(opts, :session)
-    timeout = Keyword.fetch!(opts, :timeout)
     opts = Keyword.put_new(opts, :log_level, 5)
     {cb, opts} = Keyword.pop(opts, :continue_fun)
     Process.set_label({__MODULE__, session.id})
@@ -671,13 +670,7 @@ defmodule Phantom.Session do
     :gen_server.enter_loop(
       __MODULE__,
       [],
-      Map.new(
-        opts ++
-          [
-            timeout: timeout,
-            last_activity: System.system_time()
-          ]
-      ),
+      Map.new(opts),
       self(),
       {:continue, cb}
     )
@@ -685,7 +678,7 @@ defmodule Phantom.Session do
 
   @doc false
   def handle_continue(cb, state) do
-    state = schedule_inactivity(Map.put(state, :timer, nil))
+    state = schedule_inactivity(Map.put_new(state, :timer, nil))
 
     if is_function(cb, 1) do
       maybe_finish(cb.(state))
@@ -701,7 +694,7 @@ defmodule Phantom.Session do
 
   def handle_call({:subscribe_resource, resource}, _from, state) do
     Phantom.Tracker.subscribe_resource(resource)
-    {:reply, :ok, state |> set_activity() |> schedule_inactivity()}
+    {:reply, :ok, schedule_inactivity(state)}
   end
 
   def handle_call({:set_log_level, log_level}, _from, state),
@@ -709,12 +702,10 @@ defmodule Phantom.Session do
 
   def handle_call({:unsubscribe_resource, uri}, _from, state) do
     Phantom.Tracker.unsubscribe_resource(uri)
-    {:reply, :ok, state |> set_activity() |> schedule_inactivity()}
+    {:reply, :ok, schedule_inactivity(state)}
   end
 
   def handle_call({:elicit, elicitation, tool_call_id}, from, state) do
-    cancel_inactivity(state)
-
     {request, ref} =
       Phantom.Elicit.prepare_request(state.session.id, tool_call_id, elicitation)
 
@@ -728,7 +719,7 @@ defmodule Phantom.Session do
       |> Map.update(:pending_elicit_ids, %{request.id => ref}, &Map.put(&1, request.id, ref))
       |> state.stream_fun.(request.id, "message", Request.to_json(request))
 
-    {:noreply, state |> set_activity() |> schedule_inactivity()}
+    {:noreply, schedule_inactivity(state)}
   end
 
   @doc false
@@ -764,8 +755,6 @@ defmodule Phantom.Session do
   @doc false
   def handle_cast({:log_legacy, level, level_name, domain, payload}, state)
       when level <= state.log_level do
-    cancel_inactivity(state)
-
     {:noreply,
      state
      |> state.stream_fun.(
@@ -773,7 +762,6 @@ defmodule Phantom.Session do
        "message",
        Request.notify(%{level: level_name, logger: domain, data: payload})
      )
-     |> set_activity()
      |> schedule_inactivity()}
   end
 
@@ -782,8 +770,6 @@ defmodule Phantom.Session do
   end
 
   def handle_cast({:log, level_name, domain, payload}, state) do
-    cancel_inactivity(state)
-
     {:noreply,
      state
      |> state.stream_fun.(
@@ -791,19 +777,16 @@ defmodule Phantom.Session do
        "message",
        Request.notify(%{level: level_name, logger: domain, data: payload})
      )
-     |> set_activity()
      |> schedule_inactivity()}
   end
 
   def handle_cast(:ping, state) do
-    cancel_inactivity(state)
-
     state =
       if stateless?(state.session),
         do: state.stream_fun.(state, nil, "comment", nil),
         else: state.stream_fun.(state, nil, "message", Request.ping())
 
-    {:noreply, state |> set_activity() |> schedule_inactivity()}
+    {:noreply, schedule_inactivity(state)}
   end
 
   def handle_cast({:progress, token, progress, total, message}, state) do
@@ -820,8 +803,7 @@ defmodule Phantom.Session do
 
       progress_state = Map.put(Map.get(state, :progress, %{}), token, progress)
 
-      {:noreply,
-       state |> Map.put(:progress, progress_state) |> set_activity() |> schedule_inactivity()}
+      {:noreply, state |> Map.put(:progress, progress_state) |> schedule_inactivity()}
     else
       {:noreply, state}
     end
@@ -830,13 +812,11 @@ defmodule Phantom.Session do
   def handle_cast({:notify, payload}, state), do: handle_cast({:send, payload}, state)
 
   def handle_cast({:send, payload}, state) do
-    cancel_inactivity(state)
     state = state.stream_fun.(state, nil, "message", payload)
-    {:noreply, state |> set_activity() |> schedule_inactivity()}
+    {:noreply, schedule_inactivity(state)}
   end
 
   def handle_cast({:subscription_ack, subscription_id, filter}, state) do
-    cancel_inactivity(state)
     payload = Request.subscriptions_acknowledged(subscription_id, filter)
     state = state.stream_fun.(state, nil, "message", payload)
 
@@ -846,11 +826,10 @@ defmodule Phantom.Session do
           MapSet.put(state.session.acknowledged_subscriptions, subscription_id)
     }
 
-    {:noreply, %{state | session: session} |> set_activity() |> schedule_inactivity()}
+    {:noreply, schedule_inactivity(%{state | session: session})}
   end
 
   def handle_cast({:respond, request_id, payload}, state) do
-    cancel_inactivity(state)
     request = state.session.requests[request_id]
     payload = normalize_response_payload(payload, request, state.session)
     state = state.stream_fun.(state, request_id, "message", payload)
@@ -886,15 +865,13 @@ defmodule Phantom.Session do
   end
 
   def handle_cast({:subscribe_resource, resource}, state) do
-    cancel_inactivity(state)
     Phantom.Tracker.subscribe_resource(resource)
-    {:noreply, state |> set_activity() |> schedule_inactivity()}
+    {:noreply, schedule_inactivity(state)}
   end
 
   def handle_cast({:unsubscribe_resource, uri}, state) do
-    cancel_inactivity(state)
     Phantom.Tracker.unsubscribe_resource(uri)
-    {:noreply, state |> set_activity() |> schedule_inactivity()}
+    {:noreply, schedule_inactivity(state)}
   end
 
   def handle_cast({:resources_updated, updates}, state) do
@@ -951,9 +928,8 @@ defmodule Phantom.Session do
       end)
 
     if notifications != [] do
-      cancel_inactivity(state)
       state = stream_notifications(state, notifications)
-      {:noreply, state |> set_activity() |> schedule_inactivity()}
+      {:noreply, schedule_inactivity(state)}
     else
       {:noreply, state}
     end
@@ -978,9 +954,8 @@ defmodule Phantom.Session do
       end
 
     if notifications != [] do
-      cancel_inactivity(state)
       state = stream_notifications(state, notifications)
-      {:noreply, state |> set_activity() |> schedule_inactivity()}
+      {:noreply, schedule_inactivity(state)}
     else
       {:noreply, state}
     end
@@ -997,9 +972,8 @@ defmodule Phantom.Session do
         else: []
 
     if notifications != [] do
-      cancel_inactivity(state)
       state = stream_notifications(state, notifications)
-      {:noreply, state |> set_activity() |> schedule_inactivity()}
+      {:noreply, schedule_inactivity(state)}
     else
       {:noreply, state}
     end
@@ -1017,9 +991,8 @@ defmodule Phantom.Session do
         else: []
 
     if notifications != [] do
-      cancel_inactivity(state)
       state = stream_notifications(state, notifications)
-      {:noreply, state |> set_activity() |> schedule_inactivity()}
+      {:noreply, schedule_inactivity(state)}
     else
       {:noreply, state}
     end
@@ -1037,9 +1010,8 @@ defmodule Phantom.Session do
         else: []
 
     if notifications != [] do
-      cancel_inactivity(state)
       state = stream_notifications(state, notifications)
-      {:noreply, state |> set_activity() |> schedule_inactivity()}
+      {:noreply, schedule_inactivity(state)}
     else
       {:noreply, state}
     end
@@ -1155,7 +1127,7 @@ defmodule Phantom.Session do
 
   defp maybe_finish(state) do
     if Enum.any?(Map.keys(state.session.requests)) or not state.session.close_after_complete do
-      {:noreply, state |> set_activity() |> schedule_inactivity()}
+      {:noreply, schedule_inactivity(state)}
     else
       handle_cast(:finish, state)
     end
@@ -1195,32 +1167,27 @@ defmodule Phantom.Session do
       {%{from: from, request_id: request_id}, state} ->
         GenServer.reply(from, elicitation_reply(response))
         state = forget_pending_elicit(state, request_id)
-        {:noreply, state |> set_activity() |> schedule_inactivity()}
+        {:noreply, schedule_inactivity(state)}
     end
   end
 
-  def handle_info(:inactivity, state) do
-    cond do
-      not state.session.close_after_complete ->
-        state =
-          if stateless?(state.session),
-            do: state.stream_fun.(state, nil, "comment", nil),
-            else: state.stream_fun.(state, nil, "message", Request.ping())
+  def handle_info({:timeout, ref, :inactivity}, %{timer: ref} = state) when is_reference(ref) do
+    if state.session.close_after_complete do
+      state = state.stream_fun.(state, nil, "closed", "inactivity")
+      {:stop, {:shutdown, :closed}, state}
+    else
+      state =
+        if stateless?(state.session),
+          do: state.stream_fun.(state, nil, "comment", nil),
+          else: state.stream_fun.(state, nil, "message", Request.ping())
 
-        {:noreply, state |> set_activity() |> schedule_inactivity()}
-
-      System.system_time() - state.last_activity > state.timeout ->
-        state = state.stream_fun.(state, nil, "closed", "inactivity")
-        {:stop, {:shutdown, :closed}, state}
-
-      true ->
-        {:noreply, state}
+      {:noreply, schedule_inactivity(state)}
     end
   end
+
+  def handle_info({:timeout, _stale_ref, :inactivity}, state), do: {:noreply, state}
 
   def handle_info({:phantom_dispatch, requests}, state) do
-    cancel_inactivity(state)
-
     # Intercept elicitation responses locally before dispatching
     # to the router. When `Phantom.Tracker` isn't available (the
     # default for stdio), the router's response path can't route
@@ -1250,21 +1217,19 @@ defmodule Phantom.Session do
         end
       end)
 
-    {:noreply, state |> set_activity() |> schedule_inactivity()}
+    {:noreply, schedule_inactivity(state)}
   end
 
   def handle_info({:phantom_dispatch_error, :parse_error}, state) do
-    cancel_inactivity(state)
     error = Request.error(nil, Request.parse_error("Parse error: Invalid JSON"))
     state = state.stream_fun.(state, nil, "message", error)
-    {:noreply, state |> set_activity() |> schedule_inactivity()}
+    {:noreply, schedule_inactivity(state)}
   end
 
   def handle_info({:phantom_dispatch_error, :batch_not_supported}, state) do
-    cancel_inactivity(state)
     error = Request.error(nil, Request.invalid("Batch requests are not supported"))
     state = state.stream_fun.(state, nil, "message", error)
-    {:noreply, state |> set_activity() |> schedule_inactivity()}
+    {:noreply, schedule_inactivity(state)}
   end
 
   def handle_info({:phantom_reader_closed, reason}, state) do
@@ -1286,6 +1251,8 @@ defmodule Phantom.Session do
 
   @doc false
   def terminate(_reason, state) do
+    cancel_inactivity(state)
+
     Enum.each(Map.get(state, :workers, %{}), fn {_id, {pid, monitor_ref}} ->
       Process.demonitor(monitor_ref, [:flush])
       Process.exit(pid, :shutdown)
@@ -1499,11 +1466,11 @@ defmodule Phantom.Session do
   defp cancel_inactivity(%{timer: ref}) when is_reference(ref), do: Process.cancel_timer(ref)
   defp cancel_inactivity(_), do: :ok
 
-  defp set_activity(state), do: %{state | last_activity: System.system_time()}
-
-  defp schedule_inactivity(%{timeout: :infinity} = state), do: state
-
   defp schedule_inactivity(state) do
-    %{state | timer: Process.send_after(self(), :inactivity, state.timeout)}
+    cancel_inactivity(state)
+    %{state | timer: start_inactivity_timer(state.timeout)}
   end
+
+  defp start_inactivity_timer(:infinity), do: nil
+  defp start_inactivity_timer(timeout), do: :erlang.start_timer(timeout, self(), :inactivity)
 end
