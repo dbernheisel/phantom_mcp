@@ -5,6 +5,15 @@
   `server/discover`, such as `io.modelcontextprotocol/oauth-client-credentials`.
 - New: the [OAuth Client Credentials guide](guides/oauth_client_credentials.md),
   for machine clients that authenticate with the `client_credentials` grant.
+- New: serve [A2A](https://a2a-protocol.org) v1.0 agents. Declare them in a
+  router with `agent "research", MyApp.Agents.Research`, implement them with
+  `Phantom.A2A.Agent`, and serve them with `Phantom.A2A.Plug` over JSON-RPC,
+  streaming over SSE with a pubsub. Agents store their own tasks and report
+  progress with `Phantom.A2A.publish/2`. `Phantom.Session.allow_agents/2`
+  limits agents per session, and `Phantom.A2A.Test` drives agents in tests.
+  Phantom passes the A2A conformance suite (ACTS) on JSON-RPC, apart from its
+  client tests. Push notifications and extended agent cards are not
+  supported yet.
 
 ## 0.7.3 (2026-10-18)
 

@@ -1152,11 +1152,12 @@ defmodule Phantom.Plug do
     end
   end
 
-  defp valid_origin?(_origin, %{validate_origin: false}), do: true
-  defp valid_origin?(_origin, %{origins: :all}), do: true
-  defp valid_origin?(nil, _opts), do: true
+  @doc false
+  def valid_origin?(_origin, %{validate_origin: false}), do: true
+  def valid_origin?(_origin, %{origins: :all}), do: true
+  def valid_origin?(nil, _opts), do: true
 
-  defp valid_origin?(origin, opts) do
+  def valid_origin?(origin, opts) do
     case opts[:origins] do
       :all -> true
       origins when is_list(origins) -> origin in origins
@@ -1165,10 +1166,11 @@ defmodule Phantom.Plug do
     end
   end
 
-  defp valid_host?(_host, :all), do: true
-  defp valid_host?(host, {m, f, a}), do: apply(m, f, [host | a]) == true
+  @doc false
+  def valid_host?(_host, :all), do: true
+  def valid_host?(host, {m, f, a}), do: apply(m, f, [host | a]) == true
 
-  defp valid_host?(host, hosts) when is_list(hosts),
+  def valid_host?(host, hosts) when is_list(hosts),
     do: normalize_host(host) in Enum.map(hosts, &normalize_host/1)
 
   # Hosts are case-insensitive, and adapters differ on keeping IPv6 brackets.
@@ -1259,10 +1261,9 @@ defmodule Phantom.Plug do
 
       iex> Phantom.Plug.www_authenticate(%{
       ...>   method: "Bearer",
-      ...>   resource_metadata: "https://myapp.com/.well-known/oauth-protected-resource",
-      ...>   max_age: 42000
+      ...>   resource_metadata: "https://myapp.com/.well-known/oauth-protected-resource"
       ...> })
-      ~s|Bearer max_age="42000", resource_metadata="https://myapp.com/.well-known/oauth-protected-resource"|
+      ~s|Bearer resource_metadata="https://myapp.com/.well-known/oauth-protected-resource"|
 
   https://datatracker.ietf.org/doc/html/rfc9728#name-use-of-www-authenticate-for
   """

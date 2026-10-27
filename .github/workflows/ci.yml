@@ -82,3 +82,8 @@ jobs:
 
       - name: Run MCP conformance suite
         run: mix test --only conformance
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Run A2A conformance suite (ACTS)
+        run: mix test --only acts

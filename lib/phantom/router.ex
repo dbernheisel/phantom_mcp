@@ -283,6 +283,7 @@ defmodule Phantom.Router do
     secret_key_base = Keyword.get(opts, :secret_key_base, nil)
     request_state_salt = Keyword.get(opts, :request_state_salt, nil)
     extensions = Keyword.get(opts, :extensions, Macro.escape(%{}))
+    a2a = Keyword.get(opts, :a2a, [])
 
     quote location: :keep, generated: true do
       @behaviour Phantom.Router
@@ -298,7 +299,9 @@ defmodule Phantom.Router do
           prompt: 2,
           prompt: 3,
           skill: 2,
-          skill: 3
+          skill: 3,
+          agent: 2,
+          agent: 3
         ]
 
       require Phantom.ClientLogger
@@ -318,8 +321,10 @@ defmodule Phantom.Router do
       @secret_key_base unquote(secret_key_base)
       @request_state_salt unquote(request_state_salt)
       @extensions unquote(extensions)
+      @a2a unquote(a2a)
 
       Module.register_attribute(__MODULE__, :phantom_tools, accumulate: true)
+      Module.register_attribute(__MODULE__, :phantom_agents, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_prompts, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_resource_templates, accumulate: true)
 
@@ -1071,6 +1076,43 @@ defmodule Phantom.Router do
     )
   end
 
+  @doc """
+  Route an A2A agent to a module that implements `Phantom.A2A.Agent`.
+
+  The path is the agent's ID and its URL under `Phantom.A2A.Plug`'s mount.
+  `opts` are passed to the agent as `ctx.agent.opts`, so one module can serve
+  several agents.
+
+      agent "research", MyApp.Agents.Research
+      agent "support-es", MyApp.Agents.Support, locale: "es"
+
+  Configure the cards with the `:a2a` option of `use Phantom.Router`:
+
+    * `:well_known` - the agent served at `/.well-known/agent-card.json`
+    * `:provider` - `%{"organization" => ..., "url" => ...}`
+    * `:security_schemes`, `:security_requirements` - as ProtoJSON maps
+
+  Limit agents per session with `Phantom.Session.allow_agents/2`. See `Phantom.A2A`.
+  """
+  defmacro agent(path, handler, opts \\ []) do
+    quote generated: true do
+      @phantom_agents Phantom.Router.agent_route(unquote(path), unquote(handler), unquote(opts))
+    end
+  end
+
+  @doc false
+  def agent_route(path, handler, opts) when is_binary(path) and is_atom(handler) do
+    segments = String.split(path, "/")
+
+    if not Enum.all?(segments, &Regex.match?(~r/\A[A-Za-z0-9._~-]+\z/, &1)) or
+         List.last(segments) == "agent-card.json" do
+      raise ArgumentError,
+            "invalid agent path #{inspect(path)}: segments are letters, digits, or - . _ ~"
+    end
+
+    %{id: path, segments: segments, handler: handler, opts: opts}
+  end
+
   @doc false
   defp maybe_register_app(name, opts, caller) do
     {app_module, opts} = Keyword.pop(opts, :app)
@@ -1330,7 +1372,9 @@ defmodule Phantom.Router do
             resource_templates: @phantom_resource_templates,
             prompts: @phantom_prompts,
             secret_key_base: @secret_key_base,
-            request_state_salt: @request_state_salt
+            request_state_salt: @request_state_salt,
+            a2a: @a2a,
+            agents: Enum.reverse(@phantom_agents)
           }
         end
       end,

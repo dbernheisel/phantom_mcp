@@ -36,7 +36,7 @@ defmodule Phantom.MixProject do
   defp extra_applications(env) when env in [:dev, :test], do: [:mnesia]
   defp extra_applications(_env), do: []
 
-  defp elixirc_paths(:test), do: ["lib", "test/support", "test/conformance"]
+  defp elixirc_paths(:test), do: ["lib", "test/support", "test/conformance", "test/acts"]
 
   defp elixirc_paths(:stdio), do: ["lib", "test/support/app"]
 

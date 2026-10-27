@@ -734,6 +734,91 @@ end
 See `Phantom.Elicit` for what each protocol version sends, and for waiting
 inline with `Phantom.Session.elicit/3`.
 
+## Serving A2A agents
+
+Phantom also serves [A2A](https://a2a-protocol.org) agents, for clients that
+delegate a whole job to an agent rather than call its tools. Declare agents in
+the same router, so they share `connect/2`:
+
+```elixir
+defmodule MyApp.MCP.Router do
+  use Phantom.Router,
+    name: "MyApp",
+    vsn: "1.0",
+    a2a: [well_known: "research"]
+
+  agent "research", MyApp.Agents.Research
+  agent "billing", MyApp.Agents.Billing
+end
+```
+
+Each agent is a module that answers messages with a message, or with a task
+it stores and runs:
+
+```elixir
+defmodule MyApp.Agents.Research do
+  use Phantom.A2A.Agent,
+    name: "MyApp Research",
+    description: "Designs and reviews research studies"
+
+  alias Phantom.A2A.{Message, Task}
+
+  @description "Review a study and suggest missing questions"
+  skill :study_review, tags: ["research"]
+
+  def handle_message(message, ctx) do
+    {:ok, _job} = MyApp.Reviews.start(ctx.task_ref, message, ctx.assigns.user)
+    {:reply, Task.submitted(ctx), ctx}
+  end
+
+  def get_task(task_id, ctx), do: MyApp.Reviews.get_a2a_task(task_id, ctx.assigns.user)
+end
+```
+
+Wherever the work runs, report progress with `Phantom.A2A.publish/2`, after
+saving it:
+
+```elixir
+Phantom.A2A.publish(task_ref, Phantom.A2A.Task.status(:working, "Reading study…"))
+```
+
+Serve the agents with `Phantom.A2A.Plug`, without `Plug.Parsers`, so invalid
+JSON gets the JSON-RPC error A2A requires. With a `pubsub`, agents stream
+over SSE:
+
+```elixir
+get "/.well-known/agent-card.json", Phantom.A2A.Plug,
+  router: MyApp.MCP.Router,
+  mount: "/a2a"
+
+scope "/a2a" do
+  forward "/", Phantom.A2A.Plug, router: MyApp.MCP.Router, pubsub: MyApp.PubSub
+end
+```
+
+Requests go through `connect/2` as MCP requests do, with the JSON-RPC request
+in `conn.body_params`. A client may name a `tenant`, such as an organization,
+in each request; it is only the client's claim, so check it there and assign
+what the session may use:
+
+```elixir
+def connect(session, conn) do
+  tenant = get_in(conn.body_params, ["params", "tenant"])
+
+  with {:ok, user} <- MyApp.Auth.verify(conn),
+       {:ok, org} <- MyApp.Orgs.for_user(user, tenant) do
+    {:ok, Phantom.Session.assign(session, user: user, org: org)}
+  else
+    _ -> {:forbidden, "Not allowed"}
+  end
+end
+```
+
+Phantom serves the JSON-RPC binding: `SendMessage`, `SendStreamingMessage`,
+`GetTask`, `ListTasks`, `CancelTask`, and `SubscribeToTask`. Push
+notifications and extended agent cards are not supported yet. See
+`Phantom.A2A`.
+
 ## What PhantomMCP supports
 
 Phantom will implement these MCP requests on your behalf:
