@@ -924,7 +924,8 @@ defmodule Phantom.A2A.Plug do
   defp await_events(task, deadline) do
     receive do
       {:phantom_a2a_event, event} ->
-        case Events.apply(task, event) do
+        case follow(task, event) do
+          :seen -> await_events(task, deadline)
           {:ok, task} -> if settled?(task), do: {:ok, task}, else: await_events(task, deadline)
           {:error, :unknown_artifact} -> {:error, Error.invalid_agent_response()}
         end
@@ -932,6 +933,23 @@ defmodule Phantom.A2A.Plug do
       max(deadline - System.monotonic_time(:millisecond), 0) -> {:ok, task}
     end
   end
+
+  # Apply a published event to this request's copy of the task, skipping
+  # events the task already includes. Only numbered events move the copy's
+  # sequence, as the agent's store numbers them.
+  defp follow(task, event) do
+    if Events.seen?(task, event) do
+      :seen
+    else
+      with {:ok, applied, _event} <- Events.apply(task, event) do
+        {:ok, if(numbered?(event), do: applied, else: %{applied | sequence: task.sequence})}
+      end
+    end
+  end
+
+  defp numbered?(%Message{}), do: false
+  defp numbered?(%Task{sequence: sequence}), do: sequence > 0
+  defp numbered?(%{sequence: sequence}), do: is_integer(sequence)
 
   ## SSE
 
@@ -961,10 +979,13 @@ defmodule Phantom.A2A.Plug do
       {:phantom_a2a_event, event} ->
         event = fill_ids(event, task)
 
-        with {:ok, task} <- Events.apply(task, event),
+        with {:ok, task} <- follow(task, event),
              {:ok, conn, n} <- send_events(conn, id, n, [event]) do
           if settled?(task), do: conn, else: stream_events(conn, id, n, task, keepalive)
         else
+          :seen ->
+            stream_events(conn, id, n, task, keepalive)
+
           {:error, :unknown_artifact} ->
             {_result, conn} = send_sse(conn, n, error_body(id, Error.invalid_agent_response()))
             conn

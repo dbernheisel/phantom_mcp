@@ -62,6 +62,24 @@ defmodule Phantom.A2A.PlugTest.Research do
     {:ok, %Task{id: "slow", context_id: "ctx-1", status: %TaskStatus{state: :working}}}
   end
 
+  # Event 2 is already in the snapshot when it is published, as when it is
+  # saved between the subscriber listening and fetching the task.
+  def get_task("raced", %{task_ref: %Phantom.A2A.TaskRef{} = ref}) do
+    spawn(fn ->
+      Phantom.A2A.publish(ref, %{Artifact.update("out", [Part.text("a")]) | sequence: 2})
+      Phantom.A2A.publish(ref, %{Task.status(:completed) | sequence: 3})
+    end)
+
+    {:ok,
+     %Task{
+       id: "raced",
+       context_id: "ctx-1",
+       status: %TaskStatus{state: :working},
+       artifacts: [Artifact.new("out", [Part.text("a")])],
+       sequence: 2
+     }}
+  end
+
   # A subscriber is listening by the time Phantom fetches the task.
   def get_task("live", %{task_ref: %Phantom.A2A.TaskRef{} = ref}) do
     spawn(fn ->
@@ -835,6 +853,15 @@ defmodule Phantom.A2A.PlugTest do
                %{"statusUpdate" => %{"status" => %{"state" => "TASK_STATE_COMPLETED"}}}
              ] =
                Enum.map(events, fn {_id, %{"result" => result}} -> result end)
+    end
+
+    test "events already in the current task aren't sent again" do
+      {_conn, events} = stream("/pubsub/a2a/research", "SubscribeToTask", %{"id" => "raced"})
+
+      assert [
+               %{"task" => %{"artifacts" => [%{"parts" => [%{"text" => "a"}]}]}},
+               %{"statusUpdate" => %{"status" => %{"state" => "TASK_STATE_COMPLETED"}}}
+             ] = Enum.map(events, fn {_id, %{"result" => result}} -> result end)
     end
 
     test "a task waiting on the client is sent, then the stream closes" do

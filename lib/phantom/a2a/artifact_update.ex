@@ -9,13 +9,22 @@ defmodule Phantom.A2A.ArtifactUpdate do
   alias Phantom.A2A.Artifact
 
   @enforce_keys [:artifact]
-  defstruct [:task_id, :context_id, :artifact, :metadata, append: false, last_chunk: false]
+  defstruct [
+    :task_id,
+    :context_id,
+    :artifact,
+    :metadata,
+    :sequence,
+    append: false,
+    last_chunk: false
+  ]
 
   @type t :: %__MODULE__{
           task_id: String.t() | nil,
           context_id: String.t() | nil,
           artifact: Artifact.t(),
           metadata: map() | nil,
+          sequence: pos_integer() | nil,
           append: boolean(),
           last_chunk: boolean()
         }

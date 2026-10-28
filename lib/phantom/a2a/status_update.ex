@@ -9,13 +9,14 @@ defmodule Phantom.A2A.StatusUpdate do
   alias Phantom.A2A.TaskStatus
 
   @enforce_keys [:status]
-  defstruct [:task_id, :context_id, :status, :metadata]
+  defstruct [:task_id, :context_id, :status, :metadata, :sequence]
 
   @type t :: %__MODULE__{
           task_id: String.t() | nil,
           context_id: String.t() | nil,
           status: TaskStatus.t(),
-          metadata: map() | nil
+          metadata: map() | nil,
+          sequence: pos_integer() | nil
         }
 
   @doc false

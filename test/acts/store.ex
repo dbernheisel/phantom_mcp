@@ -18,10 +18,11 @@ defmodule Phantom.ACTS.Store do
 
   @doc "Apply an event to a stored task, then publish it."
   def emit(%Phantom.A2A.TaskRef{task_id: task_id} = ref, event) do
-    Agent.update(__MODULE__, fn state ->
-      {:ok, task} = Events.apply(Map.fetch!(state.tasks, task_id), event)
-      put_in(state, [:tasks, task_id], task)
-    end)
+    event =
+      Agent.get_and_update(__MODULE__, fn state ->
+        {:ok, task, event} = Events.apply(Map.fetch!(state.tasks, task_id), event)
+        {event, put_in(state, [:tasks, task_id], task)}
+      end)
 
     Phantom.A2A.publish(ref, event)
   end

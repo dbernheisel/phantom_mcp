@@ -27,9 +27,11 @@ defmodule Phantom.A2A do
   Send an event about a task to the clients waiting on it, on any node, and
   push it to the task's webhooks when its agent supports push notifications.
 
-  Save the change first: Phantom doesn't store it, and a client that asks
-  for the task next gets it from `c:Phantom.A2A.Agent.get_task/2`. Phantom
-  fills in the event's task and context IDs from the ref. Without a `:pubsub`
+  Save the change first, with `Phantom.A2A.Events.apply/2`, and publish the
+  event it returns. Phantom doesn't store events, and a client that asks for
+  the task next gets it from `c:Phantom.A2A.Agent.get_task/2`. The event's
+  number lets a stream skip what that task already includes. Phantom fills in
+  the event's task and context IDs from the ref. Without a `:pubsub`
   on `Phantom.A2A.Plug`, nothing is streamed.
   """
   @spec publish(TaskRef.t(), event()) :: :ok

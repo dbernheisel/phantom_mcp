@@ -20,7 +20,7 @@ defmodule Phantom.A2A.Task do
   alias Phantom.A2A.{Artifact, Context, Message, StatusUpdate, TaskStatus}
 
   @enforce_keys [:id, :context_id, :status]
-  defstruct [:id, :context_id, :status, :metadata, artifacts: [], history: []]
+  defstruct [:id, :context_id, :status, :metadata, artifacts: [], history: [], sequence: 0]
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -28,7 +28,8 @@ defmodule Phantom.A2A.Task do
           status: TaskStatus.t(),
           metadata: map() | nil,
           artifacts: [Artifact.t()],
-          history: [Message.t()]
+          history: [Message.t()],
+          sequence: non_neg_integer()
         }
 
   @doc """

@@ -101,7 +101,10 @@ for a task the session may not see.
 This stores each task as an Erlang term, next to the columns `ListTasks`
 filters on, and runs the work in an [Oban](https://hexdocs.pm/oban) job.
 `Phantom.A2A.Events.apply/2` applies each event to the stored task with the
-rules A2A defines.
+rules A2A defines, and numbers it. Publish the numbered event: a client that
+subscribes while you publish gets the stored task, and Phantom skips the
+events already in it. Number events in the same transaction that locks the
+task, so two writers can't number events the same.
 
 ```elixir
 defmodule MyApp.Repo.Migrations.CreateA2ATasks do
@@ -176,12 +179,12 @@ defmodule MyApp.A2ATasks do
     end
   end
 
-  @doc "Apply an event to the stored task, then publish it."
+  @doc "Apply an event to the stored task, then publish the numbered event."
   def emit!(%TaskRef{} = ref, event) do
-    {:ok, _record} =
+    {:ok, event} =
       Repo.transaction(fn ->
         record = A2ATask |> lock("FOR UPDATE") |> Repo.get!(ref.task_id)
-        {:ok, task} = Events.apply(to_task(record), event)
+        {:ok, task, event} = Events.apply(to_task(record), event)
 
         record
         |> Ecto.Changeset.change(
@@ -189,6 +192,8 @@ defmodule MyApp.A2ATasks do
           task: :erlang.term_to_binary(task)
         )
         |> Repo.update!()
+
+        event
       end)
 
     Phantom.A2A.publish(ref, event)

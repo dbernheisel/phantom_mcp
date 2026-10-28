@@ -67,7 +67,8 @@ defmodule Phantom.A2A.Agent do
   also where access is checked, so return `{:error, :not_found}` for tasks the
   session may not see. A client continues a task by sending a message with its
   `taskId`; Phantom checks it with `c:get_task/2` first. Report progress from
-  wherever the work runs with `Phantom.A2A.publish/2`: Phantom forwards each
+  wherever the work runs: save each event with `Phantom.A2A.Events.apply/2`,
+  then send the event it returns with `Phantom.A2A.publish/2`. Phantom forwards each
   event to `SendStreamingMessage` and `SubscribeToTask` streams, and closes
   them when the task finishes or needs the client.
   """

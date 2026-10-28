@@ -811,11 +811,14 @@ defmodule MyApp.Agents.Hosted do
 end
 ```
 
-Wherever the work runs, report progress with `Phantom.A2A.publish/2`, after
-saving it:
+Wherever the work runs, save each change with `Phantom.A2A.Events.apply/2`,
+then report it with `Phantom.A2A.publish/2`:
 
 ```elixir
-Phantom.A2A.publish(task_ref, Phantom.A2A.Task.status(:working, "Reading study…"))
+event = Phantom.A2A.Task.status(:working, "Reading study…")
+{:ok, task, event} = Phantom.A2A.Events.apply(stored_task, event)
+MyApp.Reviews.save!(task)
+Phantom.A2A.publish(task_ref, event)
 ```
 
 Serve the agents with `Phantom.A2A.Plug`, without `Plug.Parsers`, so invalid

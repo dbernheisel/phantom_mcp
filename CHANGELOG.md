@@ -9,7 +9,9 @@
   router with `agent "research", MyApp.Agents.Research`, implement them with
   `Phantom.A2A.Agent`, and serve them with `Phantom.A2A.Plug` over JSON-RPC,
   streaming over SSE with a pubsub. Agents store their own tasks and report
-  progress with `Phantom.A2A.publish/2`. `Phantom.Session.allow_agents/2`
+  progress with `Phantom.A2A.publish/2`, numbering events with
+  `Phantom.A2A.Events.apply/2` so a client that subscribes mid-task gets no
+  duplicates. `Phantom.Session.allow_agents/2`
   limits agents per session, and `Phantom.A2A.Test` drives agents in tests.
   Routes with path params, such as `agent ":org/:agent_key", Mod, :resolve`,
   serve agents found at runtime. Agents with `push_notifications: true`
