@@ -307,11 +307,12 @@ defmodule Phantom.A2A.PlugTest do
                "provider" => %{"organization" => "Phantom"},
                "securitySchemes" => %{"bearer" => _},
                "securityRequirements" => [_],
-               "capabilities" => %{
-                 "streaming" => false,
-                 "pushNotifications" => false,
-                 "extendedAgentCard" => false
-               },
+               "capabilities" =>
+                 %{
+                   "streaming" => false,
+                   "pushNotifications" => false,
+                   "extendedAgentCard" => false
+                 } = capabilities,
                "supportedInterfaces" => [
                  %{
                    "url" => "http://www.example.com/a2a/research",
@@ -330,6 +331,8 @@ defmodule Phantom.A2A.PlugTest do
                  %{"id" => "quick_answer", "name" => "Quick answer", "tags" => []}
                ]
              } = card
+
+      refute Map.has_key?(capabilities, "extensions")
     end
 
     test "serves nested agent paths" do

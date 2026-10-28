@@ -23,7 +23,8 @@ defmodule Phantom.A2A.Card do
     capabilities: %{},
     default_input_modes: [],
     default_output_modes: [],
-    skills: []
+    skills: [],
+    extensions: []
   ]
 
   @type t :: %__MODULE__{
@@ -39,8 +40,27 @@ defmodule Phantom.A2A.Card do
           capabilities: map(),
           default_input_modes: [String.t()],
           default_output_modes: [String.t()],
-          skills: [AgentSkill.t()]
+          skills: [AgentSkill.t()],
+          extensions: [extension()]
         }
+
+  @typedoc "A protocol extension the agent supports"
+  @type extension :: %{
+          required(:uri) => String.t(),
+          optional(:description) => String.t(),
+          optional(:required) => boolean(),
+          optional(:params) => map()
+        }
+
+  @doc false
+  def extension_to_json(extension) do
+    remove_nils(%{
+      "uri" => extension.uri,
+      "description" => extension[:description],
+      "required" => if(extension[:required], do: true),
+      "params" => extension[:params]
+    })
+  end
 
   @doc false
   def to_json(%__MODULE__{} = card) do

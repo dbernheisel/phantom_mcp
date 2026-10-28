@@ -14,8 +14,13 @@
   Routes with path params, such as `agent ":org/:agent_key", Mod, :resolve`,
   serve agents found at runtime. Agents with `push_notifications: true`
   push each event to clients' webhooks, which Phantom checks against private
-  networks. Phantom passes the A2A conformance suite (ACTS) on JSON-RPC, apart
-  from its client tests. Extended agent cards are not supported yet.
+  networks. Agents can offer an extended card (`extended_card: true`) and
+  declare protocol extensions, and requests and push deliveries emit
+  `[:phantom, :a2a, :dispatch]` and `[:phantom, :a2a, :push]` telemetry spans.
+  Phantom passes the A2A conformance suite (ACTS) on JSON-RPC, apart from its
+  client tests.
+- New: `Phantom.Router.call_tool/4` calls a router's tool from your own code,
+  such as an A2A agent answering with the tools the router already has.
 
 ## 0.7.3 (2026-10-18)
 

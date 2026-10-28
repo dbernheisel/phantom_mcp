@@ -9,6 +9,7 @@ defmodule Phantom.A2A.Plug do
     card_max_age: 300,
     keepalive: :timer.seconds(15),
     push_notifications: true,
+    extended_card: true,
     max_request_size: 1_048_576
   ]
 
@@ -58,12 +59,28 @@ defmodule Phantom.A2A.Plug do
       also carry an `ETag`.
     * `:push_notifications` - set `false` to turn push notifications off for
       this mount, even for agents that support them
+    * `:extended_card` - set `false` to turn extended agent cards off for this
+      mount
     * `:keepalive` - milliseconds between keepalive comments on an idle
       stream (default 15 seconds). Lower it to stay under a proxy's idle
       timeout.
     * `:max_request_size` - the largest body read, in bytes, when no
       `Plug.Parsers` ran before this plug
     * `:origins`, `:validate_origin`, `:hosts` - as in `Phantom.Plug`
+
+  ## Telemetry
+
+  Each JSON-RPC request is a `[:phantom, :a2a, :dispatch]` telemetry span:
+
+    * `:start` with metadata `~w[router agent_id method params session trace_context]a`
+    * `:stop` with the same metadata plus `:result`: `{:ok, result}`,
+      `{:error, %Phantom.A2A.Error{}}`, or `:stream` for a streamed response,
+      whose span lasts until the stream closes
+    * `:exception` with the metadata plus `~w[kind reason stacktrace]a`
+
+  `:trace_context` holds the W3C `traceparent`, `tracestate`, and `baggage`
+  headers the client sent. Push deliveries are spans too; see
+  `Phantom.A2A.Push`.
 
   Defaults:
 
@@ -233,11 +250,16 @@ defmodule Phantom.A2A.Plug do
             "protocolVersion" => @protocol_version
           }
         ],
-        capabilities: %{
-          "streaming" => not is_nil(opts.pubsub),
-          "pushNotifications" => push_notifications?(agent, opts),
-          "extendedAgentCard" => false
-        }
+        capabilities:
+          Phantom.Utils.remove_nils(%{
+            "streaming" => not is_nil(opts.pubsub),
+            "pushNotifications" => push_notifications?(agent, opts),
+            "extensions" =>
+              if(card.extensions != [],
+                do: Enum.map(card.extensions, &A2A.Card.extension_to_json/1)
+              ),
+            "extendedAgentCard" => extended_card?(agent, opts)
+          })
     }
   end
 
@@ -289,8 +311,12 @@ defmodule Phantom.A2A.Plug do
     case envelope(body) do
       {:ok, id, method, params} ->
         with :ok <- check_version(conn),
-             {:ok, session, agent} <- open_agent(conn, opts, match) do
+             {:ok, session, agent} <- open_agent(conn, opts, match),
+             {:ok, extensions} <- check_extensions(conn, agent) do
+          conn = put_extensions_header(conn, extensions, agent)
+
           ctx = %Context{
+            extensions: extensions,
             session: session,
             assigns: session.assigns,
             agent: Map.take(agent, [:id, :opts, :params, :state]),
@@ -298,8 +324,24 @@ defmodule Phantom.A2A.Plug do
             metadata: params["metadata"]
           }
 
+          # The public card, for GetExtendedAgentCard.
+          opts = Map.put(opts, :card, fn -> card(conn, opts, agent, mount_path(conn)) end)
+
+          meta = %{
+            router: opts.router,
+            agent_id: agent.id,
+            method: method,
+            params: params,
+            session: session,
+            trace_context: trace_context(conn)
+          }
+
           try do
-            respond(conn, id, dispatch(method, params, agent, ctx, opts), opts)
+            :telemetry.span([:phantom, :a2a, :dispatch], meta, fn ->
+              result = dispatch(method, params, agent, ctx, opts)
+              conn = respond(conn, id, result, opts)
+              {conn, %{}, Map.put(meta, :result, telemetry_result(result))}
+            end)
           rescue
             exception ->
               send_json(conn, 200, error_body(id, Error.internal_error()))
@@ -315,6 +357,41 @@ defmodule Phantom.A2A.Plug do
         send_json(conn, 200, error_body(nil, Error.invalid_request()))
     end
   end
+
+  defp check_extensions(conn, agent) do
+    requested =
+      conn
+      |> get_req_header("a2a-extensions")
+      |> Enum.flat_map(&String.split(&1, ","))
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    case Enum.find(agent.card.extensions, &(&1[:required] && &1.uri not in requested)) do
+      nil -> {:ok, requested}
+      extension -> Error.extension_support_required(extension.uri)
+    end
+  end
+
+  # Name the requested extensions the agent supports, so the client knows
+  # which ones apply.
+  defp put_extensions_header(conn, requested, agent) do
+    supported = for %{uri: uri} <- agent.card.extensions, uri in requested, do: uri
+
+    if supported == [],
+      do: conn,
+      else: put_resp_header(conn, "a2a-extensions", Enum.join(supported, ", "))
+  end
+
+  # W3C Trace Context, as A2A clients send it: in HTTP headers.
+  defp trace_context(conn) do
+    for name <- ~w[traceparent tracestate baggage]a,
+        [value | _] <- [get_req_header(conn, Atom.to_string(name))],
+        into: %{},
+        do: {name, value}
+  end
+
+  defp telemetry_result({:stream, _ref, _start}), do: :stream
+  defp telemetry_result(result), do: result
 
   defp envelope(%{"jsonrpc" => "2.0", "method" => method} = body) when is_binary(method) do
     case Map.get(body, "params", %{}) do
@@ -503,8 +580,17 @@ defmodule Phantom.A2A.Plug do
        when method in ~w[GetTask CancelTask SubscribeToTask],
        do: {:error, Error.invalid_params("id is required")}
 
-  defp dispatch("GetExtendedAgentCard", _params, _agent, _ctx, _opts),
-    do: {:error, Error.unsupported_operation("Extended agent cards are not supported")}
+  defp dispatch("GetExtendedAgentCard", _params, agent, ctx, opts) do
+    if extended_card?(agent, opts) do
+      case agent.handler.extended_card(opts.card.(), ctx) do
+        {:ok, %A2A.Card{} = card} -> {:ok, A2A.Card.to_json(card)}
+        {:error, %Error{} = error} -> {:error, error}
+        _other -> {:error, Error.invalid_agent_response()}
+      end
+    else
+      {:error, Error.unsupported_operation("Extended agent cards are not supported")}
+    end
+  end
 
   defp dispatch(
          "CreateTaskPushNotificationConfig",
@@ -643,6 +729,9 @@ defmodule Phantom.A2A.Plug do
       do: :ok,
       else: {:error, Error.push_notification_not_supported()}
   end
+
+  defp extended_card?(agent, opts),
+    do: opts.extended_card and agent.handler.__phantom_a2a__(:extended_card)
 
   defp push_notifications?(agent, opts),
     do: opts.push_notifications and agent.handler.__phantom_a2a__(:push_notifications)

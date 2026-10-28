@@ -21,6 +21,8 @@ defmodule Phantom.A2A.Context do
       `conn.body_params["params"]["tenant"]`, and assign what the session may
       use, such as its organization.
     * `:metadata` - the request's `metadata`
+    * `:extensions` - the extension URIs the client named in its
+      `A2A-Extensions` header
     * `:configuration` - the `SendMessage` configuration, as sent
   """
 
@@ -35,7 +37,8 @@ defmodule Phantom.A2A.Context do
     :tenant,
     :metadata,
     assigns: %{},
-    configuration: %{}
+    configuration: %{},
+    extensions: []
   ]
 
   @type t :: %__MODULE__{
@@ -47,6 +50,7 @@ defmodule Phantom.A2A.Context do
           tenant: String.t() | nil,
           metadata: map() | nil,
           assigns: map(),
-          configuration: map()
+          configuration: map(),
+          extensions: [String.t()]
         }
 end

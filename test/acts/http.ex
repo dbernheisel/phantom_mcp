@@ -1,9 +1,9 @@
 defmodule Phantom.ACTS.HTTP do
   @moduledoc """
   Serves the ACTS agent's card at `/.well-known/agent-card.json` and the agent
-  at `/a2a/acts`. Without `:pubsub` and with `push_notifications: false`, the
-  agent neither streams nor pushes: that is the suite's reduced-capabilities
-  agent.
+  at `/a2a/acts`. Without `:pubsub`, and with `push_notifications: false` and
+  `extended_card: false`, it advertises none of those capabilities: that is
+  the suite's reduced-capabilities agent.
   """
 
   @behaviour Plug
@@ -18,6 +18,7 @@ defmodule Phantom.ACTS.HTTP do
           router: Keyword.get(opts, :router, Phantom.ACTS.Router),
           pubsub: opts[:pubsub],
           push_notifications: Keyword.get(opts, :push_notifications, true),
+          extended_card: Keyword.get(opts, :extended_card, true),
           mount: "/a2a",
           validate_origin: false
         )

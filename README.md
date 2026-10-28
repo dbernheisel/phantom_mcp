@@ -856,9 +856,11 @@ the configs; Phantom checks each webhook URL so it can't reach your private
 network. See `Phantom.A2A.Push`.
 
 Phantom serves the JSON-RPC binding: `SendMessage`, `SendStreamingMessage`,
-`GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, and the push
-notification config methods. Extended agent cards are not supported yet. See
-`Phantom.A2A`.
+`GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`,
+`GetExtendedAgentCard`, and the push notification config methods. Agents can
+declare protocol extensions, and each request is a
+`[:phantom, :a2a, :dispatch]` telemetry span carrying the client's W3C trace
+context. See `Phantom.A2A`.
 
 ## What PhantomMCP supports
 

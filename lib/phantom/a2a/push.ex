@@ -14,6 +14,9 @@ defmodule Phantom.A2A.Push do
 
   Set `a2a: [allow_private_push_urls: true]` on the router to allow `http` and
   private addresses, such as in development.
+
+  Each delivery emits a `[:phantom, :a2a, :push]` telemetry span, with
+  metadata `~w[config task_id url event]a` and, on `:stop`, `:result`.
   """
 
   require Logger
@@ -41,6 +44,15 @@ defmodule Phantom.A2A.Push do
   """
   @spec deliver(PushConfig.t(), Phantom.A2A.event(), keyword()) :: :ok | {:error, term()}
   def deliver(%PushConfig{} = config, event, opts \\ []) do
+    meta = %{config: config, task_id: config.task_id, url: config.url, event: event}
+
+    :telemetry.span([:phantom, :a2a, :push], meta, fn ->
+      result = post(config, event, opts)
+      {result, %{}, Map.put(meta, :result, result)}
+    end)
+  end
+
+  defp post(config, event, opts) do
     {:ok, _apps} = Application.ensure_all_started([:inets, :ssl])
 
     with {:ok, uri, [address | _]} <- resolve(config.url, opts) do

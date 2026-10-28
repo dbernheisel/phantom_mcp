@@ -10,7 +10,8 @@ defmodule Phantom.ACTS.Agent do
     description: "Implements the ACTS tck-* behaviors",
     input_modes: ~w[text/plain application/json],
     output_modes: ~w[text/plain application/json],
-    push_notifications: true
+    push_notifications: true,
+    extended_card: true
 
   alias Phantom.A2A.{Artifact, Message, Part, Task, TaskStatus}
   alias Phantom.ACTS.Store

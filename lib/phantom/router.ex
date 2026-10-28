@@ -1120,6 +1120,32 @@ defmodule Phantom.Router do
   @doc false
   defdelegate agent_route(path, handler, opts_or_resolver), to: Phantom.Router.A2A, as: :route
 
+  @doc """
+  Call one of the session's router's tools from your own code, such as an A2A
+  agent answering with the tools it already has, and wait for its result.
+
+      def handle_message(message, ctx) do
+        {:ok, result} = Phantom.Router.call_tool(ctx.session, :search_studies, query: "churn")
+        # ...
+      end
+
+  The tool runs in the calling process with the session's assigns and
+  allow-lists, and arguments are validated as for `tools/call`. There is no
+  client, so `Phantom.Session.elicit/3` returns `:not_supported`. Returns
+  `{:ok, result}` with the tool's result, `{:error, error}` with the JSON-RPC
+  error, or `{:error, :timeout}`.
+
+  ## Options
+
+    * `:timeout` - how long to wait for a tool that answers later (default 60 seconds)
+    * `:on_progress` - a function called with `progress, total, message` for
+      each progress notification the tool sends
+  """
+  @spec call_tool(Session.t(), atom() | String.t(), map() | keyword(), keyword()) ::
+          {:ok, map()} | {:error, map() | :timeout}
+  def call_tool(%Session{} = session, name, args \\ %{}, opts \\ []),
+    do: Phantom.Router.CallTool.call(session, name, args, opts)
+
   @doc false
   defp maybe_register_app(name, opts, caller) do
     {app_module, opts} = Keyword.pop(opts, :app)

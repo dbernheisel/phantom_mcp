@@ -37,6 +37,14 @@ defmodule Phantom.A2A.Agent do
     * `:documentation_url`, `:icon_url` - shown on the card
     * `:push_notifications` - whether the agent pushes task updates to
       clients' webhooks (default `false`). See "Push notifications".
+    * `:extensions` - protocol extensions the agent supports, as maps with
+      `:uri`, and optionally `:description`, `:required`, and `:params`.
+      Phantom refuses requests that don't name a required extension in their
+      `A2A-Extensions` header, and gives the handler the requested ones in
+      `ctx.extensions`.
+    * `:extended_card` - whether authenticated clients can fetch a fuller
+      card with `GetExtendedAgentCard` (default `false`). See
+      `c:extended_card/2`.
 
   ## Skills
 
@@ -64,7 +72,7 @@ defmodule Phantom.A2A.Agent do
   them when the task finishes or needs the client.
   """
 
-  alias Phantom.A2A.{Context, Error, Message, PushConfig, Task, TaskRef}
+  alias Phantom.A2A.{Card, Context, Error, Message, PushConfig, Task, TaskRef}
 
   @doc """
   Answer a client's message with a `Phantom.A2A.Message`, or with a
@@ -144,6 +152,14 @@ defmodule Phantom.A2A.Agent do
   """
   @callback deliver_push(PushConfig.t(), Phantom.A2A.event(), TaskRef.t()) :: :ok
 
+  @doc """
+  The card for `GetExtendedAgentCard`, given the public card, such as with
+  skills only members may see. The request has passed
+  `c:Phantom.Router.connect/2`. Return an error to refuse it. Defaults to the
+  public card.
+  """
+  @callback extended_card(Card.t(), Context.t()) :: {:ok, Card.t()} | {:error, Error.t()}
+
   defmacro __using__(opts) do
     quote location: :keep, generated: true do
       @behaviour Phantom.A2A.Agent
@@ -182,7 +198,11 @@ defmodule Phantom.A2A.Agent do
       def deliver_push(config, event, task_ref),
         do: Phantom.A2A.Push.deliver_async(config, event, task_ref)
 
-      defoverridable get_task: 2,
+      @impl Phantom.A2A.Agent
+      def extended_card(card, _ctx), do: {:ok, card}
+
+      defoverridable extended_card: 2,
+                     get_task: 2,
                      cancel_task: 2,
                      list_tasks: 2,
                      create_push_config: 2,
@@ -222,6 +242,9 @@ defmodule Phantom.A2A.Agent do
       def __phantom_a2a__(:push_notifications),
         do: Keyword.get(@phantom_a2a_opts, :push_notifications, false)
 
+      def __phantom_a2a__(:extended_card),
+        do: Keyword.get(@phantom_a2a_opts, :extended_card, false)
+
       def __phantom_a2a__(:card) do
         opts = @phantom_a2a_opts
 
@@ -233,7 +256,8 @@ defmodule Phantom.A2A.Agent do
           icon_url: opts[:icon_url],
           default_input_modes: Keyword.get(opts, :input_modes, ["text/plain"]),
           default_output_modes: Keyword.get(opts, :output_modes, ["text/plain"]),
-          skills: Enum.reverse(@phantom_a2a_skills)
+          skills: Enum.reverse(@phantom_a2a_skills),
+          extensions: Keyword.get(opts, :extensions, [])
         }
       end
     end
