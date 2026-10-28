@@ -9,11 +9,12 @@ defmodule Phantom.ACTS.AuthRouter do
     vsn: "1.0",
     a2a: [
       well_known: "acts",
+      allow_private_push_urls: true,
       security_schemes: %{"bearer" => %{"httpAuthSecurityScheme" => %{"scheme" => "Bearer"}}},
       security_requirements: [%{"schemes" => %{"bearer" => %{"list" => []}}}]
     ]
 
-  agent("acts", Phantom.ACTS.Agent)
+  agent "acts", Phantom.ACTS.Agent
 
   def connect(session, %Plug.Conn{} = conn) do
     case Plug.Conn.get_req_header(conn, "authorization") do

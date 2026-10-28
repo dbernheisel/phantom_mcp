@@ -130,9 +130,9 @@ defmodule Phantom.A2A.PlugTest.Router do
       security_requirements: [%{"schemes" => %{"bearer" => %{"list" => []}}}]
     ]
 
-  agent("research", Phantom.A2A.PlugTest.Research)
-  agent("research-es", Phantom.A2A.PlugTest.Research, locale: "es")
-  agent("teams/minimal", Phantom.A2A.PlugTest.Minimal)
+  agent "research", Phantom.A2A.PlugTest.Research
+  agent "research-es", Phantom.A2A.PlugTest.Research, locale: "es"
+  agent "teams/minimal", Phantom.A2A.PlugTest.Minimal
 
   def connect(_session, %Plug.Conn{body_params: %{"params" => %{"tenant" => "other-org"}}}),
     do: {:forbidden, "Not a member of other-org"}
@@ -168,7 +168,7 @@ end
 defmodule Phantom.A2A.PlugTest.ConfiguredRouter do
   use Phantom.Router, name: "Configured"
 
-  agent("research", Phantom.A2A.PlugTest.Research)
+  agent "research", Phantom.A2A.PlugTest.Research
 end
 
 defmodule Phantom.A2A.PlugTest.HTTP do

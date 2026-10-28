@@ -775,6 +775,42 @@ defmodule MyApp.Agents.Research do
 end
 ```
 
+Agents found at runtime, such as ones each organization configures, take a
+route with path params and a function that resolves them. It runs after
+`connect/2`, so it can scope agents to the session, and returns the agent's
+card and any state its handler needs:
+
+```elixir
+# In the router: /a2a/acme/triage, /a2a/acme/benchmarks, ...
+agent ":org/:agent_key", MyApp.Agents.Hosted, :resolve
+
+defmodule MyApp.Agents.Hosted do
+  use Phantom.A2A.Agent, name: "Hosted", description: "Agents configured per organization"
+
+  def resolve(%{"org" => org, "agent_key" => key}, session) do
+    case MyApp.Agents.get(session.assigns.user, org, key) do
+      nil ->
+        {:error, :not_found}
+
+      agent ->
+        {:ok,
+         %Phantom.A2A.Card{
+           name: agent.name,
+           description: agent.description,
+           default_input_modes: ["text/plain"],
+           default_output_modes: ["text/plain"]
+         }, agent}
+    end
+  end
+
+  # ctx.agent.params and ctx.agent.state hold the params and the resolved agent.
+  def handle_message(message, ctx) do
+    {:ok, run} = MyApp.Agents.start_run(ctx.agent.state, ctx.task_ref, message)
+    {:reply, Phantom.A2A.Task.submitted(ctx), ctx}
+  end
+end
+```
+
 Wherever the work runs, report progress with `Phantom.A2A.publish/2`, after
 saving it:
 
@@ -814,9 +850,14 @@ def connect(session, conn) do
 end
 ```
 
+With `push_notifications: true` on an agent, clients can register webhooks
+for a task, and Phantom posts each event you publish to them. The agent stores
+the configs; Phantom checks each webhook URL so it can't reach your private
+network. See `Phantom.A2A.Push`.
+
 Phantom serves the JSON-RPC binding: `SendMessage`, `SendStreamingMessage`,
-`GetTask`, `ListTasks`, `CancelTask`, and `SubscribeToTask`. Push
-notifications and extended agent cards are not supported yet. See
+`GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, and the push
+notification config methods. Extended agent cards are not supported yet. See
 `Phantom.A2A`.
 
 ## What PhantomMCP supports

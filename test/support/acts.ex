@@ -17,7 +17,7 @@ defmodule Phantom.Test.ACTS do
       {Phoenix.PubSub, name: Phantom.ACTS.PubSub},
       Phantom.ACTS.Store,
       bandit(:default, pubsub: Phantom.ACTS.PubSub),
-      bandit(:reduced, []),
+      bandit(:reduced, push_notifications: false),
       bandit(:auth, pubsub: Phantom.ACTS.PubSub, router: Phantom.ACTS.AuthRouter)
     ]
   end

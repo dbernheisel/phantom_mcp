@@ -8,6 +8,7 @@ defmodule Phantom.A2A.Plug do
     blocking_timeout: :timer.seconds(60),
     card_max_age: 300,
     keepalive: :timer.seconds(15),
+    push_notifications: true,
     max_request_size: 1_048_576
   ]
 
@@ -55,6 +56,8 @@ defmodule Phantom.A2A.Plug do
       route, such as `"/a2a"`
     * `:card_max_age` - seconds clients may cache a card (default 300). Cards
       also carry an `ETag`.
+    * `:push_notifications` - set `false` to turn push notifications off for
+      this mount, even for agents that support them
     * `:keepalive` - milliseconds between keepalive comments on an idle
       stream (default 15 seconds). Lower it to stay under a proxy's idle
       timeout.
@@ -74,7 +77,7 @@ defmodule Phantom.A2A.Plug do
   import Plug.Conn
 
   alias Phantom.A2A
-  alias Phantom.A2A.{Context, Error, Events, Message, Task, TaskRef, TaskStatus}
+  alias Phantom.A2A.{Context, Error, Events, Message, PushConfig, Task, TaskRef, TaskStatus}
 
   @protocol_version "1.0"
   @terminal_states ~w[completed failed canceled rejected]a
@@ -108,37 +111,85 @@ defmodule Phantom.A2A.Plug do
          %Plug.Conn{method: "GET", path_info: [".well-known", "agent-card.json"]} = conn,
          opts
        ) do
-    case opts.router.__phantom__(:info).a2a[:well_known] do
-      nil ->
-        not_found(conn)
-
-      id ->
-        serve_card(conn, opts, find_agent(opts.router, String.split(id, "/")), opts.mount || "")
+    with id when is_binary(id) <- opts.router.__phantom__(:info).a2a[:well_known],
+         {:ok, %{params?: false} = route, _params} <-
+           Phantom.Router.A2A.match(opts.router, String.split(id, "/")) do
+      serve_card(conn, opts, static_agent(route), opts.mount || "")
+    else
+      _ -> not_found(conn)
     end
   end
 
   defp route(%Plug.Conn{method: "GET", path_info: path_info} = conn, opts) do
-    case Enum.split(path_info, -1) do
-      {segments, ["agent-card.json"]} ->
-        serve_card(conn, opts, find_agent(opts.router, segments), mount_path(conn))
-
-      _ ->
-        not_found(conn)
+    with {segments, ["agent-card.json"]} <- Enum.split(path_info, -1),
+         {:ok, route, params} <- Phantom.Router.A2A.match(opts.router, segments) do
+      card_for(conn, opts, route, segments, params)
+    else
+      _ -> not_found(conn)
     end
   end
 
   defp route(%Plug.Conn{method: "POST", path_info: segments} = conn, opts) do
-    case find_agent(opts.router, segments) do
-      nil -> not_found(conn)
-      agent -> rpc(conn, opts, agent)
+    case Phantom.Router.A2A.match(opts.router, segments) do
+      {:ok, route, params} -> rpc(conn, opts, {route, segments, params})
+      :error -> not_found(conn)
     end
   end
 
   defp route(conn, _opts),
     do: send_json(conn, 405, error_body(nil, Error.invalid_request("Method not allowed")))
 
-  defp find_agent(router, segments) do
-    Enum.find(router.__phantom__(:info).agents, &(&1.segments == segments))
+  # A static agent's card is public. A resolved agent's card needs the session.
+  defp card_for(conn, opts, %{params?: false, resolver: nil} = route, _segments, _params),
+    do: serve_card(conn, opts, static_agent(route), mount_path(conn))
+
+  defp card_for(conn, opts, route, segments, params) do
+    case open_agent(conn, opts, {route, segments, params}) do
+      {:ok, _session, agent} -> serve_card(conn, opts, agent, mount_path(conn))
+      :not_found -> not_found(conn)
+      %Plug.Conn{} = conn -> conn
+    end
+  end
+
+  defp static_agent(route) do
+    %{
+      id: route.id,
+      route: route,
+      handler: route.handler,
+      opts: route.opts,
+      params: %{},
+      state: nil,
+      card: route.handler.__phantom_a2a__(:card)
+    }
+  end
+
+  # Connect, check the allow-list, and resolve the agent for the session.
+  defp open_agent(conn, opts, {route, segments, params}) do
+    with {:ok, session} <- connect(conn, opts),
+         :ok <- check_allowed(session, route, segments),
+         {:ok, agent} <- resolve_agent(route, segments, params, session) do
+      {:ok, session, agent}
+    end
+  end
+
+  defp resolve_agent(%{resolver: nil} = route, _segments, _params, _session),
+    do: {:ok, static_agent(route)}
+
+  defp resolve_agent(route, segments, params, session) do
+    case apply(route.handler, route.resolver, [params, session]) do
+      {:ok, %A2A.Card{} = card, state} ->
+        {:ok,
+         %{
+           static_agent(route)
+           | id: Enum.join(segments, "/"),
+             params: params,
+             state: state,
+             card: card
+         }}
+
+      {:error, :not_found} ->
+        :not_found
+    end
   end
 
   defp mount_path(%Plug.Conn{script_name: []}), do: ""
@@ -148,8 +199,6 @@ defmodule Phantom.A2A.Plug do
     do: send_json(conn, 404, error_body(nil, Error.invalid_request("Not found")))
 
   ## Agent cards
-
-  defp serve_card(conn, _opts, nil, _mount), do: not_found(conn)
 
   defp serve_card(conn, opts, agent, mount) do
     body = conn |> card(opts, agent, mount) |> A2A.Card.to_json() |> JSON.encode!()
@@ -168,7 +217,7 @@ defmodule Phantom.A2A.Plug do
 
   defp card(conn, opts, agent, mount) do
     info = opts.router.__phantom__(:info)
-    card = agent.handler.__phantom_a2a__(:card)
+    card = agent.card
     base = URI.to_string(%URI{scheme: to_string(conn.scheme), host: conn.host, port: conn.port})
 
     %{
@@ -186,7 +235,7 @@ defmodule Phantom.A2A.Plug do
         ],
         capabilities: %{
           "streaming" => not is_nil(opts.pubsub),
-          "pushNotifications" => false,
+          "pushNotifications" => push_notifications?(agent, opts),
           "extendedAgentCard" => false
         }
     }
@@ -194,10 +243,10 @@ defmodule Phantom.A2A.Plug do
 
   ## JSON-RPC
 
-  defp rpc(conn, opts, agent) do
+  defp rpc(conn, opts, match) do
     case read_json(conn, opts) do
       {:ok, body, conn} ->
-        rpc(conn, opts, agent, body)
+        rpc(conn, opts, match, body)
 
       {:error, :too_large, conn} ->
         send_json(conn, 413, error_body(nil, Error.invalid_request("Request too large")))
@@ -236,16 +285,15 @@ defmodule Phantom.A2A.Plug do
 
   defp put_body_params(conn, body), do: put_body_params(conn, %{"_json" => body})
 
-  defp rpc(conn, opts, agent, body) do
+  defp rpc(conn, opts, match, body) do
     case envelope(body) do
       {:ok, id, method, params} ->
         with :ok <- check_version(conn),
-             {:ok, session} <- connect(conn, opts),
-             :ok <- check_allowed(session, agent) do
+             {:ok, session, agent} <- open_agent(conn, opts, match) do
           ctx = %Context{
             session: session,
             assigns: session.assigns,
-            agent: %{id: agent.id, opts: agent.opts},
+            agent: Map.take(agent, [:id, :opts, :params, :state]),
             tenant: params["tenant"],
             metadata: params["metadata"]
           }
@@ -322,10 +370,10 @@ defmodule Phantom.A2A.Plug do
     end
   end
 
-  defp check_allowed(%Phantom.Session{allowed_agents: nil}, _agent), do: :ok
+  defp check_allowed(%Phantom.Session{allowed_agents: nil}, _route, _segments), do: :ok
 
-  defp check_allowed(%Phantom.Session{allowed_agents: allowed}, agent) do
-    if agent.id in allowed, do: :ok, else: :not_found
+  defp check_allowed(%Phantom.Session{allowed_agents: allowed}, route, segments) do
+    if route.id in allowed or Enum.join(segments, "/") in allowed, do: :ok, else: :not_found
   end
 
   defp respond(conn, id, {:stream, ref, start}, opts) do
@@ -447,7 +495,7 @@ defmodule Phantom.A2A.Plug do
     ctx = %{ctx | task_ref: task_ref(id, agent, opts)}
 
     with {:ok, task} <- existing_task(id, agent, ctx, allow_terminal: true) do
-      cancel(task, agent, ctx)
+      cancel(task, agent, %{ctx | task_ref: %{ctx.task_ref | context_id: task.context_id}})
     end
   end
 
@@ -458,10 +506,93 @@ defmodule Phantom.A2A.Plug do
   defp dispatch("GetExtendedAgentCard", _params, _agent, _ctx, _opts),
     do: {:error, Error.unsupported_operation("Extended agent cards are not supported")}
 
-  defp dispatch(method, _params, _agent, _ctx, _opts)
+  defp dispatch(
+         "CreateTaskPushNotificationConfig",
+         %{"taskId" => task_id} = params,
+         agent,
+         ctx,
+         opts
+       )
+       when is_binary(task_id) do
+    with {:ok, ctx} <- push_task(task_id, agent, ctx, opts),
+         {:ok, config} <- create_push_config(params, agent, ctx, opts) do
+      {:ok, PushConfig.to_json(config)}
+    end
+  end
+
+  defp dispatch(
+         "GetTaskPushNotificationConfig",
+         %{"taskId" => task_id, "id" => id},
+         agent,
+         ctx,
+         opts
+       )
+       when is_binary(task_id) and is_binary(id) do
+    with {:ok, ctx} <- push_task(task_id, agent, ctx, opts) do
+      case agent.handler.get_push_config(task_id, id, ctx) do
+        {:ok, %PushConfig{} = config} -> {:ok, PushConfig.to_json(config)}
+        {:error, :not_found} -> {:error, Error.push_config_not_found(id)}
+        {:error, %Error{} = error} -> {:error, error}
+        _other -> {:error, Error.invalid_agent_response()}
+      end
+    end
+  end
+
+  defp dispatch(
+         "ListTaskPushNotificationConfigs",
+         %{"taskId" => task_id} = params,
+         agent,
+         ctx,
+         opts
+       )
+       when is_binary(task_id) do
+    with {:ok, ctx} <- push_task(task_id, agent, ctx, opts),
+         {:ok, page_size} <- page_size(params["pageSize"]) do
+      case agent.handler.list_push_configs(task_id, ctx) do
+        {:ok, configs} when is_list(configs) ->
+          offset = page_offset(params["pageToken"])
+          configs = Enum.sort_by(configs, & &1.id)
+          next = offset + page_size
+
+          {:ok,
+           %{
+             "configs" =>
+               configs |> Enum.slice(offset, page_size) |> Enum.map(&PushConfig.to_json/1),
+             "nextPageToken" => if(next < length(configs), do: Integer.to_string(next), else: "")
+           }}
+
+        {:error, %Error{} = error} ->
+          {:error, error}
+
+        _other ->
+          {:error, Error.invalid_agent_response()}
+      end
+    end
+  end
+
+  defp dispatch(
+         "DeleteTaskPushNotificationConfig",
+         %{"taskId" => task_id, "id" => id},
+         agent,
+         ctx,
+         opts
+       )
+       when is_binary(task_id) and is_binary(id) do
+    with {:ok, ctx} <- push_task(task_id, agent, ctx, opts) do
+      case agent.handler.delete_push_config(task_id, id, ctx) do
+        :ok -> {:ok, nil}
+        {:error, %Error{} = error} -> {:error, error}
+        _other -> {:error, Error.invalid_agent_response()}
+      end
+    end
+  end
+
+  defp dispatch(method, _params, agent, _ctx, opts)
        when method in ~w[CreateTaskPushNotificationConfig GetTaskPushNotificationConfig
-                         ListTaskPushNotificationConfigs DeleteTaskPushNotificationConfig],
-       do: {:error, Error.push_notification_not_supported()}
+                         ListTaskPushNotificationConfigs DeleteTaskPushNotificationConfig] do
+    with :ok <- require_push(agent, opts),
+         do: {:error, Error.invalid_params("taskId is required")}
+  end
 
   defp dispatch(method, _params, _agent, _ctx, _opts),
     do: {:error, Error.method_not_found(method)}
@@ -471,16 +602,88 @@ defmodule Phantom.A2A.Plug do
          :ok <- check_media_types(message, agent),
          {:ok, stored} <- existing_task(message.task_id, agent, ctx),
          {:ok, context_id} <- context_id(message, stored) do
-      {:ok,
-       %{
-         ctx
-         | message: %{message | context_id: context_id},
-           task_ref: task_ref(if(stored, do: stored.id, else: A2A.generate_id()), agent, opts),
-           context_id: context_id,
-           configuration: params["configuration"] || %{}
-       }}
+      task_id = if stored, do: stored.id, else: A2A.generate_id()
+
+      ctx = %{
+        ctx
+        | message: %{message | context_id: context_id},
+          task_ref: %{task_ref(task_id, agent, opts) | context_id: context_id},
+          context_id: context_id,
+          configuration: params["configuration"] || %{}
+      }
+
+      with :ok <-
+             inline_push_config(ctx.configuration["taskPushNotificationConfig"], agent, ctx, opts),
+           do: {:ok, ctx}
     end
   end
+
+  # A config sent with the message is saved before the work starts, so no
+  # update is missed.
+  defp inline_push_config(nil, _agent, _ctx, _opts), do: :ok
+
+  defp inline_push_config(json, agent, ctx, opts) do
+    json = Map.put(json, "taskId", ctx.task_ref.task_id)
+
+    with :ok <- require_push(agent, opts),
+         {:ok, _config} <- create_push_config(json, agent, ctx, opts),
+         do: :ok
+  end
+
+  defp push_task(task_id, agent, ctx, opts) do
+    ctx = %{ctx | task_ref: task_ref(task_id, agent, opts)}
+
+    with :ok <- require_push(agent, opts),
+         {:ok, task} <- existing_task(task_id, agent, ctx, allow_terminal: true),
+         do: {:ok, %{ctx | task_ref: %{ctx.task_ref | context_id: task.context_id}}}
+  end
+
+  defp require_push(agent, opts) do
+    if push_notifications?(agent, opts),
+      do: :ok,
+      else: {:error, Error.push_notification_not_supported()}
+  end
+
+  defp push_notifications?(agent, opts),
+    do: opts.push_notifications and agent.handler.__phantom_a2a__(:push_notifications)
+
+  defp create_push_config(json, agent, ctx, opts) do
+    allow_private? = opts.router.__phantom__(:info).a2a[:allow_private_push_urls] == true
+
+    with {:ok, config} <- decode_push_config(json),
+         :ok <- validate_push_url(config.url, allow_private?) do
+      config = %{config | id: config.id || A2A.generate_id()}
+
+      case agent.handler.create_push_config(config, ctx) do
+        {:ok, %PushConfig{} = config} -> {:ok, config}
+        {:error, %Error{} = error} -> {:error, error}
+        _other -> {:error, Error.invalid_agent_response()}
+      end
+    end
+  end
+
+  defp decode_push_config(json) do
+    case PushConfig.from_json(json) do
+      {:ok, config} -> {:ok, config}
+      {:error, reason} -> {:error, Error.invalid_params(reason)}
+    end
+  end
+
+  defp validate_push_url(url, allow_private?) do
+    case A2A.Push.validate_url(url, allow_private_networks: allow_private?) do
+      :ok -> :ok
+      {:error, reason} -> {:error, Error.invalid_params("Push notification url #{reason}")}
+    end
+  end
+
+  defp page_offset(token) when is_binary(token) do
+    case Integer.parse(token) do
+      {offset, ""} when offset >= 0 -> offset
+      _invalid -> 0
+    end
+  end
+
+  defp page_offset(_token), do: 0
 
   defp task_ref(task_id, agent, opts),
     do: %TaskRef{pubsub: opts.pubsub, router: opts.router, agent_id: agent.id, task_id: task_id}
@@ -568,7 +771,7 @@ defmodule Phantom.A2A.Plug do
   end
 
   defp check_media_types(message, agent) do
-    modes = agent.handler.__phantom_a2a__(:card).default_input_modes
+    modes = agent.card.default_input_modes
 
     if Enum.all?(message.parts, &(&1.media_type in [nil, ""] or &1.media_type in modes)),
       do: :ok,

@@ -11,9 +11,11 @@
   streaming over SSE with a pubsub. Agents store their own tasks and report
   progress with `Phantom.A2A.publish/2`. `Phantom.Session.allow_agents/2`
   limits agents per session, and `Phantom.A2A.Test` drives agents in tests.
-  Phantom passes the A2A conformance suite (ACTS) on JSON-RPC, apart from its
-  client tests. Push notifications and extended agent cards are not
-  supported yet.
+  Routes with path params, such as `agent ":org/:agent_key", Mod, :resolve`,
+  serve agents found at runtime. Agents with `push_notifications: true`
+  push each event to clients' webhooks, which Phantom checks against private
+  networks. Phantom passes the A2A conformance suite (ACTS) on JSON-RPC, apart
+  from its client tests. Extended agent cards are not supported yet.
 
 ## 0.7.3 (2026-10-18)
 

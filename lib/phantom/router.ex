@@ -1086,32 +1086,39 @@ defmodule Phantom.Router do
       agent "research", MyApp.Agents.Research
       agent "support-es", MyApp.Agents.Support, locale: "es"
 
+  A path with params routes to agents found at runtime, such as ones stored
+  per organization. Name a function of the module that resolves them:
+
+      agent ":org/:agent_key", MyApp.Agents.Hosted, :resolve
+
+  It is called with the path params and the session from
+  `c:Phantom.Router.connect/2`, and returns `{:ok, %Phantom.A2A.Card{}, state}`
+  or `{:error, :not_found}`. The handler gets the params and `state` in
+  `ctx.agent`. A resolved agent's card needs the session, so it isn't public.
+  Routes without params match first.
+
   Configure the cards with the `:a2a` option of `use Phantom.Router`:
 
-    * `:well_known` - the agent served at `/.well-known/agent-card.json`
+    * `:well_known` - the path of the agent, without params, served at
+      `/.well-known/agent-card.json`
     * `:provider` - `%{"organization" => ..., "url" => ...}`
     * `:security_schemes`, `:security_requirements` - as ProtoJSON maps
 
-  Limit agents per session with `Phantom.Session.allow_agents/2`. See `Phantom.A2A`.
+  Limit agents per session with `Phantom.Session.allow_agents/2`, by the
+  route's path or the agent's. See `Phantom.A2A`.
   """
-  defmacro agent(path, handler, opts \\ []) do
+  defmacro agent(path, handler, opts_or_resolver \\ []) do
     quote generated: true do
-      @phantom_agents Phantom.Router.agent_route(unquote(path), unquote(handler), unquote(opts))
+      @phantom_agents Phantom.Router.agent_route(
+                        unquote(path),
+                        unquote(handler),
+                        unquote(opts_or_resolver)
+                      )
     end
   end
 
   @doc false
-  def agent_route(path, handler, opts) when is_binary(path) and is_atom(handler) do
-    segments = String.split(path, "/")
-
-    if not Enum.all?(segments, &Regex.match?(~r/\A[A-Za-z0-9._~-]+\z/, &1)) or
-         List.last(segments) == "agent-card.json" do
-      raise ArgumentError,
-            "invalid agent path #{inspect(path)}: segments are letters, digits, or - . _ ~"
-    end
-
-    %{id: path, segments: segments, handler: handler, opts: opts}
-  end
+  defdelegate agent_route(path, handler, opts_or_resolver), to: Phantom.Router.A2A, as: :route
 
   @doc false
   defp maybe_register_app(name, opts, caller) do

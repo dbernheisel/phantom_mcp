@@ -9,7 +9,8 @@ defmodule Phantom.ACTS.Agent do
     name: "Phantom ACTS agent",
     description: "Implements the ACTS tck-* behaviors",
     input_modes: ~w[text/plain application/json],
-    output_modes: ~w[text/plain application/json]
+    output_modes: ~w[text/plain application/json],
+    push_notifications: true
 
   alias Phantom.A2A.{Artifact, Message, Part, Task, TaskStatus}
   alias Phantom.ACTS.Store
@@ -161,6 +162,24 @@ defmodule Phantom.ACTS.Agent do
     Store.emit(ctx.task_ref, Task.status(:canceled, "Canceled"))
     Store.get(task.id)
   end
+
+  def create_push_config(config, _ctx) do
+    Store.put_config(config)
+    {:ok, config}
+  end
+
+  def get_push_config(task_id, id, _ctx) do
+    case Store.configs(task_id) do
+      %{^id => config} -> {:ok, config}
+      _configs -> {:error, :not_found}
+    end
+  end
+
+  def list_push_configs(task_id, _ctx), do: {:ok, Map.values(Store.configs(task_id))}
+
+  def delete_push_config(task_id, id, _ctx), do: Store.delete_config(task_id, id)
+
+  def push_configs(ref), do: Map.values(Store.configs(ref.task_id))
 
   def list_tasks(filter, _ctx) do
     tasks =

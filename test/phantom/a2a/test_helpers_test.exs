@@ -18,7 +18,7 @@ end
 defmodule Phantom.A2A.TestHelpersTest.Router do
   use Phantom.Router, name: "Helpers", vsn: "1.0"
 
-  agent("echo", Phantom.A2A.TestHelpersTest.Echo)
+  agent "echo", Phantom.A2A.TestHelpersTest.Echo
 
   def connect(session, conn) do
     case Plug.Conn.get_req_header(conn, "authorization") do

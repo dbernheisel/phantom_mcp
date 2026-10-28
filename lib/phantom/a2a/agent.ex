@@ -35,6 +35,8 @@ defmodule Phantom.A2A.Agent do
       `["text/plain"]`). Only advertised: a client may ask for some of them
       with `acceptedOutputModes`, in `ctx.configuration`.
     * `:documentation_url`, `:icon_url` - shown on the card
+    * `:push_notifications` - whether the agent pushes task updates to
+      clients' webhooks (default `false`). See "Push notifications".
 
   ## Skills
 
@@ -42,6 +44,14 @@ defmodule Phantom.A2A.Agent do
   `@description`, or takes `:description`, plus `:name`, `:tags`, `:examples`,
   `:input_modes`, and `:output_modes`. Skills only describe the agent: every
   message goes to `c:handle_message/2`.
+
+  ## Push notifications
+
+  With `push_notifications: true`, clients can register webhooks for a task,
+  and Phantom pushes each event you publish to them. Store configs with
+  `c:create_push_config/2` and its siblings, and return a task's configs from
+  `c:push_configs/1`. See `Phantom.A2A.Push` for how webhooks are checked and
+  called.
 
   ## Tasks
 
@@ -54,7 +64,7 @@ defmodule Phantom.A2A.Agent do
   them when the task finishes or needs the client.
   """
 
-  alias Phantom.A2A.{Context, Error, Message, Task}
+  alias Phantom.A2A.{Context, Error, Message, PushConfig, Task, TaskRef}
 
   @doc """
   Answer a client's message with a `Phantom.A2A.Message`, or with a
@@ -101,6 +111,39 @@ defmodule Phantom.A2A.Agent do
                }}
               | {:error, Error.t()}
 
+  @doc """
+  Save a push notification config for a task the session may see. Phantom
+  has checked the task with `c:get_task/2` and the URL, and given the config
+  an ID.
+  """
+  @callback create_push_config(PushConfig.t(), Context.t()) ::
+              {:ok, PushConfig.t()} | {:error, Error.t()}
+
+  @doc "Fetch a task's push notification config"
+  @callback get_push_config(task_id :: String.t(), id :: String.t(), Context.t()) ::
+              {:ok, PushConfig.t()} | {:error, :not_found | Error.t()}
+
+  @doc "List a task's push notification configs"
+  @callback list_push_configs(task_id :: String.t(), Context.t()) ::
+              {:ok, [PushConfig.t()]} | {:error, Error.t()}
+
+  @doc "Delete a task's push notification config. Deleting a missing one is `:ok`."
+  @callback delete_push_config(task_id :: String.t(), id :: String.t(), Context.t()) ::
+              :ok | {:error, Error.t()}
+
+  @doc """
+  The configs to push an event to. `Phantom.A2A.publish/2` calls it, in the
+  process that publishes, which has no session. Defaults to none.
+  """
+  @callback push_configs(TaskRef.t()) :: [PushConfig.t()]
+
+  @doc """
+  Deliver an event to a webhook. The default sends it in a supervised process
+  with `Phantom.A2A.Push.deliver/3`, without retries. Override it to deliver
+  from a job queue that retries, such as Oban.
+  """
+  @callback deliver_push(PushConfig.t(), Phantom.A2A.event(), TaskRef.t()) :: :ok
+
   defmacro __using__(opts) do
     quote location: :keep, generated: true do
       @behaviour Phantom.A2A.Agent
@@ -116,7 +159,38 @@ defmodule Phantom.A2A.Agent do
       def list_tasks(_filter, _ctx),
         do: {:error, Phantom.A2A.Error.unsupported_operation("Listing tasks is not supported")}
 
-      defoverridable get_task: 2, cancel_task: 2, list_tasks: 2
+      @impl Phantom.A2A.Agent
+      def create_push_config(_config, _ctx),
+        do: {:error, Phantom.A2A.Error.push_notification_not_supported()}
+
+      @impl Phantom.A2A.Agent
+      def get_push_config(_task_id, _id, _ctx),
+        do: {:error, Phantom.A2A.Error.push_notification_not_supported()}
+
+      @impl Phantom.A2A.Agent
+      def list_push_configs(_task_id, _ctx),
+        do: {:error, Phantom.A2A.Error.push_notification_not_supported()}
+
+      @impl Phantom.A2A.Agent
+      def delete_push_config(_task_id, _id, _ctx),
+        do: {:error, Phantom.A2A.Error.push_notification_not_supported()}
+
+      @impl Phantom.A2A.Agent
+      def push_configs(_task_ref), do: []
+
+      @impl Phantom.A2A.Agent
+      def deliver_push(config, event, task_ref),
+        do: Phantom.A2A.Push.deliver_async(config, event, task_ref)
+
+      defoverridable get_task: 2,
+                     cancel_task: 2,
+                     list_tasks: 2,
+                     create_push_config: 2,
+                     get_push_config: 3,
+                     list_push_configs: 2,
+                     delete_push_config: 3,
+                     push_configs: 1,
+                     deliver_push: 3
 
       @before_compile Phantom.A2A.Agent
       @phantom_a2a_opts unquote(opts)
@@ -145,6 +219,9 @@ defmodule Phantom.A2A.Agent do
 
     quote generated: true do
       @doc false
+      def __phantom_a2a__(:push_notifications),
+        do: Keyword.get(@phantom_a2a_opts, :push_notifications, false)
+
       def __phantom_a2a__(:card) do
         opts = @phantom_a2a_opts
 

@@ -7,13 +7,14 @@ defmodule Phantom.A2A.TaskRef do
   """
 
   @enforce_keys [:router, :agent_id, :task_id]
-  defstruct [:pubsub, :router, :agent_id, :task_id]
+  defstruct [:pubsub, :router, :agent_id, :task_id, :context_id]
 
   @type t :: %__MODULE__{
           pubsub: atom() | nil,
           router: module(),
           agent_id: String.t(),
-          task_id: String.t()
+          task_id: String.t(),
+          context_id: String.t() | nil
         }
 
   @doc "Encode as a string"
@@ -22,19 +23,21 @@ defmodule Phantom.A2A.TaskRef do
       Atom.to_string(ref.pubsub),
       Atom.to_string(ref.router),
       ref.agent_id,
-      ref.task_id
+      ref.task_id,
+      ref.context_id
     ])
   end
 
   @doc "Decode a string from `encode/1`. Only atoms that already exist are accepted."
   def decode(encoded) when is_binary(encoded) do
-    with {:ok, [pubsub, router, agent_id, task_id]} <- JSON.decode(encoded) do
+    with {:ok, [pubsub, router, agent_id, task_id, context_id]} <- JSON.decode(encoded) do
       {:ok,
        %__MODULE__{
          pubsub: String.to_existing_atom(pubsub),
          router: String.to_existing_atom(router),
          agent_id: agent_id,
-         task_id: task_id
+         task_id: task_id,
+         context_id: context_id
        }}
     else
       _ -> {:error, :invalid}

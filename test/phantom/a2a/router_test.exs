@@ -3,8 +3,8 @@ defmodule Phantom.A2A.RouterTest do
 
   alias Phantom.A2A.TaskRef
 
-  test "agent paths are plain segments" do
-    for path <- ["", "a//b", ":org/agent", "a b", "research/agent-card.json"] do
+  test "agent paths are plain segments or path params" do
+    for path <- ["", "a//b", ":Org/agent", "a b", "research/agent-card.json"] do
       assert_raise ArgumentError, ~r/invalid agent path/, fn ->
         Phantom.Router.agent_route(path, __MODULE__, [])
       end

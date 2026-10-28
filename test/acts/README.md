@@ -17,14 +17,15 @@ name in their first message, as declared in `sut-behaviors.yaml`. ACTS tests it
 three ways, each served by `Phantom.ACTS.HTTP`:
 
 - **default**, with a pubsub, so it streams;
-- **reduced**, without a pubsub, for the tests of an agent that doesn't
-  stream (`--reduced-sut-url`);
+- **reduced**, without a pubsub or push notifications, for the tests of an
+  agent that does neither (`--reduced-sut-url`);
 - **auth**, `Phantom.ACTS.AuthRouter`, which requires
   `Bearer itk-valid-token` and answers `itk-insufficient-token` with 403
   (`--auth-sut-url`).
 
 Only the JSON-RPC binding runs, because it is the only one Phantom serves.
-Tests for push notifications and extended agent cards are skipped, because the
+The routers allow private push URLs, because the suite's webhook receiver
+listens on 127.0.0.1. Tests for extended agent cards are skipped, because the
 card doesn't advertise them.
 
 ## Expected failures

@@ -27,6 +27,7 @@ defmodule Phantom.A2A.Error do
   }
 
   def task_not_found(task_id), do: new(-32001, "Task not found: #{task_id}")
+  def push_config_not_found(id), do: new(-32001, "Push notification config not found: #{id}")
   def task_not_cancelable(task_id), do: new(-32002, "Task cannot be canceled: #{task_id}")
   def push_notification_not_supported, do: new(-32003, "Push notifications are not supported")
   def unsupported_operation(message), do: new(-32004, message)

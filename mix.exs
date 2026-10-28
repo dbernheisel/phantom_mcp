@@ -28,7 +28,8 @@ defmodule Phantom.MixProject do
   def application do
     [
       mod: {Phantom.Application, []},
-      extra_applications: [:logger | extra_applications(Mix.env())]
+      # :inets and :ssl deliver A2A push notifications with :httpc.
+      extra_applications: [:logger, :inets, :ssl | extra_applications(Mix.env())]
     ]
   end
 

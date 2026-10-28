@@ -24,17 +24,41 @@ defmodule Phantom.A2A do
   @type event :: Task.t() | StatusUpdate.t() | ArtifactUpdate.t() | Message.t()
 
   @doc """
-  Send an event about a task to the clients waiting on it, on any node.
+  Send an event about a task to the clients waiting on it, on any node, and
+  push it to the task's webhooks when its agent supports push notifications.
 
   Save the change first: Phantom doesn't store it, and a client that asks
-  for the task next gets it from `c:Phantom.A2A.Agent.get_task/2`.
-  Without a `:pubsub` on `Phantom.A2A.Plug`, nothing is sent.
+  for the task next gets it from `c:Phantom.A2A.Agent.get_task/2`. Phantom
+  fills in the event's task and context IDs from the ref. Without a `:pubsub`
+  on `Phantom.A2A.Plug`, nothing is streamed.
   """
   @spec publish(TaskRef.t(), event()) :: :ok
-  def publish(%TaskRef{pubsub: nil}, _event), do: :ok
-
   def publish(%TaskRef{} = ref, event) do
-    Phoenix.PubSub.broadcast(ref.pubsub, topic(ref), {:phantom_a2a_event, event})
+    event = fill_ids(event, ref)
+
+    if ref.pubsub,
+      do: Phoenix.PubSub.broadcast(ref.pubsub, topic(ref), {:phantom_a2a_event, event})
+
+    push(ref, event)
+  end
+
+  defp fill_ids(%struct{} = event, ref) when struct in [StatusUpdate, ArtifactUpdate],
+    do: %{
+      event
+      | task_id: event.task_id || ref.task_id,
+        context_id: event.context_id || ref.context_id
+    }
+
+  defp fill_ids(event, _ref), do: event
+
+  defp push(ref, event) do
+    with {:ok, %{handler: handler}, _params} <-
+           Phantom.Router.A2A.match(ref.router, String.split(ref.agent_id, "/")),
+         true <- handler.__phantom_a2a__(:push_notifications) do
+      Enum.each(handler.push_configs(ref), &handler.deliver_push(&1, event, ref))
+    end
+
+    :ok
   end
 
   @doc false
