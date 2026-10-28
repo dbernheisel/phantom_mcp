@@ -116,6 +116,7 @@ defmodule Phantom.MixProject do
         "guides/skills.md",
         "guides/tasks.md",
         "guides/oauth_client_credentials.md",
+        "guides/a2a.md",
         "CHANGELOG.md"
       ],
       assets: %{"assets" => "assets"},

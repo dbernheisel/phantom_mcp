@@ -19,6 +19,8 @@
   `[:phantom, :a2a, :dispatch]` and `[:phantom, :a2a, :push]` telemetry spans.
   Phantom passes the A2A conformance suite (ACTS) on JSON-RPC, apart from its
   client tests.
+- New: the [A2A guide](guides/a2a.md), with storing tasks in Ecto, running
+  them with Oban, and retrying push deliveries.
 - New: `Phantom.Router.call_tool/4` calls a router's tool from your own code,
   such as an A2A agent answering with the tools the router already has.
 

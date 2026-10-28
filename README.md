@@ -860,7 +860,7 @@ Phantom serves the JSON-RPC binding: `SendMessage`, `SendStreamingMessage`,
 `GetExtendedAgentCard`, and the push notification config methods. Agents can
 declare protocol extensions, and each request is a
 `[:phantom, :a2a, :dispatch]` telemetry span carrying the client's W3C trace
-context. See `Phantom.A2A`.
+context. See the [A2A guide](guides/a2a.md).
 
 ## What PhantomMCP supports
 
