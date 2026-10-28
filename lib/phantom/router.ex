@@ -1425,6 +1425,7 @@ defmodule Phantom.Router do
           %{
             name: @name,
             version: @vsn,
+            instructions: @instructions,
             tools: @phantom_tools,
             resource_templates: @phantom_resource_templates,
             prompts: @phantom_prompts,

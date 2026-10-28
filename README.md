@@ -858,6 +858,14 @@ for a task, and Phantom posts each event you publish to them. The agent stores
 the configs; Phantom checks each webhook URL so it can't reach your private
 network. See `Phantom.A2A.Push`.
 
+To serve your MCP tools as an A2A agent without writing one, mount
+`Phantom.A2A.Bridge`. A client calls a tool with a data part naming it, and
+the card lists each tool with its input schema:
+
+```elixir
+agent "tools", Phantom.A2A.Bridge, tools: ~w[search_studies create_question]
+```
+
 To call other agents, use `Phantom.A2A.Client`, which needs the optional
 `{:req, "~> 0.5"}` dependency:
 

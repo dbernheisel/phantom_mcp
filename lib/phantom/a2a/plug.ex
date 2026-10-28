@@ -146,7 +146,7 @@ defmodule Phantom.A2A.Plug do
     with id when is_binary(id) <- opts.router.__phantom__(:info).a2a[:well_known],
          {:ok, %{params?: false} = route, _params} <-
            Phantom.Router.A2A.match(opts.router, String.split(id, "/")) do
-      serve_card(conn, opts, static_agent(route), opts.mount || "")
+      serve_card(conn, opts, static_agent(route, opts), opts.mount || "")
     else
       _ -> not_found(conn, opts)
     end
@@ -181,7 +181,7 @@ defmodule Phantom.A2A.Plug do
 
   # A static agent's card is public. A resolved agent's card needs the session.
   defp card_for(conn, opts, %{params?: false, resolver: nil} = route, _segments, _params),
-    do: serve_card(conn, opts, static_agent(route), mount_path(conn))
+    do: serve_card(conn, opts, static_agent(route, opts), mount_path(conn))
 
   defp card_for(conn, opts, route, segments, params) do
     case open_agent(conn, opts, {route, segments, params}) do
@@ -191,7 +191,7 @@ defmodule Phantom.A2A.Plug do
     end
   end
 
-  defp static_agent(route) do
+  defp static_agent(route, opts) do
     %{
       id: route.id,
       route: route,
@@ -199,7 +199,11 @@ defmodule Phantom.A2A.Plug do
       opts: route.opts,
       params: %{},
       state: nil,
-      card: route.handler.__phantom_a2a__(:card)
+      card:
+        route.handler.card(route.handler.__phantom_a2a__(:card), %{
+          router: opts.router,
+          opts: route.opts
+        })
     }
   end
 
@@ -207,20 +211,20 @@ defmodule Phantom.A2A.Plug do
   defp open_agent(conn, opts, {route, segments, params}) do
     with {:ok, session} <- connect(conn, opts),
          :ok <- check_allowed(session, route, segments),
-         {:ok, agent} <- resolve_agent(route, segments, params, session) do
+         {:ok, agent} <- resolve_agent(route, segments, params, session, opts) do
       {:ok, session, agent}
     end
   end
 
-  defp resolve_agent(%{resolver: nil} = route, _segments, _params, _session),
-    do: {:ok, static_agent(route)}
+  defp resolve_agent(%{resolver: nil} = route, _segments, _params, _session, opts),
+    do: {:ok, static_agent(route, opts)}
 
-  defp resolve_agent(route, segments, params, session) do
+  defp resolve_agent(route, segments, params, session, opts) do
     case apply(route.handler, route.resolver, [params, session]) do
       {:ok, %A2A.Card{} = card, state} ->
         {:ok,
          %{
-           static_agent(route)
+           static_agent(route, opts)
            | id: Enum.join(segments, "/"),
              params: params,
              state: state,

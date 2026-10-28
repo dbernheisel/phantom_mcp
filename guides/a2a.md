@@ -427,7 +427,19 @@ request that doesn't name a `required: true` extension in its
 
 ## Using your MCP tools
 
-An agent can answer with the tools your router already has.
+To serve your tools as an A2A agent as they are, mount `Phantom.A2A.Bridge`:
+
+```elixir
+agent "tools", Phantom.A2A.Bridge, tools: ~w[search_studies create_question]
+```
+
+Its card lists each tool as a skill, and an extension with the tools' input
+schemas. A client calls a tool with a message whose data part names it,
+`{"tool": "search_studies", "arguments": {"query": "churn"}}`, and gets a
+message with the tool's result. Messages that name no tool go to the
+`:fallback` agent, if you give one. See `Phantom.A2A.Bridge`.
+
+For an agent that decides what to do itself, call tools from its handler.
 `Phantom.Router.call_tool/4` runs a tool with the session's assigns and
 allow-lists, and waits for its result:
 

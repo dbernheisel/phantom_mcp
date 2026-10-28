@@ -154,6 +154,15 @@ defmodule Phantom.A2A.Agent do
   @callback deliver_push(PushConfig.t(), Phantom.A2A.event(), TaskRef.t()) :: :ok
 
   @doc """
+  Adjust the agent's card for its route, given the card from `use` and the
+  route's router and options. Defaults to the card as it is.
+
+      # agent "support-es", MyApp.Agents.Support, locale: "es"
+      def card(card, %{opts: opts}), do: %{card | name: "Support (\#{opts[:locale]})"}
+  """
+  @callback card(Card.t(), %{router: module(), opts: keyword()}) :: Card.t()
+
+  @doc """
   The card for `GetExtendedAgentCard`, given the public card, such as with
   skills only members may see. The request has passed
   `c:Phantom.Router.connect/2`. Return an error to refuse it. Defaults to the
@@ -202,7 +211,11 @@ defmodule Phantom.A2A.Agent do
       @impl Phantom.A2A.Agent
       def extended_card(card, _ctx), do: {:ok, card}
 
-      defoverridable extended_card: 2,
+      @impl Phantom.A2A.Agent
+      def card(card, _route), do: card
+
+      defoverridable card: 2,
+                     extended_card: 2,
                      get_task: 2,
                      cancel_task: 2,
                      list_tasks: 2,
