@@ -56,7 +56,7 @@ defmodule Phantom.A2A.Message do
   @doc false
   def from_json(%{"messageId" => id, "role" => role, "parts" => parts} = json)
       when is_binary(id) and is_map_key(@roles, role) and is_list(parts) do
-    with {:ok, parts} <- parts_from_json(parts) do
+    with {:ok, parts} <- Part.list_from_json(parts) do
       {:ok,
        %__MODULE__{
          message_id: id,
@@ -72,19 +72,6 @@ defmodule Phantom.A2A.Message do
   end
 
   def from_json(_json), do: {:error, "message must have a messageId, a role, and parts"}
-
-  defp parts_from_json(parts) do
-    Enum.reduce_while(parts, {:ok, []}, fn json, {:ok, acc} ->
-      case Part.from_json(json) do
-        {:ok, part} -> {:cont, {:ok, [part | acc]}}
-        error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, parts} -> {:ok, Enum.reverse(parts)}
-      error -> error
-    end
-  end
 
   @doc false
   def to_json(%__MODULE__{} = message) do

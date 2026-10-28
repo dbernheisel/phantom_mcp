@@ -187,6 +187,27 @@ defmodule Phantom.Router do
               | {:error, any(), Session.t()}
 
   @doc """
+  List the paths of the A2A agents the session may use, a page at a time.
+  Return the paths of one page and the cursor of the next, or `nil` on the
+  last page. The cursor is opaque to Phantom.
+
+  The default lists every `agent` route without path params that
+  `Phantom.Session.allow_agents/2` allows. Override it to add the agents your
+  routes with path params resolve:
+
+      def list_agents(_cursor, session) do
+        hosted = for a <- MyApp.Agents.for_org(session.assigns.org), do: "\#{a.org}/\#{a.key}"
+        {:ok, ["research" | hosted], nil}
+      end
+
+  Phantom doesn't serve the list over A2A, which has no method for it; use it
+  to build a directory of your agents, or in tests with
+  `Phantom.A2A.Test.list_agents/2`.
+  """
+  @callback list_agents(cursor :: String.t() | nil, Session.t()) ::
+              {:ok, [String.t()], next_cursor :: String.t() | nil}
+
+  @doc """
   Authorize subscriptions and update notifications for resolved resources.
 
   Each resource is represented as `{uri, path_params, resource_template}`. Return either the
@@ -363,6 +384,8 @@ defmodule Phantom.Router do
       def list_skills(cursor, session) do
         Phantom.Router.Skills.default_list(__MODULE__, session, cursor)
       end
+
+      def list_agents(_cursor, session), do: Phantom.Router.A2A.default_list(__MODULE__, session)
 
       @doc """
       Return the Resource URI for the resource by name and params.
@@ -758,6 +781,7 @@ defmodule Phantom.Router do
       @doc false
       defoverridable list_resources: 2,
                      list_skills: 2,
+                     list_agents: 2,
                      authorize_resource_subscriptions: 2,
                      authorize_task_subscriptions: 2,
                      server_info: 1,

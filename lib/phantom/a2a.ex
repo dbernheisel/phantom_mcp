@@ -77,6 +77,13 @@ defmodule Phantom.A2A do
   def generate_id, do: 24 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
 
   @doc false
+  def event_from_json(%{"task" => json}), do: Task.from_json(json)
+  def event_from_json(%{"message" => json}), do: Message.from_json(json)
+  def event_from_json(%{"statusUpdate" => json}), do: StatusUpdate.from_json(json)
+  def event_from_json(%{"artifactUpdate" => json}), do: ArtifactUpdate.from_json(json)
+  def event_from_json(_json), do: {:error, "unknown event"}
+
+  @doc false
   def event_to_json(%Task{} = task), do: %{"task" => Task.to_json(task)}
   def event_to_json(%Message{} = message), do: %{"message" => Message.to_json(message)}
 

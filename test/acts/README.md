@@ -13,7 +13,9 @@ The first run clones a2a-itk into `_build/a2a-itk`. Set `A2A_ITK_PATH` to use
 another checkout.
 
 `Phantom.ACTS.Agent` implements the `tck-*` behaviors that the suite's tests
-name in their first message, as declared in `sut-behaviors.yaml`. ACTS tests it
+name in their first message, as declared in `sut-behaviors.yaml`. For the
+client tests, `tck-client-parse` hands a canned response to
+`Phantom.A2A.Client` through a plug and returns what it parsed. ACTS tests it
 three ways, each served by `Phantom.ACTS.HTTP`:
 
 - **default**, with a pubsub, so it streams;

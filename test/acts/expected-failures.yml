@@ -1,13 +1,5 @@
-# ACTS tests Phantom is known to fail, each with its cause. The ACTS test
-# fails when a test outside this list fails, or a listed one passes.
-
-# These hand a canned wire payload to the SDK's A2A client through the
-# tck-client-parse behavior. Phantom serves agents and has no client.
-- CLIENT-PARSE-001
-- CLIENT-PARSE-002
-- CLIENT-PARSE-003
-- CLIENT-PARSE-004
-- CLIENT-PARSE-005
-- CLIENT-PARSE-006
-- CLIENT-AUTH-001
-- CLIENT-CAP-001
+# ACTS tests Phantom is known to fail, each with its cause, as `- TEST-ID`
+# lines. The ACTS test fails when a test outside this list fails, or a listed
+# one passes.
+#
+# None: Phantom passes every test on both bindings.

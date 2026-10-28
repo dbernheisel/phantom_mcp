@@ -440,6 +440,34 @@ def handle_message(message, ctx) do
 end
 ```
 
+## Calling other agents
+
+`Phantom.A2A.Client` calls any A2A agent, Phantom's or not, over JSON-RPC or
+HTTP+JSON. Add the optional `{:req, "~> 0.5"}` dependency, then:
+
+```elixir
+alias Phantom.A2A.Client
+
+{:ok, client} = Client.new("https://agents.example", headers: [{"authorization", "Bearer " <> token}])
+
+{:ok, task} = Client.send_message(client, "Review study 42", return_immediately: true)
+
+{:ok, stream} = Client.subscribe(client, task.id)
+Enum.each(stream, &IO.inspect/1)
+```
+
+`Client.new/2` fetches the card and picks a binding it lists. The client
+refuses to stream, use push notifications, or fetch an extended card when the
+card doesn't advertise them.
+
+## Listing your agents
+
+A2A has no method to list an agent's peers, so clients find agents by their
+cards. To build a directory page or a test of your own agents, use
+`c:Phantom.Router.list_agents/2`. By default it lists every `agent` route
+without path params the session may use; override it to add the agents your
+routes with path params resolve.
+
 ## Testing
 
 `Phantom.A2A.Test` sends requests through `Phantom.A2A.Plug` in the test

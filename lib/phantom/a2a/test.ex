@@ -53,6 +53,26 @@ defmodule Phantom.A2A.Test do
     end
   end
 
+  @doc """
+  Call the router's `c:Phantom.Router.list_agents/2` with a session.
+
+  ## Options
+
+    * `:assigns` - the session's assigns
+    * `:allowed_agents` - as `Phantom.Session.allow_agents/2` sets
+    * `:cursor` - the page to list
+  """
+  def list_agents(router, opts \\ []) do
+    session =
+      Phantom.Session.new(nil,
+        router: router,
+        assigns: Keyword.get(opts, :assigns, %{}),
+        allowed_agents: opts[:allowed_agents]
+      )
+
+    router.list_agents(opts[:cursor], session)
+  end
+
   @doc "Fetch a task. Returns `{:ok, json}` or `{:error, json}`."
   def get_task(router, agent_id, task_id, opts \\ []),
     do: rpc(router, agent_id, "GetTask", %{"id" => task_id}, opts)

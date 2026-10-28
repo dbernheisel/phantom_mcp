@@ -23,6 +23,10 @@
   its client tests.
 - New: the [A2A guide](guides/a2a.md), with storing tasks in Ecto, running
   them with Oban, and retrying push deliveries.
+- New: `Phantom.A2A.Client` calls A2A agents over either binding, with the
+  optional `{:req, "~> 0.5"}` dependency. With it, Phantom passes every ACTS
+  test on both bindings.
+- New: `c:Phantom.Router.list_agents/2` lists the agents a session may use.
 - New: `Phantom.Router.call_tool/4` calls a router's tool from your own code,
   such as an A2A agent answering with the tools the router already has.
 

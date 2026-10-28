@@ -40,6 +40,32 @@ defmodule Phantom.A2A.TaskStatus do
   def state_from_json(_json), do: :error
 
   @doc false
+  def from_json(%{"state" => state} = json) do
+    with {:ok, state} <- state_from_json(state),
+         {:ok, message} <- optional(json["message"], &Message.from_json/1),
+         {:ok, timestamp} <- timestamp(json["timestamp"]) do
+      {:ok, %__MODULE__{state: state, message: message, timestamp: timestamp}}
+    else
+      :error -> {:error, "unknown task state #{inspect(state)}"}
+      error -> error
+    end
+  end
+
+  def from_json(_json), do: {:error, "task status needs a state"}
+
+  defp optional(nil, _decode), do: {:ok, nil}
+  defp optional(json, decode), do: decode.(json)
+
+  defp timestamp(nil), do: {:ok, nil}
+
+  defp timestamp(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> {:ok, datetime}
+      _error -> {:error, "invalid timestamp #{inspect(value)}"}
+    end
+  end
+
+  @doc false
   def to_json(%__MODULE__{state: state} = status) when state in @states do
     remove_nils(%{
       "state" => "TASK_STATE_" <> String.upcase(Atom.to_string(state)),

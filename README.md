@@ -858,6 +858,14 @@ for a task, and Phantom posts each event you publish to them. The agent stores
 the configs; Phantom checks each webhook URL so it can't reach your private
 network. See `Phantom.A2A.Push`.
 
+To call other agents, use `Phantom.A2A.Client`, which needs the optional
+`{:req, "~> 0.5"}` dependency:
+
+```elixir
+{:ok, client} = Phantom.A2A.Client.new("https://agents.example")
+{:ok, reply} = Phantom.A2A.Client.send_message(client, "Hello")
+```
+
 Phantom serves the JSON-RPC and HTTP+JSON bindings: `SendMessage`,
 `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`,
 `SubscribeToTask`, `GetExtendedAgentCard`, and the push notification config

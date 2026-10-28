@@ -85,6 +85,18 @@ defmodule Phantom.A2A.Error do
   }
 
   @doc false
+  # An error a server sent: a JSON-RPC error, or the `error` of a
+  # `google.rpc.Status`, whose `ErrorInfo` reason names the A2A error.
+  def from_json(%{"code" => code, "message" => message} = json) when code < 0,
+    do: new(code, message || Map.get(json, "message", ""))
+
+  def from_json(%{"message" => message} = json) do
+    reason = Enum.find_value(json["details"] || [], &(is_map(&1) && &1["reason"]))
+    code = Enum.find_value(@reasons, -32603, fn {code, name} -> name == reason && code end)
+    new(code, message)
+  end
+
+  @doc false
   # The HTTP status of an error on the HTTP+JSON binding.
   def http_status(%__MODULE__{code: code}), do: Map.get(@http_statuses, code, 500)
 

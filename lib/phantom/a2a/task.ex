@@ -17,7 +17,7 @@ defmodule Phantom.A2A.Task do
 
   import Phantom.Utils, only: [remove_nils: 1]
 
-  alias Phantom.A2A.{Artifact, Context, Message, StatusUpdate, TaskStatus}
+  alias Phantom.A2A.{Artifact, Context, Message, Part, StatusUpdate, TaskStatus}
 
   @enforce_keys [:id, :context_id, :status]
   defstruct [:id, :context_id, :status, :metadata, artifacts: [], history: [], sequence: 0]
@@ -65,6 +65,26 @@ defmodule Phantom.A2A.Task do
       metadata: opts[:metadata]
     }
   end
+
+  @doc false
+  def from_json(%{"id" => id, "contextId" => context_id, "status" => status} = json)
+      when is_binary(id) and is_binary(context_id) do
+    with {:ok, status} <- TaskStatus.from_json(status),
+         {:ok, artifacts} <- Part.list_from_json(json["artifacts"] || [], &Artifact.from_json/1),
+         {:ok, history} <- Part.list_from_json(json["history"] || [], &Message.from_json/1) do
+      {:ok,
+       %__MODULE__{
+         id: id,
+         context_id: context_id,
+         status: status,
+         metadata: json["metadata"],
+         artifacts: artifacts,
+         history: history
+       }}
+    end
+  end
+
+  def from_json(_json), do: {:error, "task needs an id, a contextId, and a status"}
 
   @doc false
   def to_json(%__MODULE__{} = task, opts \\ []) do

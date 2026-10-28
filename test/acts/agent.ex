@@ -13,7 +13,7 @@ defmodule Phantom.ACTS.Agent do
     push_notifications: true,
     extended_card: true
 
-  alias Phantom.A2A.{Artifact, Message, Part, Task, TaskStatus}
+  alias Phantom.A2A.{Artifact, Card, Client, Message, Part, Task, TaskStatus}
   alias Phantom.ACTS.Store
 
   @description "Produces the outcome a tck-* message names"
@@ -21,6 +21,17 @@ defmodule Phantom.ACTS.Agent do
 
   @long_running_ms 1_000
   @chunks ["chunk one ", "chunk two ", "chunk three"]
+
+  # Hands a canned response to Phantom's own client and returns what it parsed.
+  def handle_message(
+        %Message{parts: [%Part{text: "tck-client-parse" <> _}, %Part{data: %{} = request} | _]},
+        ctx
+      ) do
+    parsed = client_parse(request["operation"], request["wire_payload"])
+    task = complete_with(Task.submitted(ctx), Artifact.new("parsed", [Part.data(parsed)]))
+    Store.put(task)
+    {:reply, task, ctx}
+  end
 
   def handle_message(%Message{task_id: nil} = message, ctx) do
     case behavior(message) do
@@ -109,6 +120,52 @@ defmodule Phantom.ACTS.Agent do
   end
 
   defp run(_behavior, _ref), do: :ok
+
+  defp client_parse("get_agent_card", payload) do
+    {:ok, card} =
+      Client.get_card("http://mock.test/agent-card.json", req_options: [plug: mock(payload)])
+
+    Card.to_json(card)
+  end
+
+  defp client_parse("get_extended_agent_card", payload) do
+    card = mock_card(%{"extendedAgentCard" => true}, "HTTP+JSON")
+    {:ok, client} = Client.new(card, req_options: [plug: mock(payload)])
+    parsed(Client.get_extended_card(client), &Card.to_json/1)
+  end
+
+  defp client_parse(operation, payload) do
+    {:ok, client} = Client.new(mock_card(%{}, "JSONRPC"), req_options: [plug: mock(payload)])
+
+    case operation do
+      "send_message" -> parsed(Client.send_message(client, "hi"), &Phantom.A2A.event_to_json/1)
+      "get_task" -> parsed(Client.get_task(client, "t"), &Task.to_json/1)
+    end
+  end
+
+  defp parsed({:ok, value}, to_json), do: to_json.(value)
+
+  defp parsed({:error, error}, _to_json),
+    do: %{"error" => %{"code" => error.code, "message" => error.message}}
+
+  defp mock(payload) do
+    fn conn ->
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(200, JSON.encode!(payload))
+    end
+  end
+
+  defp mock_card(capabilities, binding) do
+    %Card{
+      name: "Mock",
+      description: "Answers with a canned payload",
+      supported_interfaces: [
+        %{"url" => "http://mock.test", "protocolBinding" => binding, "protocolVersion" => "1.0"}
+      ],
+      capabilities: capabilities
+    }
+  end
 
   defp artifact("text"), do: Artifact.new("text", [Part.text("generated text content")])
   defp artifact("data"), do: Artifact.new("data", [Part.data(%{"key" => "value", "count" => 1})])

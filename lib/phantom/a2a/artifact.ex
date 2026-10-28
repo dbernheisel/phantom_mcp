@@ -54,6 +54,23 @@ defmodule Phantom.A2A.Artifact do
   end
 
   @doc false
+  def from_json(%{"artifactId" => id, "parts" => parts} = json) when is_binary(id) do
+    with {:ok, parts} <- Part.list_from_json(parts) do
+      {:ok,
+       %__MODULE__{
+         artifact_id: id,
+         name: json["name"],
+         description: json["description"],
+         metadata: json["metadata"],
+         parts: parts,
+         extensions: json["extensions"] || []
+       }}
+    end
+  end
+
+  def from_json(_json), do: {:error, "artifact needs an artifactId and parts"}
+
+  @doc false
   def to_json(%__MODULE__{} = artifact) do
     remove_nils(%{
       "artifactId" => artifact.artifact_id,

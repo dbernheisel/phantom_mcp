@@ -20,6 +20,21 @@ defmodule Phantom.A2A.StatusUpdate do
         }
 
   @doc false
+  def from_json(%{"status" => status} = json) do
+    with {:ok, status} <- TaskStatus.from_json(status) do
+      {:ok,
+       %__MODULE__{
+         task_id: json["taskId"],
+         context_id: json["contextId"],
+         status: status,
+         metadata: json["metadata"]
+       }}
+    end
+  end
+
+  def from_json(_json), do: {:error, "status update needs a status"}
+
+  @doc false
   def to_json(%__MODULE__{} = update) do
     remove_nils(%{
       "taskId" => update.task_id,

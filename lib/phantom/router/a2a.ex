@@ -46,6 +46,16 @@ defmodule Phantom.Router.A2A do
     }
   end
 
+  @doc "The default `c:Phantom.Router.list_agents/2`"
+  def default_list(router, session) do
+    paths =
+      for %{params?: false, id: id} <- router.__phantom__(:info).agents,
+          is_nil(session.allowed_agents) or id in session.allowed_agents,
+          do: id
+
+    {:ok, paths, nil}
+  end
+
   @doc "The route for a request path, static routes first, with its path params"
   def match(router, segments) do
     {static, dynamic} = Enum.split_with(router.__phantom__(:info).agents, &(not &1.params?))

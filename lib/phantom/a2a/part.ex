@@ -47,6 +47,26 @@ defmodule Phantom.A2A.Part do
 
   def from_json(_json), do: {:error, "part must be an object"}
 
+  @doc false
+  # Decode a list with a `from_json/1`, stopping at the first error.
+  def list_from_json(list, decode \\ &from_json/1)
+
+  def list_from_json(list, decode) when is_list(list) do
+    list
+    |> Enum.reduce_while({:ok, []}, fn json, {:ok, acc} ->
+      case decode.(json) do
+        {:ok, value} -> {:cont, {:ok, [value | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
+  end
+
+  def list_from_json(_list, _decode), do: {:error, "expected a list"}
+
   defp content(%{"text" => text}) when is_binary(text), do: {:ok, %__MODULE__{text: text}}
   defp content(%{"url" => url}) when is_binary(url), do: {:ok, %__MODULE__{url: url}}
   defp content(%{"data" => data}), do: {:ok, %__MODULE__{data: data}}

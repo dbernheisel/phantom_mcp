@@ -53,6 +53,43 @@ defmodule Phantom.A2A.Card do
         }
 
   @doc false
+  def from_json(%{"name" => name} = json) when is_binary(name) do
+    capabilities = json["capabilities"] || %{}
+
+    with {:ok, skills} <-
+           Phantom.A2A.Part.list_from_json(json["skills"] || [], &AgentSkill.from_json/1) do
+      {:ok,
+       %__MODULE__{
+         name: name,
+         description: json["description"],
+         version: json["version"],
+         provider: json["provider"],
+         documentation_url: json["documentationUrl"],
+         icon_url: json["iconUrl"],
+         security_schemes: json["securitySchemes"],
+         security_requirements: json["securityRequirements"],
+         supported_interfaces: json["supportedInterfaces"] || [],
+         capabilities: capabilities,
+         default_input_modes: json["defaultInputModes"] || [],
+         default_output_modes: json["defaultOutputModes"] || [],
+         skills: skills,
+         extensions: Enum.map(capabilities["extensions"] || [], &extension_from_json/1)
+       }}
+    end
+  end
+
+  def from_json(_json), do: {:error, "agent card needs a name"}
+
+  defp extension_from_json(json) do
+    remove_nils(%{
+      uri: json["uri"],
+      description: json["description"],
+      required: if(json["required"], do: true),
+      params: json["params"]
+    })
+  end
+
+  @doc false
   def extension_to_json(extension) do
     remove_nils(%{
       "uri" => extension.uri,

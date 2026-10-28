@@ -179,4 +179,106 @@ defmodule Phantom.A2A.CodecTest do
              } = Phantom.A2A.event_to_json(update)
     end
   end
+
+  describe "decoding what a server sends" do
+    alias Phantom.A2A.{AgentSkill, Card, Error}
+
+    test "a task round-trips through ProtoJSON" do
+      task = %Task{
+        id: "t1",
+        context_id: "c",
+        status: %TaskStatus{
+          state: :input_required,
+          message: %Message{message_id: "m", role: :agent, parts: [Part.text("More?")]},
+          timestamp: ~U[2026-10-27 12:00:00Z]
+        },
+        artifacts: [
+          Artifact.new("a", [Part.text("x"), Part.data(%{"k" => 1})], name: "A"),
+          Artifact.new("f", [Part.raw("pdf", media_type: "application/pdf", filename: "r.pdf")])
+        ],
+        history: [%Message{message_id: "m0", role: :user, parts: [Part.url("https://x.test/f")]}],
+        metadata: %{"m" => true}
+      }
+
+      assert {:ok, ^task} = task |> Task.to_json() |> Task.from_json()
+      assert {:error, _} = Task.from_json(%{"id" => "t1"})
+
+      assert {:error, _} =
+               Task.from_json(%{
+                 "id" => "t1",
+                 "contextId" => "c",
+                 "status" => %{"state" => "NOPE"}
+               })
+    end
+
+    test "stream events" do
+      status = %{Task.status(:working, "Hi") | task_id: "t1", context_id: "c", sequence: nil}
+
+      update = %{
+        Artifact.update("a", [Part.text("x")], append: true, last_chunk: true)
+        | task_id: "t1",
+          context_id: "c"
+      }
+
+      message = Message.agent("hi")
+      task = %Task{id: "t1", context_id: "c", status: %TaskStatus{state: :completed}}
+
+      for event <- [status, update, message, task] do
+        assert {:ok, ^event} =
+                 event |> Phantom.A2A.event_to_json() |> Phantom.A2A.event_from_json()
+      end
+
+      assert {:error, _} = Phantom.A2A.event_from_json(%{"nope" => %{}})
+    end
+
+    test "an agent card" do
+      json = %{
+        "name" => "Agent",
+        "description" => "Does things",
+        "version" => "1.0",
+        "supportedInterfaces" => [
+          %{
+            "url" => "https://x.test/a2a",
+            "protocolBinding" => "JSONRPC",
+            "protocolVersion" => "1.0"
+          }
+        ],
+        "capabilities" => %{
+          "streaming" => true,
+          "extensions" => [%{"uri" => "https://x.test/ext", "required" => true}]
+        },
+        "defaultInputModes" => ["text/plain"],
+        "defaultOutputModes" => ["text/plain"],
+        "skills" => [%{"id" => "s", "name" => "S", "description" => "Skill", "tags" => ["t"]}],
+        "securitySchemes" => %{"bearer" => %{}}
+      }
+
+      assert {:ok,
+              %Card{
+                name: "Agent",
+                skills: [%AgentSkill{id: "s", tags: ["t"]}],
+                capabilities: %{"streaming" => true},
+                extensions: [%{uri: "https://x.test/ext", required: true}],
+                supported_interfaces: [%{"protocolBinding" => "JSONRPC"}]
+              } = card} = Card.from_json(json)
+
+      assert Card.to_json(card)["name"] == "Agent"
+      assert {:error, _} = Card.from_json(%{"description" => "no name"})
+    end
+
+    test "errors from either binding" do
+      assert %Error{code: -32001, message: "Task not found"} =
+               Error.from_json(%{"code" => -32001, "message" => "Task not found"})
+
+      assert %Error{code: -32001, message: "gone"} =
+               Error.from_json(%{
+                 "code" => 404,
+                 "status" => "NOT_FOUND",
+                 "message" => "gone",
+                 "details" => [%{"reason" => "TASK_NOT_FOUND"}]
+               })
+
+      assert %Error{code: -32603} = Error.from_json(%{"code" => 500, "message" => "boom"})
+    end
+  end
 end

@@ -41,6 +41,23 @@ defmodule Phantom.A2A.AgentSkill do
   end
 
   @doc false
+  def from_json(%{"id" => id, "name" => name, "description" => description} = json)
+      when is_binary(id) do
+    {:ok,
+     %__MODULE__{
+       id: id,
+       name: name,
+       description: description,
+       tags: json["tags"] || [],
+       examples: json["examples"] || [],
+       input_modes: json["inputModes"],
+       output_modes: json["outputModes"]
+     }}
+  end
+
+  def from_json(_json), do: {:error, "skill needs an id, a name, and a description"}
+
+  @doc false
   def to_json(%__MODULE__{} = skill) do
     remove_nils(%{
       "id" => skill.id,

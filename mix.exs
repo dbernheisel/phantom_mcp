@@ -53,14 +53,15 @@ defmodule Phantom.MixProject do
       {:phoenix_pubsub, "~> 2.0", optional: true, only: [:dev, :test, :prod, :stdio]},
       {:uuid_v7, "~> 0.6"},
       {:yamerl, "~> 0.10", optional: true},
+      # Phantom.A2A.Client
+      {:req, "~> 0.5", optional: true},
       ## Test
       {:phoenix_live_view, "~> 1.0", only: [:dev, :test, :stdio]},
       {:ex_doc, "~> 0.31", only: :dev, warn_if_outdated: true, runtime: false},
       {:tidewave, "~> 0.5", only: [:dev, :test], warn_if_outdated: true},
       {:makeup_javascript, "~> 0.1", only: :dev},
       {:phoenix_live_reload, "~> 1.5", only: [:dev, :test, :stdio]},
-      {:bandit, "~> 1.0", only: [:dev, :test]},
-      {:req, "~> 0.5", only: [:dev, :test]}
+      {:bandit, "~> 1.0", only: [:dev, :test]}
     ]
   end
 
