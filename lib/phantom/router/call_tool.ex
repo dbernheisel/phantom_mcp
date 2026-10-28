@@ -24,12 +24,15 @@ defmodule Phantom.Router.CallTool do
   def call(%Session{router: router} = session, name, args, opts) do
     if not Cache.initialized?(router), do: Cache.register(router)
 
+    meta = if opts[:tasks], do: tasks_meta(), else: nil
     params = %{"name" => to_string(name), "arguments" => stringify_keys(args)}
+    params = if meta, do: Map.put(params, "_meta", meta), else: params
 
     request = %Request{
       id: UUIDv7.generate(),
       method: "tools/call",
       params: params,
+      meta: meta,
       type: "message"
     }
 
@@ -37,16 +40,39 @@ defmodule Phantom.Router.CallTool do
     timeout = Keyword.get(opts, :timeout, :timer.seconds(60))
 
     try do
-      case router.dispatch_method(["tools/call", params, request, session]) do
+      router.dispatch_method(["tools/call", params, request, session])
+      |> case do
         {:reply, result, _session} -> {:ok, result}
         {:noreply, _session} -> await(request.id, deadline(timeout), opts[:on_progress])
         {:error, error, _session} -> {:error, error}
         {:error, error} -> {:error, error}
       end
+      |> fetch_task(router, session)
     after
       drain(request.id)
     end
   end
+
+  # A stateless request that declares the Tasks extension, so a tool may
+  # answer with a `Phantom.Tasks`.
+  defp tasks_meta do
+    %{
+      "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities" => %{
+        "extensions" => %{Phantom.Tasks.extension() => %{}}
+      }
+    }
+  end
+
+  # A tool that answered with a task sent its `CreateTaskResult`; return the task.
+  defp fetch_task({:ok, %{resultType: "task", taskId: id}}, router, session) do
+    case router.get_task(id, session) do
+      {:ok, %Phantom.Tasks{} = task} -> {:ok, task}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_task(result, _router, _session), do: result
 
   defp await(request_id, deadline, on_progress) do
     receive do

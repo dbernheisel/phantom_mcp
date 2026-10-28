@@ -615,8 +615,15 @@ defmodule Phantom.A2A.Plug do
 
     try do
       case start.() do
-        {:ok, events, task} -> conn |> start_stream() |> stream(id, events, task, opts)
-        {:error, %Error{} = error} -> send_error(conn, opts, id, error, 200)
+        {:ok, events, task, adopted} ->
+          try do
+            conn |> start_stream() |> stream(id, events, task, opts)
+          after
+            if adopted, do: A2A.unsubscribe(adopted)
+          end
+
+        {:error, %Error{} = error} ->
+          send_error(conn, opts, id, error, 200)
       end
     after
       A2A.unsubscribe(ref)
@@ -677,9 +684,18 @@ defmodule Phantom.A2A.Plug do
             {:ok, %{"message" => Message.to_json(message)}}
 
           {:ok, %Task{} = task} ->
-            with {:ok, task} <- await(task, ctx, opts) do
-              {:ok,
-               %{"task" => Task.to_json(task, history_length: ctx.configuration["historyLength"])}}
+            {task, adopted} = adopt_task(task, agent, ctx)
+
+            try do
+              with {:ok, task} <- await(task, ctx, opts) do
+                {:ok,
+                 %{
+                   "task" =>
+                     Task.to_json(task, history_length: ctx.configuration["historyLength"])
+                 }}
+              end
+            after
+              if adopted, do: A2A.unsubscribe(adopted)
             end
 
           error ->
@@ -697,9 +713,15 @@ defmodule Phantom.A2A.Plug do
       {:stream, ctx.task_ref,
        fn ->
          case handle_message(agent, ctx) do
-           {:ok, %Message{} = message} -> {:ok, [message], nil}
-           {:ok, %Task{} = task} -> {:ok, [task], task}
-           error -> error
+           {:ok, %Message{} = message} ->
+             {:ok, [message], nil, nil}
+
+           {:ok, %Task{} = task} ->
+             {task, adopted} = adopt_task(task, agent, ctx)
+             {:ok, [task], task, adopted}
+
+           error ->
+             error
          end
        end}
     end
@@ -716,7 +738,7 @@ defmodule Phantom.A2A.Plug do
              {:error, Error.unsupported_operation("Task #{id} is already finished")}
 
            {:ok, task} ->
-             {:ok, [task], task}
+             {:ok, [task], task, nil}
 
            error ->
              error
@@ -865,6 +887,20 @@ defmodule Phantom.A2A.Plug do
 
   defp dispatch(method, _params, _agent, _ctx, _opts),
     do: {:error, Error.method_not_found(method)}
+
+  # A handler may answer with a task another system named. Listen on its ID
+  # too, then fetch it again, so an event published before that isn't missed.
+  defp adopt_task(%Task{id: id} = task, _agent, %{task_ref: %{task_id: id}}), do: {task, nil}
+
+  defp adopt_task(%Task{} = task, agent, ctx) do
+    ref = %{ctx.task_ref | task_id: task.id, context_id: task.context_id}
+    A2A.subscribe(ref)
+
+    case agent.handler.get_task(task.id, %{ctx | task_ref: ref}) do
+      {:ok, %Task{} = fetched} -> {fetched, ref}
+      _not_stored -> {task, ref}
+    end
+  end
 
   defp prepare_send(params, agent, ctx, opts) do
     with {:ok, message} <- decode_message(params["message"]),

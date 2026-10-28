@@ -1164,9 +1164,12 @@ defmodule Phantom.Router do
     * `:timeout` - how long to wait for a tool that answers later (default 60 seconds)
     * `:on_progress` - a function called with `progress, total, message` for
       each progress notification the tool sends
+    * `:tasks` - declare the Tasks extension, so a tool may answer with a
+      `Phantom.Tasks`, which is returned as `{:ok, task}`. Needs the router's
+      `c:get_task/2`.
   """
   @spec call_tool(Session.t(), atom() | String.t(), map() | keyword(), keyword()) ::
-          {:ok, map()} | {:error, map() | :timeout}
+          {:ok, map() | Phantom.Tasks.t()} | {:error, map() | :timeout | :not_found | :expired}
   def call_tool(%Session{} = session, name, args \\ %{}, opts \\ []),
     do: Phantom.Router.CallTool.call(session, name, args, opts)
 

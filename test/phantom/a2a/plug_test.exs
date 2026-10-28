@@ -43,6 +43,19 @@ defmodule Phantom.A2A.PlugTest.Research do
     {:reply, Task.submitted(ctx), ctx}
   end
 
+  # Answers with a task whose ID another system chose.
+  def handle_message(%Message{parts: [%Part{text: "external"}]}, ctx) do
+    id = "external-#{System.unique_integer([:positive])}"
+    ref = %{ctx.task_ref | task_id: id}
+    # Saved before it is published, as an agent's store would.
+    spawn(fn ->
+      :persistent_term.put({__MODULE__, id}, :completed)
+      Phantom.A2A.publish(ref, Task.status(:completed, "Done elsewhere"))
+    end)
+
+    {:reply, %Task{id: id, context_id: ctx.context_id, status: %TaskStatus{state: :working}}, ctx}
+  end
+
   def handle_message(%Message{task_id: task_id} = message, ctx) when is_binary(task_id) do
     send(ctx.assigns.test, {:continued, ctx.task_ref.task_id, ctx.context_id})
     {:ok, task} = get_task(task_id, ctx)
@@ -52,6 +65,11 @@ defmodule Phantom.A2A.PlugTest.Research do
   end
 
   def get_task("missing", _ctx), do: {:error, :not_found}
+
+  def get_task("external-" <> _ = id, ctx) do
+    state = :persistent_term.get({__MODULE__, id}, :working)
+    {:ok, %Task{id: id, context_id: ctx.context_id || "ctx-1", status: %TaskStatus{state: state}}}
+  end
 
   def get_task("slow", %{task_ref: %Phantom.A2A.TaskRef{} = ref}) do
     spawn(fn ->
@@ -561,6 +579,17 @@ defmodule Phantom.A2A.PlugTest do
                  }
                }
              } = send_message("/pubsub/a2a/research", "work")
+    end
+
+    test "follows a task whose ID the agent chose" do
+      assert %{
+               "result" => %{
+                 "task" => %{
+                   "id" => "external-" <> _,
+                   "status" => %{"state" => "TASK_STATE_COMPLETED"}
+                 }
+               }
+             } = send_message("/pubsub/a2a/research", "external")
     end
 
     test "returnImmediately answers with the submitted task" do

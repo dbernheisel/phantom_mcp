@@ -30,9 +30,25 @@ defmodule Phantom.A2A.Bridge do
       instructions)
     * `:fallback` - a `Phantom.A2A.Agent` for messages that name no tool
 
+  ## Long-running tools
+
+  When the router implements `c:Phantom.Router.get_task/2`, the bridge calls
+  tools with the MCP Tasks extension, so a tool may answer with a
+  `Phantom.Tasks`. The client gets an A2A task with the same ID, in a context
+  of its own:
+
+    * the task's status, `status_message`, and `error` become the A2A status
+      and its message, and a completed `result` becomes a `"result"` artifact;
+    * `input_requests` become an `input_required` status whose message has a
+      data part `{"inputRequests": ...}`. The client answers with a message on
+      the task with a data part `{"inputResponses": {key: response}}`, which
+      goes to `c:Phantom.Router.update_task/3`;
+    * `GetTask` and `CancelTask` go to `c:Phantom.Router.get_task/2` and
+      `c:Phantom.Router.cancel_task/2`.
+
   Tools that answer from another process (`{:noreply, session}`) block the
-  request until they respond. A tool that elicits gets `:not_supported`, as
-  there is no MCP client to ask.
+  request until they respond. A tool that elicits without a task gets
+  `:not_supported`, as there is no MCP client to ask.
   """
 
   use Phantom.A2A.Agent,
@@ -41,7 +57,7 @@ defmodule Phantom.A2A.Bridge do
     input_modes: ~w[application/json text/plain],
     output_modes: ~w[application/json text/plain]
 
-  alias Phantom.A2A.{AgentSkill, Error, Message, Part}
+  alias Phantom.A2A.{AgentSkill, Artifact, Error, Message, Part, Task, TaskStatus}
 
   @extension "https://github.com/dbernheisel/phantom_mcp/a2a/extensions/mcp-tools/v1"
 
@@ -71,6 +87,9 @@ defmodule Phantom.A2A.Bridge do
   end
 
   @impl Phantom.A2A.Agent
+  def handle_message(%Message{task_id: task_id} = message, ctx) when is_binary(task_id),
+    do: continue_task(task_id, message, ctx)
+
   def handle_message(message, ctx) do
     case tool_call(message) do
       {name, arguments} -> call(name, arguments, ctx)
@@ -92,7 +111,12 @@ defmodule Phantom.A2A.Bridge do
     router = ctx.session.router
 
     if Enum.any?(tools(router, ctx.session, ctx.agent.opts), &(&1.name == name)) do
-      case Phantom.Router.call_tool(ctx.session, name, arguments) do
+      tasks? = Phantom.Router.tasks_enabled?(router)
+
+      case Phantom.Router.call_tool(ctx.session, name, arguments, tasks: tasks?) do
+        {:ok, %Phantom.Tasks{} = task} ->
+          {:reply, to_a2a(task), ctx}
+
         {:ok, result} ->
           {:reply, reply(result), ctx}
 
@@ -106,6 +130,122 @@ defmodule Phantom.A2A.Bridge do
       {:error, Error.invalid_params("Unknown tool: #{name}"), ctx}
     end
   end
+
+  ## MCP tasks
+
+  @impl Phantom.A2A.Agent
+  def get_task(task_id, ctx) do
+    case mcp_task(task_id, ctx) do
+      {:ok, task} -> {:ok, to_a2a(task)}
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @impl Phantom.A2A.Agent
+  def cancel_task(%Task{id: task_id}, ctx) do
+    router = ctx.session.router
+
+    with {:ok, task} <- mcp_task(task_id, ctx),
+         true <- function_exported?(router, :cancel_task, 2),
+         :ok <- router.cancel_task(task, ctx.session) do
+      get_task(task_id, ctx)
+    else
+      _not_cancelable -> {:error, :not_cancelable}
+    end
+  end
+
+  defp mcp_task(task_id, ctx) do
+    router = ctx.session.router
+
+    with true <- Phantom.Router.tasks_enabled?(router),
+         {:ok, %Phantom.Tasks{} = task} <- router.get_task(task_id, ctx.session) do
+      {:ok, task}
+    else
+      _not_found -> :error
+    end
+  end
+
+  # The client answers a task's input requests with a data part:
+  # {"inputResponses": {key: response}}.
+  defp continue_task(task_id, message, ctx) do
+    router = ctx.session.router
+
+    responses =
+      Enum.find_value(message.parts, %{}, fn
+        %Part{data: %{"inputResponses" => %{} = responses}} -> responses
+        _part -> nil
+      end)
+
+    with {:ok, task} <- mcp_task(task_id, ctx),
+         outstanding when map_size(outstanding) > 0 <-
+           Map.take(responses, Map.keys(task.input_requests)),
+         true <- function_exported?(router, :update_task, 3),
+         :ok <- router.update_task(task, outstanding, ctx.session),
+         {:ok, task} <- mcp_task(task_id, ctx) do
+      {:reply, to_a2a(task), ctx}
+    else
+      {:error, error} ->
+        {:error, error(error), ctx}
+
+      _nothing_to_answer ->
+        keys =
+          case mcp_task(task_id, ctx) do
+            {:ok, task} -> Map.keys(task.input_requests)
+            :error -> []
+          end
+
+        message =
+          ~s(Answer the task's input requests with a data part {"inputResponses": {...}}: ) <>
+            Enum.join(keys, ", ")
+
+        {:error, Error.invalid_params(message), ctx}
+    end
+  end
+
+  @states %{
+    working: :working,
+    input_required: :input_required,
+    completed: :completed,
+    failed: :failed,
+    cancelled: :canceled
+  }
+
+  # An MCP task as an A2A task. MCP tasks have no context, so each is its own.
+  defp to_a2a(%Phantom.Tasks{} = task) do
+    %Task{
+      id: task.id,
+      context_id: task.id,
+      status: %TaskStatus{
+        state: Map.fetch!(@states, task.status),
+        message: status_message(task),
+        timestamp: task.last_updated_at
+      },
+      artifacts: artifacts(task)
+    }
+  end
+
+  defp status_message(task) do
+    error = if task.error, do: json(task.error)["message"]
+
+    input_requests =
+      if task.input_requests != %{},
+        do: [Part.data(%{"inputRequests" => json(task.input_requests)})],
+        else: []
+
+    texts = for text <- [task.status_message, error], is_binary(text), do: Part.text(text)
+
+    case texts ++ input_requests do
+      [] -> nil
+      parts -> Message.agent(parts, task_id: task.id, context_id: task.id)
+    end
+  end
+
+  defp artifacts(%Phantom.Tasks{status: :completed, result: %{} = result}) do
+    {parts, _error?} = result_parts(result)
+    [Artifact.new("result", parts)]
+  end
+
+  defp artifacts(_task), do: []
 
   defp no_tool(message, ctx) do
     case ctx.agent.opts[:fallback] do
@@ -147,7 +287,13 @@ defmodule Phantom.A2A.Bridge do
   defp tool_json(tool), do: tool |> Phantom.Tool.to_json() |> JSON.encode!() |> JSON.decode!()
 
   defp reply(result) do
-    result = result |> JSON.encode!() |> JSON.decode!()
+    {parts, error?} = result_parts(result)
+    Message.agent(parts, metadata: if(error?, do: %{"mcp/isError" => true}))
+  end
+
+  # A `CallToolResult` as parts, and whether it is an error.
+  defp result_parts(result) do
+    result = json(result)
     content = Enum.flat_map(result["content"] || [], &part/1)
 
     structured =
@@ -155,10 +301,10 @@ defmodule Phantom.A2A.Bridge do
         do: [Part.data(result["structuredContent"])],
         else: []
 
-    metadata = if result["isError"] == true, do: %{"mcp/isError" => true}
-
-    Message.agent(content ++ structured, metadata: metadata)
+    {content ++ structured, result["isError"] == true}
   end
+
+  defp json(term), do: term |> JSON.encode!() |> JSON.decode!()
 
   defp part(%{"type" => "text", "text" => text}), do: [Part.text(text)]
 
