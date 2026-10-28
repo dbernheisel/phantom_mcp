@@ -11,19 +11,21 @@ defmodule Phantom.ACTSTest do
     :ok
   end
 
-  test "the JSON-RPC binding passes the A2A conformance suite" do
-    {_status, output, report} = ACTS.run()
-    assert report, output
+  test "the JSON-RPC and HTTP+JSON bindings pass the A2A conformance suite" do
+    {_status, output, reports} = ACTS.run()
+    assert Map.keys(reports) == ["jsonrpc", "rest"], output
 
-    results = ACTS.results(report)
-    failed = Map.get(results, "fail", []) ++ Map.get(results, "error", [])
-    expected = ACTS.expected_failures()
+    for {binding, report} <- reports do
+      results = ACTS.results(report)
+      failed = Map.get(results, "fail", []) ++ Map.get(results, "error", [])
+      expected = ACTS.expected_failures()
 
-    assert {failed -- expected, expected -- failed} == {[], []}, """
-    Unexpected failures, then expected failures that passed. Update
-    test/acts/expected-failures.yml as fixes land.
+      assert {binding, failed -- expected, expected -- failed} == {binding, [], []}, """
+      Unexpected failures, then expected failures that passed. Update
+      test/acts/expected-failures.yml as fixes land.
 
-    #{output}
-    """
+      #{output}
+      """
+    end
   end
 end

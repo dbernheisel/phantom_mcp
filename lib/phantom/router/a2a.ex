@@ -4,6 +4,9 @@ defmodule Phantom.Router.A2A do
 
   @segment ~r/\A(:[a-z_][A-Za-z0-9_]*|[A-Za-z0-9._~-]+)\z/
 
+  # Segments the HTTP+JSON binding routes on.
+  @reserved ~w[tasks extendedAgentCard pushNotificationConfigs]
+
   def route(path, handler, resolver) when is_atom(resolver),
     do: build(path, handler, [], resolver)
 
@@ -17,6 +20,12 @@ defmodule Phantom.Router.A2A do
       raise ArgumentError,
             "invalid agent path #{inspect(path)}: segments are letters, digits, - . _ ~, " <>
               "or path params"
+    end
+
+    if reserved = Enum.find(segments, &(&1 in @reserved)) do
+      raise ArgumentError,
+            "invalid agent path #{inspect(path)}: #{inspect(reserved)} is reserved for the " <>
+              "HTTP+JSON binding"
     end
 
     params? = Enum.any?(segments, &String.starts_with?(&1, ":"))

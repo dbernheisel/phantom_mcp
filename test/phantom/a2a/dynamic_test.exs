@@ -74,7 +74,7 @@ defmodule Phantom.A2A.DynamicTest do
       assert %{
                "name" => "acme Device triage",
                "skills" => [%{"id" => "triage"}],
-               "supportedInterfaces" => [%{"url" => "http://www.example.com/acme/triage"}]
+               "supportedInterfaces" => [%{"url" => "http://www.example.com/acme/triage"} | _]
              } = get_card(Router, "acme/triage", as("acme"))
     end
 

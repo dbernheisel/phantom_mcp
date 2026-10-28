@@ -23,8 +23,8 @@ three ways, each served by `Phantom.ACTS.HTTP`:
   `Bearer itk-valid-token` and answers `itk-insufficient-token` with 403
   (`--auth-sut-url`).
 
-Only the JSON-RPC binding runs, because it is the only one Phantom serves.
-The routers allow private push URLs, because the suite's webhook receiver
+The JSON-RPC and HTTP+JSON bindings run, each with its own report; gRPC
+doesn't, because Phantom doesn't serve it. The routers allow private push URLs, because the suite's webhook receiver
 listens on 127.0.0.1.
 
 ## Expected failures

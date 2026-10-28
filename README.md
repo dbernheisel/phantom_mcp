@@ -858,9 +858,10 @@ for a task, and Phantom posts each event you publish to them. The agent stores
 the configs; Phantom checks each webhook URL so it can't reach your private
 network. See `Phantom.A2A.Push`.
 
-Phantom serves the JSON-RPC binding: `SendMessage`, `SendStreamingMessage`,
-`GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`,
-`GetExtendedAgentCard`, and the push notification config methods. Agents can
+Phantom serves the JSON-RPC and HTTP+JSON bindings: `SendMessage`,
+`SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`,
+`SubscribeToTask`, `GetExtendedAgentCard`, and the push notification config
+methods. Agents can
 declare protocol extensions, and each request is a
 `[:phantom, :a2a, :dispatch]` telemetry span carrying the client's W3C trace
 context. See the [A2A guide](guides/a2a.md).

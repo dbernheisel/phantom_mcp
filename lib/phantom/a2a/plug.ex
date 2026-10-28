@@ -7,6 +7,7 @@ defmodule Phantom.A2A.Plug do
     mount: nil,
     blocking_timeout: :timer.seconds(60),
     card_max_age: 300,
+    bindings: [:jsonrpc, :http_json],
     keepalive: :timer.seconds(15),
     push_notifications: true,
     extended_card: true,
@@ -14,12 +15,12 @@ defmodule Phantom.A2A.Plug do
   ]
 
   @moduledoc """
-  Serve a router's A2A agents over the JSON-RPC binding.
+  Serve a router's A2A agents over the JSON-RPC and HTTP+JSON bindings.
 
   Mount it under a path, and optionally serve one agent's card at the
   well-known path. Mount it without `Plug.Parsers`: it reads the body itself,
-  so a request with invalid JSON gets the JSON-RPC parse error A2A requires
-  rather than the parser's 400. A body that is already parsed is used as is.
+  so a request with invalid JSON gets the error A2A requires rather than the
+  parser's 400. A body that is already parsed is used as is.
 
       get "/.well-known/agent-card.json", Phantom.A2A.Plug,
         router: MyApp.MCP.Router,
@@ -33,18 +34,31 @@ defmodule Phantom.A2A.Plug do
 
     * `GET /a2a/research/agent-card.json` - the agent's card
     * `POST /a2a/research` - JSON-RPC requests
+    * the HTTP+JSON routes under `/a2a/research`, from the A2A protobuf:
+      `POST message:send`, `POST message:stream`, `GET tasks`,
+      `GET tasks/{id}`, `POST tasks/{id}:cancel`, `GET` or
+      `POST tasks/{id}:subscribe`, `GET extendedAgentCard`, and
+      `POST`, `GET`, and `DELETE` on `tasks/{id}/pushNotificationConfigs`.
+      A segment before them names a tenant, as in `/a2a/research/acme/message:send`.
+
+  Both bindings serve the same methods, and the card lists both. HTTP+JSON
+  answers with `application/a2a+json`, and with errors as `google.rpc.Status`
+  under their HTTP status.
 
   The well-known path serves the card of the agent named by the router's
   `a2a: [well_known: "research"]` option.
 
   Requests must send an `A2A-Version` header for version 1. Each request
-  calls `c:Phantom.Router.connect/2` with the conn, its JSON-RPC request in
-  `conn.body_params`, and agents excluded with `Phantom.Session.allow_agents/2`
-  are not found. Cards are public.
+  calls `c:Phantom.Router.connect/2` with the conn and the request in
+  `conn.body_params`: the JSON-RPC request, or for HTTP+JSON,
+  `%{"method" => method, "params" => params}` in the same shape. Agents
+  excluded with `Phantom.Session.allow_agents/2` are not found. Cards are
+  public.
 
   ## Options
 
     * `:router` - the `Phantom.Router` (required)
+    * `:bindings` - which bindings to serve (default `[:jsonrpc, :http_json]`)
     * `:pubsub` - a `Phoenix.PubSub` server, which `Phantom.A2A.publish/2`
       sends events through. Like `Phantom.Plug`, options also come from the
       router's application config, so one `pubsub` there serves both plugs. With it, cards advertise streaming,
@@ -70,7 +84,8 @@ defmodule Phantom.A2A.Plug do
 
   ## Telemetry
 
-  Each JSON-RPC request is a `[:phantom, :a2a, :dispatch]` telemetry span:
+  Each request, on either binding, is a `[:phantom, :a2a, :dispatch]`
+  telemetry span:
 
     * `:start` with metadata `~w[router agent_id method params session trace_context]a`
     * `:stop` with the same metadata plus `:result`: `{:ok, result}`,
@@ -114,10 +129,10 @@ defmodule Phantom.A2A.Plug do
 
     cond do
       not Phantom.Plug.valid_host?(conn.host, opts.hosts) ->
-        send_json(conn, 403, error_body(nil, Error.invalid_request("Host not allowed")))
+        send_error(conn, opts, nil, Error.invalid_request("Host not allowed"), 403)
 
       not Phantom.Plug.valid_origin?(origin, opts) ->
-        send_json(conn, 403, error_body(nil, Error.invalid_request("Origin not allowed")))
+        send_error(conn, opts, nil, Error.invalid_request("Origin not allowed"), 403)
 
       true ->
         route(conn, opts)
@@ -133,7 +148,7 @@ defmodule Phantom.A2A.Plug do
            Phantom.Router.A2A.match(opts.router, String.split(id, "/")) do
       serve_card(conn, opts, static_agent(route), opts.mount || "")
     else
-      _ -> not_found(conn)
+      _ -> not_found(conn, opts)
     end
   end
 
@@ -142,19 +157,27 @@ defmodule Phantom.A2A.Plug do
          {:ok, route, params} <- Phantom.Router.A2A.match(opts.router, segments) do
       card_for(conn, opts, route, segments, params)
     else
-      _ -> not_found(conn)
+      _ -> route_binding(conn, opts)
     end
   end
 
-  defp route(%Plug.Conn{method: "POST", path_info: segments} = conn, opts) do
-    case Phantom.Router.A2A.match(opts.router, segments) do
-      {:ok, route, params} -> rpc(conn, opts, {route, segments, params})
-      :error -> not_found(conn)
+  defp route(conn, opts), do: route_binding(conn, opts)
+
+  # An HTTP+JSON route, then a JSON-RPC request to the agent's path.
+  defp route_binding(%Plug.Conn{method: method, path_info: segments} = conn, opts) do
+    with true <- :http_json in opts.bindings,
+         {:ok, rpc_method, path_params, rest} <- rest_route(method, Enum.reverse(segments)),
+         {:ok, match, tenant} <- match_rest_agent(opts.router, Enum.reverse(rest)) do
+      rest(conn, Map.put(opts, :binding, :http_json), match, rpc_method, path_params, tenant)
+    else
+      _ ->
+        case {method, :jsonrpc in opts.bindings, Phantom.Router.A2A.match(opts.router, segments)} do
+          {"POST", true, {:ok, route, params}} -> rpc(conn, opts, {route, segments, params})
+          {method, _, _} when method in ~w[GET POST DELETE] -> not_found(conn, opts)
+          _ -> send_error(conn, opts, nil, Error.invalid_request("Method not allowed"), 405)
+        end
     end
   end
-
-  defp route(conn, _opts),
-    do: send_json(conn, 405, error_body(nil, Error.invalid_request("Method not allowed")))
 
   # A static agent's card is public. A resolved agent's card needs the session.
   defp card_for(conn, opts, %{params?: false, resolver: nil} = route, _segments, _params),
@@ -163,7 +186,7 @@ defmodule Phantom.A2A.Plug do
   defp card_for(conn, opts, route, segments, params) do
     case open_agent(conn, opts, {route, segments, params}) do
       {:ok, _session, agent} -> serve_card(conn, opts, agent, mount_path(conn))
-      :not_found -> not_found(conn)
+      :not_found -> not_found(conn, opts)
       %Plug.Conn{} = conn -> conn
     end
   end
@@ -212,8 +235,8 @@ defmodule Phantom.A2A.Plug do
   defp mount_path(%Plug.Conn{script_name: []}), do: ""
   defp mount_path(%Plug.Conn{script_name: script_name}), do: "/" <> Enum.join(script_name, "/")
 
-  defp not_found(conn),
-    do: send_json(conn, 404, error_body(nil, Error.invalid_request("Not found")))
+  defp not_found(conn, opts),
+    do: send_error(conn, opts, nil, Error.invalid_request("Not found"), 404)
 
   ## Agent cards
 
@@ -243,13 +266,16 @@ defmodule Phantom.A2A.Plug do
         provider: info.a2a[:provider],
         security_schemes: info.a2a[:security_schemes],
         security_requirements: info.a2a[:security_requirements],
-        supported_interfaces: [
-          %{
-            "url" => "#{base}#{mount}/#{agent.id}",
-            "protocolBinding" => "JSONRPC",
-            "protocolVersion" => @protocol_version
-          }
-        ],
+        supported_interfaces:
+          for(
+            {binding, name} <- [jsonrpc: "JSONRPC", http_json: "HTTP+JSON"],
+            binding in opts.bindings,
+            do: %{
+              "url" => "#{base}#{mount}/#{agent.id}",
+              "protocolBinding" => name,
+              "protocolVersion" => @protocol_version
+            }
+          ),
         capabilities:
           Phantom.Utils.remove_nils(%{
             "streaming" => not is_nil(opts.pubsub),
@@ -263,6 +289,124 @@ defmodule Phantom.A2A.Plug do
     }
   end
 
+  ## HTTP+JSON
+
+  # Routes from the `google.api.http` annotations of a2a.proto, matched on the
+  # path's segments in reverse. What precedes them is the agent and tenant.
+  defp rest_route("POST", ["message:send" | rest]), do: {:ok, "SendMessage", %{}, rest}
+  defp rest_route("POST", ["message:stream" | rest]), do: {:ok, "SendStreamingMessage", %{}, rest}
+
+  defp rest_route("GET", ["extendedAgentCard" | rest]),
+    do: {:ok, "GetExtendedAgentCard", %{}, rest}
+
+  defp rest_route("GET", ["tasks" | rest]), do: {:ok, "ListTasks", %{}, rest}
+
+  defp rest_route("POST", ["pushNotificationConfigs", task_id, "tasks" | rest]),
+    do: {:ok, "CreateTaskPushNotificationConfig", %{"taskId" => task_id}, rest}
+
+  defp rest_route("GET", ["pushNotificationConfigs", task_id, "tasks" | rest]),
+    do: {:ok, "ListTaskPushNotificationConfigs", %{"taskId" => task_id}, rest}
+
+  defp rest_route("GET", [id, "pushNotificationConfigs", task_id, "tasks" | rest]),
+    do: {:ok, "GetTaskPushNotificationConfig", %{"taskId" => task_id, "id" => id}, rest}
+
+  defp rest_route("DELETE", [id, "pushNotificationConfigs", task_id, "tasks" | rest]),
+    do: {:ok, "DeleteTaskPushNotificationConfig", %{"taskId" => task_id, "id" => id}, rest}
+
+  defp rest_route("POST", [last, "tasks" | rest]) do
+    case task_verb(last) do
+      {id, "cancel"} -> {:ok, "CancelTask", %{"id" => id}, rest}
+      # The method tables name POST; the proto names GET. Accept both.
+      {id, "subscribe"} -> {:ok, "SubscribeToTask", %{"id" => id}, rest}
+      _ -> :error
+    end
+  end
+
+  defp rest_route("GET", [last, "tasks" | rest]) do
+    case task_verb(last) do
+      {id, "subscribe"} -> {:ok, "SubscribeToTask", %{"id" => id}, rest}
+      _ -> {:ok, "GetTask", %{"id" => last}, rest}
+    end
+  end
+
+  defp rest_route(_method, _segments), do: :error
+
+  # "t1:cancel" -> {"t1", "cancel"}. Task IDs may contain ":", so split on the last.
+  defp task_verb(segment) do
+    case String.split(segment, ":") do
+      [_id] -> :error
+      parts -> {parts |> Enum.drop(-1) |> Enum.join(":"), List.last(parts)}
+    end
+  end
+
+  # The agent's path, or the agent's path and a tenant.
+  defp match_rest_agent(router, segments) do
+    case Phantom.Router.A2A.match(router, segments) do
+      {:ok, route, params} ->
+        {:ok, {route, segments, params}, nil}
+
+      :error when segments != [] ->
+        {agent_segments, [tenant]} = Enum.split(segments, -1)
+
+        with {:ok, route, params} <- Phantom.Router.A2A.match(router, agent_segments),
+             do: {:ok, {route, agent_segments, params}, tenant}
+
+      :error ->
+        :error
+    end
+  end
+
+  defp rest(conn, opts, match, method, path_params, tenant) do
+    case rest_body(conn, opts) do
+      {:ok, body, conn} ->
+        conn = Plug.Conn.fetch_query_params(conn)
+
+        params =
+          body
+          |> Map.merge(query_params(conn.query_params))
+          |> Map.merge(path_params)
+          |> then(&if tenant, do: Map.put(&1, "tenant", tenant), else: &1)
+
+        # connect/2 sees the request as on JSON-RPC: its method and params.
+        conn = %{conn | body_params: %{"method" => method, "params" => params}}
+        serve(conn, opts, match, nil, method, params)
+
+      {:error, :too_large, conn} ->
+        send_error(conn, opts, nil, Error.invalid_request("Request too large"), 413)
+
+      {:error, _reason, conn} ->
+        send_error(conn, opts, nil, Error.parse_error(), 200)
+    end
+  end
+
+  defp rest_body(%Plug.Conn{method: "POST"} = conn, opts) do
+    case read_json(conn, opts) do
+      {:ok, %{} = body, conn} -> {:ok, body, conn}
+      {:ok, _not_an_object, conn} -> {:error, :invalid, conn}
+      error -> error
+    end
+  end
+
+  defp rest_body(conn, _opts), do: {:ok, %{}, conn}
+
+  @integer_params ~w[pageSize historyLength]
+
+  defp query_params(query) do
+    Map.new(query, fn
+      {key, value} when key in @integer_params ->
+        case Integer.parse(value) do
+          {integer, ""} -> {key, integer}
+          _ -> {key, value}
+        end
+
+      {"includeArtifacts", value} ->
+        {"includeArtifacts", value == "true"}
+
+      pair ->
+        pair
+    end)
+  end
+
   ## JSON-RPC
 
   defp rpc(conn, opts, match) do
@@ -271,10 +415,10 @@ defmodule Phantom.A2A.Plug do
         rpc(conn, opts, match, body)
 
       {:error, :too_large, conn} ->
-        send_json(conn, 413, error_body(nil, Error.invalid_request("Request too large")))
+        send_error(conn, opts, nil, Error.invalid_request("Request too large"), 413)
 
       {:error, _reason, conn} ->
-        send_json(conn, 200, error_body(nil, Error.parse_error()))
+        send_error(conn, opts, nil, Error.parse_error(), 200)
     end
   end
 
@@ -282,6 +426,10 @@ defmodule Phantom.A2A.Plug do
   # a JSON-RPC parse error instead of the parser's 400.
   defp read_json(%Plug.Conn{body_params: %Plug.Conn.Unfetched{}} = conn, opts) do
     case read_body(conn, length: opts.max_request_size) do
+      # An HTTP+JSON request may have no body, such as to cancel a task.
+      {:ok, "", conn} when opts.binding == :http_json ->
+        {:ok, %{}, conn}
+
       {:ok, raw, conn} ->
         case JSON.decode(raw) do
           {:ok, body} -> {:ok, body, put_body_params(conn, body)}
@@ -309,52 +457,54 @@ defmodule Phantom.A2A.Plug do
 
   defp rpc(conn, opts, match, body) do
     case envelope(body) do
-      {:ok, id, method, params} ->
-        with :ok <- check_version(conn),
-             {:ok, session, agent} <- open_agent(conn, opts, match),
-             {:ok, extensions} <- check_extensions(conn, agent) do
-          conn = put_extensions_header(conn, extensions, agent)
+      {:ok, id, method, params} -> serve(conn, opts, match, id, method, params)
+      :error -> send_error(conn, opts, nil, Error.invalid_request(), 200)
+    end
+  end
 
-          ctx = %Context{
-            extensions: extensions,
-            session: session,
-            assigns: session.assigns,
-            agent: Map.take(agent, [:id, :opts, :params, :state]),
-            tenant: params["tenant"],
-            metadata: params["metadata"]
-          }
+  # Serve a request of either binding, once it is a method and its params.
+  defp serve(conn, opts, match, id, method, params) do
+    with :ok <- check_version(conn),
+         {:ok, session, agent} <- open_agent(conn, opts, match),
+         {:ok, extensions} <- check_extensions(conn, agent) do
+      conn = put_extensions_header(conn, extensions, agent)
 
-          # The public card, for GetExtendedAgentCard.
-          opts = Map.put(opts, :card, fn -> card(conn, opts, agent, mount_path(conn)) end)
+      ctx = %Context{
+        extensions: extensions,
+        session: session,
+        assigns: session.assigns,
+        agent: Map.take(agent, [:id, :opts, :params, :state]),
+        tenant: params["tenant"],
+        metadata: params["metadata"]
+      }
 
-          meta = %{
-            router: opts.router,
-            agent_id: agent.id,
-            method: method,
-            params: params,
-            session: session,
-            trace_context: trace_context(conn)
-          }
+      # The public card, for GetExtendedAgentCard.
+      opts = Map.put(opts, :card, fn -> card(conn, opts, agent, mount_path(conn)) end)
 
-          try do
-            :telemetry.span([:phantom, :a2a, :dispatch], meta, fn ->
-              result = dispatch(method, params, agent, ctx, opts)
-              conn = respond(conn, id, result, opts)
-              {conn, %{}, Map.put(meta, :result, telemetry_result(result))}
-            end)
-          rescue
-            exception ->
-              send_json(conn, 200, error_body(id, Error.internal_error()))
-              reraise exception, __STACKTRACE__
-          end
-        else
-          %Error{} = error -> send_json(conn, 200, error_body(id, error))
-          %Plug.Conn{} = conn -> conn
-          :not_found -> not_found(conn)
-        end
+      meta = %{
+        router: opts.router,
+        agent_id: agent.id,
+        method: method,
+        params: params,
+        session: session,
+        trace_context: trace_context(conn)
+      }
 
-      :error ->
-        send_json(conn, 200, error_body(nil, Error.invalid_request()))
+      try do
+        :telemetry.span([:phantom, :a2a, :dispatch], meta, fn ->
+          result = dispatch(method, params, agent, ctx, opts)
+          conn = respond(conn, id, result, opts)
+          {conn, %{}, Map.put(meta, :result, telemetry_result(result))}
+        end)
+      rescue
+        exception ->
+          send_error(conn, opts, id, Error.internal_error(), 200)
+          reraise exception, __STACKTRACE__
+      end
+    else
+      %Error{} = error -> send_error(conn, opts, id, error, 200)
+      %Plug.Conn{} = conn -> conn
+      :not_found -> not_found(conn, opts)
     end
   end
 
@@ -430,19 +580,21 @@ defmodule Phantom.A2A.Plug do
 
         conn
         |> put_resp_header("www-authenticate", info)
-        |> send_json(401, error_body(nil, Error.invalid_request("Unauthorized")))
+        |> send_error(opts, nil, Error.invalid_request("Unauthorized"), 401)
 
       {status, message} when status in [403, :forbidden] ->
-        send_json(conn, 403, error_body(nil, Error.invalid_request(message)))
+        send_error(conn, opts, nil, Error.invalid_request(message), 403)
 
       {status, message} when status in [404, :not_found] ->
-        send_json(conn, 404, error_body(nil, Error.invalid_request(message)))
+        send_error(conn, opts, nil, Error.invalid_request(message), 404)
 
       {:error, reason} ->
-        send_json(
+        send_error(
           conn,
-          400,
-          error_body(nil, Error.invalid_request("Connection failed: #{inspect(reason)}"))
+          opts,
+          nil,
+          Error.invalid_request("Connection failed: #{inspect(reason)}"),
+          400
         )
     end
   end
@@ -459,26 +611,53 @@ defmodule Phantom.A2A.Plug do
 
     try do
       case start.() do
-        {:ok, events, task} -> conn |> start_stream() |> stream(id, events, task, opts.keepalive)
-        {:error, %Error{} = error} -> send_json(conn, 200, error_body(id, error))
+        {:ok, events, task} -> conn |> start_stream() |> stream(id, events, task, opts)
+        {:error, %Error{} = error} -> send_error(conn, opts, id, error, 200)
       end
     after
       A2A.unsubscribe(ref)
     end
   end
 
+  defp respond(conn, _id, {:ok, nil}, %{binding: :http_json}), do: send_resp(conn, 200, "")
+
+  defp respond(conn, _id, {:ok, result}, %{binding: :http_json} = opts),
+    do: send_json(conn, 200, result, opts)
+
   defp respond(conn, id, {:ok, result}, _opts),
     do: send_json(conn, 200, %{"jsonrpc" => "2.0", "id" => id, "result" => result})
 
-  defp respond(conn, id, {:error, %Error{} = error}, _opts),
-    do: send_json(conn, 200, error_body(id, error))
+  defp respond(conn, id, {:error, %Error{} = error}, opts),
+    do: send_error(conn, opts, id, error, 200)
+
+  # On JSON-RPC, protocol errors are HTTP 200; on HTTP+JSON, each error has
+  # its HTTP status. An explicit status, such as 401, applies to both.
+  defp send_error(conn, opts, id, error, status) do
+    send_json(
+      conn,
+      error_status(error, status, opts),
+      error_payload(id, error, status, opts),
+      opts
+    )
+  end
+
+  defp error_status(error, 200, %{binding: :http_json}), do: Error.http_status(error)
+  defp error_status(_error, status, _opts), do: status
+
+  defp error_payload(_id, error, status, %{binding: :http_json} = opts),
+    do: Error.to_status_json(error, error_status(error, status, opts))
+
+  defp error_payload(id, error, _status, _opts), do: error_body(id, error)
 
   defp error_body(id, error),
     do: %{"jsonrpc" => "2.0", "id" => id, "error" => Error.to_json(error)}
 
-  defp send_json(conn, status, body) do
+  defp send_json(conn, status, body, opts \\ %{}) do
+    content_type =
+      if opts[:binding] == :http_json, do: "application/a2a+json", else: "application/json"
+
     conn
-    |> put_resp_content_type("application/json")
+    |> put_resp_content_type(content_type)
     |> send_resp(status, JSON.encode!(body))
   end
 
@@ -961,54 +1140,59 @@ defmodule Phantom.A2A.Plug do
   end
 
   # Send the first events, then each published event until the task settles.
-  defp stream(conn, id, events, task, keepalive) do
-    case send_events(conn, id, 1, events) do
+  defp stream(conn, id, events, task, opts) do
+    case send_events(conn, id, 1, events, opts) do
       {:ok, conn, _n} when is_nil(task) ->
         conn
 
       {:ok, conn, n} ->
-        if settled?(task), do: conn, else: stream_events(conn, id, n, task, keepalive)
+        if settled?(task), do: conn, else: stream_events(conn, id, n, task, opts)
 
       {:error, conn} ->
         conn
     end
   end
 
-  defp stream_events(conn, id, n, task, keepalive) do
+  defp stream_events(conn, id, n, task, opts) do
     receive do
       {:phantom_a2a_event, event} ->
         event = fill_ids(event, task)
 
         with {:ok, task} <- follow(task, event),
-             {:ok, conn, n} <- send_events(conn, id, n, [event]) do
-          if settled?(task), do: conn, else: stream_events(conn, id, n, task, keepalive)
+             {:ok, conn, n} <- send_events(conn, id, n, [event], opts) do
+          if settled?(task), do: conn, else: stream_events(conn, id, n, task, opts)
         else
           :seen ->
-            stream_events(conn, id, n, task, keepalive)
+            stream_events(conn, id, n, task, opts)
 
           {:error, :unknown_artifact} ->
-            {_result, conn} = send_sse(conn, n, error_body(id, Error.invalid_agent_response()))
+            error = Error.invalid_agent_response()
+            {_result, conn} = send_sse(conn, n, error_payload(id, error, 200, opts))
             conn
 
           {:error, conn} ->
             conn
         end
     after
-      keepalive ->
+      opts.keepalive ->
         case chunk(conn, ": keepalive\n\n") do
-          {:ok, conn} -> stream_events(conn, id, n, task, keepalive)
+          {:ok, conn} -> stream_events(conn, id, n, task, opts)
           {:error, _reason} -> conn
         end
     end
   end
 
-  defp send_events(conn, _id, n, []), do: {:ok, conn, n}
+  defp send_events(conn, _id, n, [], _opts), do: {:ok, conn, n}
 
-  defp send_events(conn, id, n, [event | rest]) do
-    body = %{"jsonrpc" => "2.0", "id" => id, "result" => A2A.event_to_json(event)}
+  defp send_events(conn, id, n, [event | rest], opts) do
+    body =
+      case opts do
+        %{binding: :http_json} -> A2A.event_to_json(event)
+        _ -> %{"jsonrpc" => "2.0", "id" => id, "result" => A2A.event_to_json(event)}
+      end
 
     case send_sse(conn, n, body) do
-      {:ok, conn} -> send_events(conn, id, n + 1, rest)
+      {:ok, conn} -> send_events(conn, id, n + 1, rest, opts)
       {:error, conn} -> {:error, conn}
     end
   end

@@ -3,12 +3,12 @@
 [A2A](https://a2a-protocol.org) (Agent2Agent) lets a client delegate a whole
 job to an agent and follow it as a task, where MCP lets a client's model call
 your tools one at a time. Phantom serves A2A v1.0 agents from the same router
-as your MCP tools, over the JSON-RPC binding, with streaming over SSE and push
-notifications to webhooks.
+as your MCP tools, over the JSON-RPC and HTTP+JSON bindings, with streaming
+over SSE and push notifications to webhooks.
 
 | Phantom | You |
 |---|---|
-| Serves agent cards and the JSON-RPC methods, and validates requests | Implement each agent's `handle_message/2` |
+| Serves agent cards and the A2A methods, and validates requests | Implement each agent's `handle_message/2` |
 | Calls `connect/2` on every request, as for MCP | Authenticate, and assign what the session may use |
 | Streams the events you publish to clients, on any node | Store tasks, run the work, and publish each change |
 | Checks webhook URLs and delivers push notifications | Store push configs, and retry deliveries if you need to |
@@ -46,7 +46,7 @@ end
 ```
 
 Serve it. Mount `Phantom.A2A.Plug` without `Plug.Parsers`, so a request with
-invalid JSON gets the JSON-RPC error A2A requires:
+invalid JSON gets the error A2A requires:
 
 ```elixir
 # lib/my_app_web/router.ex
@@ -59,8 +59,9 @@ scope "/a2a" do
 end
 ```
 
-The card is at `/a2a/research/agent-card.json`, and the agent answers
-JSON-RPC at `POST /a2a/research`. Clients must send `A2A-Version: 1.0`. Try it
+The card is at `/a2a/research/agent-card.json`. The agent answers JSON-RPC at
+`POST /a2a/research` and HTTP+JSON below it, such as
+`POST /a2a/research/message:send`. Clients must send `A2A-Version: 1.0`. Try it
 with the [A2A Inspector](https://github.com/a2aproject/a2a-inspector).
 
 ## Tasks
@@ -283,7 +284,8 @@ end
 ## Authentication and tenants
 
 Each request calls `c:Phantom.Router.connect/2` with the conn, whose
-`body_params` hold the JSON-RPC request. Return `{:unauthorized, info}` for a
+`body_params` hold the request: the JSON-RPC request, or the same shape for
+HTTP+JSON. Return `{:unauthorized, info}` for a
 401 with `WWW-Authenticate`, or `{:forbidden, message}` for a 403. Agent cards
 stay public.
 
@@ -459,7 +461,7 @@ test agent; see `test/acts/README.md` in the repository.
 
 ## Telemetry
 
-Each JSON-RPC request is a `[:phantom, :a2a, :dispatch]` span, and each push
+Each request is a `[:phantom, :a2a, :dispatch]` span, and each push
 delivery a `[:phantom, :a2a, :push]` span. The dispatch metadata carries the
 W3C trace context the client sent in its `traceparent`, `tracestate`, and
 `baggage` headers, for your tracer. See `Phantom.A2A.Plug` and

@@ -7,8 +7,8 @@
   for machine clients that authenticate with the `client_credentials` grant.
 - New: serve [A2A](https://a2a-protocol.org) v1.0 agents. Declare them in a
   router with `agent "research", MyApp.Agents.Research`, implement them with
-  `Phantom.A2A.Agent`, and serve them with `Phantom.A2A.Plug` over JSON-RPC,
-  streaming over SSE with a pubsub. Agents store their own tasks and report
+  `Phantom.A2A.Agent`, and serve them with `Phantom.A2A.Plug` over the
+  JSON-RPC and HTTP+JSON bindings, streaming over SSE with a pubsub. Agents store their own tasks and report
   progress with `Phantom.A2A.publish/2`, numbering events with
   `Phantom.A2A.Events.apply/2` so a client that subscribes mid-task gets no
   duplicates. `Phantom.Session.allow_agents/2`
@@ -19,8 +19,8 @@
   networks. Agents can offer an extended card (`extended_card: true`) and
   declare protocol extensions, and requests and push deliveries emit
   `[:phantom, :a2a, :dispatch]` and `[:phantom, :a2a, :push]` telemetry spans.
-  Phantom passes the A2A conformance suite (ACTS) on JSON-RPC, apart from its
-  client tests.
+  Phantom passes the A2A conformance suite (ACTS) on both bindings, apart from
+  its client tests.
 - New: the [A2A guide](guides/a2a.md), with storing tasks in Ecto, running
   them with Oban, and retrying push deliveries.
 - New: `Phantom.Router.call_tool/4` calls a router's tool from your own code,

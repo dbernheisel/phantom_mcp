@@ -37,8 +37,9 @@ defmodule Phantom.Test.ACTS do
   def url(name), do: "http://127.0.0.1:#{Keyword.fetch!(@ports, name)}"
 
   @doc """
-  Run the suite over JSON-RPC. Returns `{exit_status, output, report}`, where
-  the report is the decoded ACTS report, or `nil` when none was written.
+  Run the suite over JSON-RPC and HTTP+JSON. Returns
+  `{exit_status, output, reports}`, with the decoded ACTS report of each
+  binding by its name, `"jsonrpc"` and `"rest"`.
   """
   def run(args \\ []) do
     itk = itk!()
@@ -64,6 +65,8 @@ defmodule Phantom.Test.ACTS do
           Path.join(@dir, "sut-behaviors.yaml"),
           "--transport",
           "jsonrpc",
+          "--transport",
+          "rest",
           "--out",
           out | args
         ],
@@ -72,14 +75,14 @@ defmodule Phantom.Test.ACTS do
         env: [{"NO_COLOR", "1"}]
       )
 
-    report =
-      case Path.wildcard(Path.join(out, "*.json")) do
-        [path] -> path |> File.read!() |> JSON.decode!()
-        [] -> nil
+    reports =
+      for path <- Path.wildcard(Path.join(out, "*.json")), into: %{} do
+        report = path |> File.read!() |> JSON.decode!()
+        {report["transport"], report}
       end
 
     File.rm_rf(out)
-    {status, output, report}
+    {status, output, reports}
   end
 
   @doc "The test ids in a report, by result"

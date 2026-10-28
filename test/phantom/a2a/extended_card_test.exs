@@ -75,7 +75,7 @@ defmodule Phantom.A2A.ExtendedCardTest do
                  %{"id" => "public"},
                  %{"id" => "admin", "description" => "Only for members"}
                ],
-               "supportedInterfaces" => [%{"url" => "http://www.example.com/extended"}],
+               "supportedInterfaces" => [%{"url" => "http://www.example.com/extended"} | _],
                "capabilities" => %{"extendedAgentCard" => true}
              }
            } = extended("extended")

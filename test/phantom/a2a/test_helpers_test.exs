@@ -40,7 +40,7 @@ defmodule Phantom.A2A.TestHelpersTest do
   test "get_card/3" do
     assert %{
              "name" => "Echo",
-             "supportedInterfaces" => [%{"url" => "http://www.example.com/echo"}]
+             "supportedInterfaces" => [%{"url" => "http://www.example.com/echo"} | _]
            } =
              get_card(Router, "echo")
   end

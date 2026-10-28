@@ -44,6 +44,69 @@ defmodule Phantom.A2A.Error do
 
   defp new(code, message), do: %__MODULE__{code: code, message: message}
 
+  @http_statuses %{
+    -32001 => 404,
+    -32002 => 400,
+    -32003 => 400,
+    -32004 => 400,
+    -32005 => 400,
+    -32007 => 400,
+    -32008 => 400,
+    -32009 => 400,
+    -32700 => 400,
+    -32600 => 400,
+    -32601 => 501,
+    -32602 => 400
+  }
+
+  @grpc_statuses %{
+    -32001 => "NOT_FOUND",
+    -32601 => "UNIMPLEMENTED",
+    -32002 => "FAILED_PRECONDITION",
+    -32003 => "FAILED_PRECONDITION",
+    -32004 => "FAILED_PRECONDITION",
+    -32007 => "FAILED_PRECONDITION",
+    -32008 => "FAILED_PRECONDITION",
+    -32009 => "FAILED_PRECONDITION",
+    -32005 => "INVALID_ARGUMENT",
+    -32700 => "INVALID_ARGUMENT",
+    -32600 => "INVALID_ARGUMENT",
+    -32602 => "INVALID_ARGUMENT"
+  }
+
+  @grpc_by_http %{
+    400 => "INVALID_ARGUMENT",
+    401 => "UNAUTHENTICATED",
+    403 => "PERMISSION_DENIED",
+    404 => "NOT_FOUND",
+    405 => "UNIMPLEMENTED",
+    413 => "INVALID_ARGUMENT",
+    501 => "UNIMPLEMENTED"
+  }
+
+  @doc false
+  # The HTTP status of an error on the HTTP+JSON binding.
+  def http_status(%__MODULE__{code: code}), do: Map.get(@http_statuses, code, 500)
+
+  @doc false
+  # A `google.rpc.Status` body for the HTTP+JSON binding. An explicit HTTP
+  # status, such as 401 from `connect/2`, decides the gRPC status.
+  def to_status_json(%__MODULE__{} = error, http_status) do
+    status =
+      if http_status == http_status(error),
+        do: Map.get(@grpc_statuses, error.code, "INTERNAL"),
+        else: Map.get(@grpc_by_http, http_status, "INTERNAL")
+
+    %{
+      "error" => %{
+        "code" => http_status,
+        "status" => status,
+        "message" => error.message,
+        "details" => to_json(error)["data"]
+      }
+    }
+  end
+
   @doc false
   def to_json(%__MODULE__{} = error) do
     %{

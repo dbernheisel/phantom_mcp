@@ -336,6 +336,11 @@ defmodule Phantom.A2A.PlugTest do
                    "url" => "http://www.example.com/a2a/research",
                    "protocolBinding" => "JSONRPC",
                    "protocolVersion" => "1.0"
+                 },
+                 %{
+                   "url" => "http://www.example.com/a2a/research",
+                   "protocolBinding" => "HTTP+JSON",
+                   "protocolVersion" => "1.0"
                  }
                ],
                "skills" => [
@@ -354,14 +359,15 @@ defmodule Phantom.A2A.PlugTest do
     end
 
     test "serves nested agent paths" do
-      assert {200, %{"name" => "Minimal", "skills" => [], "supportedInterfaces" => [interface]}} =
+      assert {200,
+              %{"name" => "Minimal", "skills" => [], "supportedInterfaces" => [interface | _]}} =
                get_json("/a2a/teams/minimal/agent-card.json")
 
       assert interface["url"] == "http://www.example.com/a2a/teams/minimal"
     end
 
     test "serves the well-known agent with the mount's URL" do
-      assert {200, %{"name" => "Research", "supportedInterfaces" => [%{"url" => url}]}} =
+      assert {200, %{"name" => "Research", "supportedInterfaces" => [%{"url" => url} | _]}} =
                get_json("/.well-known/agent-card.json")
 
       assert url == "http://www.example.com/a2a/research"
