@@ -437,7 +437,13 @@ Its card lists each tool as a skill, and an extension with the tools' input
 schemas. A client calls a tool with a message whose data part names it,
 `{"tool": "search_studies", "arguments": {"query": "churn"}}`, and gets a
 message with the tool's result. Messages that name no tool go to the
-`:fallback` agent, if you give one. See `Phantom.A2A.Bridge`.
+`:fallback` agent, if you give one.
+
+When your router implements the MCP Tasks callbacks, a tool that answers with
+a `Phantom.Tasks` becomes an A2A task: `GetTask`, `CancelTask`, and answers to
+its input requests go to your router, and each
+`Phantom.Tracker.notify_task_updated/1` reaches A2A clients waiting on it. See
+`Phantom.A2A.Bridge`.
 
 For an agent that decides what to do itself, call tools from its handler.
 `Phantom.Router.call_tool/4` runs a tool with the session's assigns and

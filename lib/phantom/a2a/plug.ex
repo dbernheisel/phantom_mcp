@@ -485,6 +485,10 @@ defmodule Phantom.A2A.Plug do
       # The public card, for GetExtendedAgentCard.
       opts = Map.put(opts, :card, fn -> card(conn, opts, agent, mount_path(conn)) end)
 
+      # How to fetch an MCP task again after `notify_task_updated/1`.
+      refetch = if agent.handler.follows_mcp_tasks?(), do: &agent.handler.get_task(&1, ctx)
+      opts = Map.put(opts, :refetch, refetch)
+
       meta = %{
         router: opts.router,
         agent_id: agent.id,
@@ -620,6 +624,7 @@ defmodule Phantom.A2A.Plug do
             conn |> start_stream() |> stream(id, events, task, opts)
           after
             if adopted, do: A2A.unsubscribe(adopted)
+            if task, do: unfollow_mcp(task.id, opts)
           end
 
         {:error, %Error{} = error} ->
@@ -684,6 +689,7 @@ defmodule Phantom.A2A.Plug do
             {:ok, %{"message" => Message.to_json(message)}}
 
           {:ok, %Task{} = task} ->
+            follow_mcp(task.id, opts)
             {task, adopted} = adopt_task(task, agent, ctx)
 
             try do
@@ -696,6 +702,7 @@ defmodule Phantom.A2A.Plug do
               end
             after
               if adopted, do: A2A.unsubscribe(adopted)
+              unfollow_mcp(task.id, opts)
             end
 
           error ->
@@ -717,6 +724,7 @@ defmodule Phantom.A2A.Plug do
              {:ok, [message], nil, nil}
 
            {:ok, %Task{} = task} ->
+             follow_mcp(task.id, opts)
              {task, adopted} = adopt_task(task, agent, ctx)
              {:ok, [task], task, adopted}
 
@@ -733,14 +741,18 @@ defmodule Phantom.A2A.Plug do
 
       {:stream, ctx.task_ref,
        fn ->
+         follow_mcp(id, opts)
+
          case existing_task(id, agent, ctx, allow_terminal: true) do
            {:ok, %Task{status: %{state: state}}} when state in @terminal_states ->
+             unfollow_mcp(id, opts)
              {:error, Error.unsupported_operation("Task #{id} is already finished")}
 
            {:ok, task} ->
              {:ok, [task], task, nil}
 
            error ->
+             unfollow_mcp(id, opts)
              error
          end
        end}
@@ -1136,17 +1148,20 @@ defmodule Phantom.A2A.Plug do
         {:ok, task}
 
       true ->
-        await_events(task, System.monotonic_time(:millisecond) + opts.blocking_timeout)
+        await_events(task, System.monotonic_time(:millisecond) + opts.blocking_timeout, opts)
     end
   end
 
-  defp await_events(task, deadline) do
+  defp await_events(task, deadline, opts) do
     receive do
       {:phantom_a2a_event, event} ->
-        case follow(task, event) do
-          :seen -> await_events(task, deadline)
-          {:ok, task} -> if settled?(task), do: {:ok, task}, else: await_events(task, deadline)
-          {:error, :unknown_artifact} -> {:error, Error.invalid_agent_response()}
+        await_event(task, event, deadline, opts)
+
+      {:"$gen_cast", {:task_updated, task_id}}
+      when task_id == task.id and is_function(opts.refetch) ->
+        case opts.refetch.(task_id) do
+          {:ok, %Task{} = fetched} -> await_event(task, fetched, deadline, opts)
+          _gone -> await_events(task, deadline, opts)
         end
     after
       max(deadline - System.monotonic_time(:millisecond), 0) -> {:ok, task}
@@ -1169,6 +1184,25 @@ defmodule Phantom.A2A.Plug do
   defp numbered?(%Message{}), do: false
   defp numbered?(%Task{sequence: sequence}), do: sequence > 0
   defp numbered?(%{sequence: sequence}), do: is_integer(sequence)
+
+  defp await_event(task, event, deadline, opts) do
+    case follow(task, event) do
+      :seen -> await_events(task, deadline, opts)
+      {:ok, task} -> if settled?(task), do: {:ok, task}, else: await_events(task, deadline, opts)
+      {:error, :unknown_artifact} -> {:error, Error.invalid_agent_response()}
+    end
+  end
+
+  # Listen for `Phantom.Tracker.notify_task_updated/1` on an MCP task.
+  defp follow_mcp(task_id, %{refetch: refetch}) when is_function(refetch),
+    do: Phantom.Tracker.subscribe_task(task_id)
+
+  defp follow_mcp(_task_id, _opts), do: :ok
+
+  defp unfollow_mcp(task_id, %{refetch: refetch}) when is_function(refetch),
+    do: Phantom.Tracker.unsubscribe_task(task_id)
+
+  defp unfollow_mcp(_task_id, _opts), do: :ok
 
   ## SSE
 
@@ -1195,6 +1229,15 @@ defmodule Phantom.A2A.Plug do
 
   defp stream_events(conn, id, n, task, opts) do
     receive do
+      {:"$gen_cast", {:task_updated, task_id}}
+      when task_id == task.id and is_function(opts.refetch) ->
+        case opts.refetch.(task_id) do
+          {:ok, %Task{} = fetched} -> send(self(), {:phantom_a2a_event, fetched})
+          _gone -> :ok
+        end
+
+        stream_events(conn, id, n, task, opts)
+
       {:phantom_a2a_event, event} ->
         event = fill_ids(event, task)
 

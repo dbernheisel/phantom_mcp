@@ -170,6 +170,15 @@ defmodule Phantom.A2A.Agent do
   """
   @callback extended_card(Card.t(), Context.t()) :: {:ok, Card.t()} | {:error, Error.t()}
 
+  @doc """
+  Whether the agent's tasks are MCP tasks (`Phantom.Tasks`), updated with
+  `Phantom.Tracker.notify_task_updated/1`. While a request follows one of its
+  tasks, Phantom listens for those notifications through `Phantom.Tracker`
+  and sends the task from `c:get_task/2` after each. `Phantom.A2A.Bridge`
+  does. Defaults to `false`.
+  """
+  @callback follows_mcp_tasks?() :: boolean()
+
   defmacro __using__(opts) do
     quote location: :keep, generated: true do
       @behaviour Phantom.A2A.Agent
@@ -214,7 +223,11 @@ defmodule Phantom.A2A.Agent do
       @impl Phantom.A2A.Agent
       def card(card, _route), do: card
 
+      @impl Phantom.A2A.Agent
+      def follows_mcp_tasks?, do: false
+
       defoverridable card: 2,
+                     follows_mcp_tasks?: 0,
                      extended_card: 2,
                      get_task: 2,
                      cancel_task: 2,

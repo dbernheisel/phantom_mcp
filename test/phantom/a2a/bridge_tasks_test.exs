@@ -12,6 +12,19 @@ defmodule Phantom.A2A.BridgeTasksTest.Tools do
     end
   end
 
+  # Finishes a moment later and notifies listeners, as a job would.
+  def slow_export(_params, session) do
+    task = new(status: :working, status_message: "Exporting")
+
+    spawn(fn ->
+      Process.sleep(100)
+      finish(task.id, "Slow report ready")
+      Phantom.Tracker.notify_task_updated(task.id)
+    end)
+
+    {:reply, task, session}
+  end
+
   def confirm(_params, session) do
     elicit =
       Phantom.Elicit.form(%{
@@ -54,6 +67,7 @@ defmodule Phantom.A2A.BridgeTasksTest.Router do
 
   tool :export, Tools, description: "Export a report", input_schema: %{}
   tool :confirm, Tools, description: "Ask before acting", input_schema: %{}
+  tool :slow_export, Tools, description: "Export a report later", input_schema: %{}
 
   agent "tools", Phantom.A2A.Bridge
 
@@ -92,6 +106,13 @@ defmodule Phantom.A2A.BridgeTasksTest do
     owner = spawn(fn -> Process.sleep(:infinity) end)
     :ets.new(__MODULE__, [:named_table, :public, :set])
     :ets.give_away(__MODULE__, owner, nil)
+    start_supervised!({Phoenix.PubSub, name: Phantom.A2A.BridgeTasksTest.PubSub})
+
+    start_supervised!(
+      {Phantom.Tracker,
+       [name: Phantom.Tracker, pubsub_server: Phantom.A2A.BridgeTasksTest.PubSub]}
+    )
+
     :ok
   end
 
@@ -181,5 +202,70 @@ defmodule Phantom.A2A.BridgeTasksTest do
 
   test "without the router's task callbacks, tools answer at once" do
     assert {:message, %{"parts" => [%{"text" => "exported now"}]}} = call(NoTasksRouter, "export")
+  end
+
+  describe "following a task the tool updates" do
+    @plug_opts [
+      router: Router,
+      pubsub: Phantom.A2A.BridgeTasksTest.PubSub,
+      blocking_timeout: 2_000
+    ]
+
+    defp rpc(method, params) do
+      body = %{"jsonrpc" => "2.0", "id" => 1, "method" => method, "params" => params}
+
+      :post
+      |> Plug.Test.conn("/tools", JSON.encode!(body))
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("a2a-version", "1.0")
+      |> Phantom.A2A.Plug.call(Phantom.A2A.Plug.init(@plug_opts))
+    end
+
+    defp slow_export,
+      do: %{"message" => Message.to_json(Message.user([Part.data(%{"tool" => "slow_export"})]))}
+
+    defp events(conn) do
+      for "id: " <> event <- String.split(conn.resp_body, "\n\n", trim: true) do
+        [_id, "data: " <> data] = String.split(event, "\n")
+        JSON.decode!(data)["result"]
+      end
+    end
+
+    test "SendMessage waits for notify_task_updated/1" do
+      assert %{
+               "result" => %{
+                 "task" => %{
+                   "status" => %{"state" => "TASK_STATE_COMPLETED"},
+                   "artifacts" => [%{"parts" => [%{"text" => "Slow report ready"}]}]
+                 }
+               }
+             } =
+               JSON.decode!(rpc("SendMessage", slow_export()).resp_body)
+    end
+
+    test "SendStreamingMessage streams the updated task" do
+      assert [
+               %{"task" => %{"id" => id, "status" => %{"state" => "TASK_STATE_WORKING"}}},
+               %{"task" => %{"id" => id, "status" => %{"state" => "TASK_STATE_COMPLETED"}}}
+             ] = events(rpc("SendStreamingMessage", slow_export()))
+    end
+
+    test "SubscribeToTask streams the updated task" do
+      {:task, %{"id" => id}} = call(Router, "slow_export")
+
+      assert [
+               %{"task" => %{"status" => %{"state" => "TASK_STATE_WORKING"}}},
+               %{"task" => %{"status" => %{"state" => "TASK_STATE_COMPLETED"}}}
+             ] = events(rpc("SubscribeToTask", %{"id" => id}))
+
+      assert [] = Phantom.Tracker.list_task_listeners()
+    end
+
+    test "a missing task leaves nothing listening" do
+      assert %{"error" => %{"code" => -32001}} =
+               JSON.decode!(rpc("SubscribeToTask", %{"id" => "nope"}).resp_body)
+
+      assert [] = Phantom.Tracker.list_task_listeners()
+    end
   end
 end

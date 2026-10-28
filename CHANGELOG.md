@@ -30,7 +30,8 @@
 - New: `Phantom.A2A.Bridge` serves a router's MCP tools as an A2A agent.
   Mount it with `agent "tools", Phantom.A2A.Bridge`, and clients call a tool
   with a data part naming it. Tools that answer with a `Phantom.Tasks` become
-  A2A tasks backed by the router's task callbacks.
+  A2A tasks backed by the router's task callbacks, and A2A clients waiting on
+  them get each `Phantom.Tracker.notify_task_updated/1`.
 - New: `Phantom.Router.call_tool/4` takes `tasks: true` to let a tool answer
   with a `Phantom.Tasks`.
 - New: `c:Phantom.A2A.Agent.card/2` adjusts an agent's card for its route.

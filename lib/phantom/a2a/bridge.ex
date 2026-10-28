@@ -44,7 +44,10 @@ defmodule Phantom.A2A.Bridge do
       the task with a data part `{"inputResponses": {key: response}}`, which
       goes to `c:Phantom.Router.update_task/3`;
     * `GetTask` and `CancelTask` go to `c:Phantom.Router.get_task/2` and
-      `c:Phantom.Router.cancel_task/2`.
+      `c:Phantom.Router.cancel_task/2`;
+    * after each `Phantom.Tracker.notify_task_updated/1` for the task, a
+      waiting `SendMessage` or a stream gets the task again. This needs
+      `Phantom.Tracker` in your supervision tree.
 
   Tools that answer from another process (`{:noreply, session}`) block the
   request until they respond. A tool that elicits without a task gets
@@ -132,6 +135,9 @@ defmodule Phantom.A2A.Bridge do
   end
 
   ## MCP tasks
+
+  @impl Phantom.A2A.Agent
+  def follows_mcp_tasks?, do: true
 
   @impl Phantom.A2A.Agent
   def get_task(task_id, ctx) do
