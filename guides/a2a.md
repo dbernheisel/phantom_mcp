@@ -383,8 +383,9 @@ addresses. Delivery checks the URL again, connects to the address it checked,
 and doesn't follow redirects. The credentials in a config are the client's
 secrets for its own webhook, so store them encrypted.
 
-By default each event is delivered from a supervised process, with retries held
-in memory, so they end with the node. For delivery that survives a restart,
+By default each webhook gets a task's events in order, from a supervised
+process. Up to 100 events wait for each webhook in memory, so they end with
+the node. For delivery that survives a restart,
 override `c:Phantom.A2A.Agent.deliver_push/3` and deliver from a job:
 
 ```elixir

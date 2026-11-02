@@ -58,13 +58,20 @@ defmodule Phantom.Router.A2A do
 
   @doc "The route for a request path, static routes first, with its path params"
   def match(router, segments) do
-    {static, dynamic} = Enum.split_with(router.__phantom__(:info).agents, &(not &1.params?))
+    with :error <- match(router, segments, false), do: match(router, segments, true)
+  end
 
-    Enum.find_value(static ++ dynamic, :error, fn route ->
-      case match_segments(route.segments, segments, %{}) do
-        {:ok, params} -> {:ok, route, params}
-        :error -> nil
-      end
+  @doc "The static (`false`) or dynamic (`true`) route for a request path"
+  def match(router, segments, params?) do
+    Enum.find_value(router.__phantom__(:info).agents, :error, fn
+      %{params?: ^params?} = route ->
+        case match_segments(route.segments, segments, %{}) do
+          {:ok, params} -> {:ok, route, params}
+          :error -> nil
+        end
+
+      _route ->
+        nil
     end)
   end
 

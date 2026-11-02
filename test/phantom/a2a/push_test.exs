@@ -123,6 +123,26 @@ defmodule Phantom.A2A.PushTest do
     :ok
   end
 
+  defp eventually(fun, tries \\ 50) do
+    cond do
+      fun.() ->
+        true
+
+      tries == 0 ->
+        false
+
+      true ->
+        Process.sleep(20)
+        eventually(fun, tries - 1)
+    end
+  end
+
+  defp deliveries do
+    for {_id, pid, _type, [Phantom.A2A.Push.Delivery]} <-
+          DynamicSupervisor.which_children(Phantom.A2A.PushSupervisor),
+        do: pid
+  end
+
   defp rpc(agent, method, params) do
     body = %{"jsonrpc" => "2.0", "id" => 1, "method" => method, "params" => params}
 
@@ -137,7 +157,8 @@ defmodule Phantom.A2A.PushTest do
 
   describe "validate_url/2 with IPv6 literals" do
     for host <- ~w[::7f00:1 ::1 ::ffff:127.0.0.1 2002:7f00:1:: 2002:a00:1:: 64:ff9b::7f00:1
-                   fec0::1 fc00::1 fe80::1 ff02::1 2001:db8::1 2001:0:1::1] do
+                   fec0::1 fc00::1 fe80::1 ff02::1 2001:db8::1 2001:0:1::1
+                   64:ff9b:1::808:808 ::ffff:0:7f00:1 100::1] do
       test "refuses #{host}" do
         assert {:error, "resolves to a private address"} =
                  Push.validate_url("https://[#{unquote(host)}]/hook")
@@ -172,6 +193,18 @@ defmodule Phantom.A2A.PushTest do
       assert PushConfig.to_json(config) == json
       assert {:error, _} = PushConfig.from_json(%{"taskId" => "t1"})
     end
+
+    test "refuses header values with line breaks" do
+      url = "https://example.com/hook"
+
+      for json <- [
+            %{"url" => url, "token" => "tok\r\nx-injected: 1"},
+            %{"url" => url, "authentication" => %{"scheme" => "Bearer\n"}},
+            %{"url" => url, "authentication" => %{"scheme" => "Bearer", "credentials" => "a\rb"}}
+          ] do
+        assert {:error, _} = PushConfig.from_json(json), inspect(json)
+      end
+    end
   end
 
   describe "validate_url/2" do
@@ -195,6 +228,9 @@ defmodule Phantom.A2A.PushTest do
             "https://[fd00::1]/hook",
             "https://[fe80::1]/hook",
             "https://[::ffff:127.0.0.1]/hook",
+            "https://192.88.99.1/hook",
+            "https://198.51.100.1/hook",
+            "https://203.0.113.1/hook",
             "https://localhost/hook",
             "not a url"
           ] do
@@ -403,14 +439,11 @@ defmodule Phantom.A2A.PushTest do
       assert :ok = Push.deliver_async(config, Phantom.A2A.Task.status(:working), ref)
       assert_receive :attempt, 2_000
 
-      assert [delivery] =
-               for(
-                 {_id, pid, _type, [Phantom.A2A.Push.Delivery]} <-
-                   DynamicSupervisor.which_children(Phantom.A2A.PushSupervisor),
-                 do: pid
-               )
+      assert [delivery] = deliveries()
 
-      assert %{backoff: []} = :sys.get_state(delivery, 100)
+      assert eventually(fn ->
+               match?(%{attempt: :waiting, backoff: []}, :sys.get_state(delivery))
+             end)
 
       monitor = Process.monitor(delivery)
       :ok = DynamicSupervisor.terminate_child(Phantom.A2A.PushSupervisor, delivery)
@@ -467,6 +500,127 @@ defmodule Phantom.A2A.PushTest do
                )
 
       assert_receive {:webhook, "/hook", _headers, _body}
+    end
+
+    test "telemetry gets the config's ID, not its secrets", %{url: url} do
+      test = self()
+      handler = "push-telemetry-#{inspect(test)}"
+
+      :telemetry.attach(
+        handler,
+        [:phantom, :a2a, :push, :stop],
+        fn _event, _measurements, meta, _config -> send(test, {:telemetry, meta}) end,
+        nil
+      )
+
+      config = %PushConfig{
+        id: "c1",
+        task_id: "t1",
+        url: url,
+        token: "tok-secret",
+        authentication: %{scheme: "Bearer", credentials: "cred-secret"}
+      }
+
+      assert :ok =
+               Push.deliver(config, Phantom.A2A.Task.status(:working),
+                 allow_private_networks: true
+               )
+
+      assert_receive {:telemetry, %{config_id: "c1", task_id: "t1"} = meta}
+      refute inspect(meta) =~ "secret"
+    after
+      :telemetry.detach("push-telemetry-#{inspect(self())}")
+    end
+
+    test "doesn't wait for the webhook's answer body" do
+      plug = fn conn, _opts ->
+        conn = Plug.Conn.send_chunked(conn, 200)
+        {:ok, conn} = Plug.Conn.chunk(conn, String.duplicate("x", 1_000))
+        Process.sleep(5_000)
+        conn
+      end
+
+      {:ok, pid} =
+        start_supervised(
+          {Bandit, plug: plug, ip: :loopback, port: 0, startup_log: false},
+          id: :streaming_webhook
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+      config = %PushConfig{id: "c1", task_id: "t1", url: "http://127.0.0.1:#{port}/hook"}
+
+      {time, result} =
+        :timer.tc(fn ->
+          Push.deliver(config, Phantom.A2A.Task.status(:working), allow_private_networks: true)
+        end)
+
+      assert result == :ok
+      assert time < 2_000_000
+    end
+
+    test "delivers a webhook's events in order, one at a time" do
+      test = self()
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+      plug = fn conn, _opts ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        if Agent.get_and_update(calls, &{&1, &1 + 1}) == 0, do: Process.sleep(200)
+        %{"statusUpdate" => %{"status" => %{"state" => state}}} = JSON.decode!(body)
+        send(test, {:state, state})
+        Plug.Conn.send_resp(conn, 200, "")
+      end
+
+      {:ok, pid} =
+        start_supervised(
+          {Bandit, plug: plug, ip: :loopback, port: 0, startup_log: false},
+          id: :ordered_webhook
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+      config = %PushConfig{id: "c1", task_id: "ordered", url: "http://127.0.0.1:#{port}/hook"}
+
+      ref = %Phantom.A2A.TaskRef{
+        router: Phantom.A2A.PushTest.RetryRouter,
+        agent_id: "push",
+        task_id: "ordered"
+      }
+
+      for state <- [:submitted, :working, :completed],
+          do: assert(:ok = Push.deliver_async(config, Phantom.A2A.Task.status(state), ref))
+
+      assert [_one] = deliveries()
+
+      assert_receive {:state, "TASK_STATE_SUBMITTED"}, 2_000
+      assert_receive {:state, "TASK_STATE_WORKING"}, 2_000
+      assert_receive {:state, "TASK_STATE_COMPLETED"}, 2_000
+    end
+
+    test "keeps a limited number of events for a webhook" do
+      plug = fn conn, _opts -> Plug.Conn.send_resp(conn, 503, "") end
+
+      {:ok, pid} =
+        start_supervised(
+          {Bandit, plug: plug, ip: :loopback, port: 0, startup_log: false},
+          id: :full_webhook
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+      config = %PushConfig{id: "c1", task_id: "full", url: "http://127.0.0.1:#{port}/hook"}
+
+      ref = %Phantom.A2A.TaskRef{
+        router: Phantom.A2A.PushTest.SlowRetryRouter,
+        agent_id: "push",
+        task_id: "full"
+      }
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        for _ <- 1..150,
+            do: assert(:ok = Push.deliver_async(config, Phantom.A2A.Task.status(:working), ref))
+      end)
+
+      assert [delivery] = deliveries()
+      assert :queue.len(:sys.get_state(delivery).queue) == 100
+      :ok = DynamicSupervisor.terminate_child(Phantom.A2A.PushSupervisor, delivery)
     end
 
     test "an agent can deliver pushes itself" do

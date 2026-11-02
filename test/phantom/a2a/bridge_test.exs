@@ -21,8 +21,10 @@ defmodule Phantom.A2A.BridgeTest.Router do
 
   tool :explode, description: "Fails", input_schema: %{}
   tool :secret, description: "Not bridged", input_schema: %{}
+  tool :leak, description: "Fails with an internal term", input_schema: %{}
 
   agent "tools", Phantom.A2A.Bridge, tools: ~w[echo stats explode]
+  agent "leaky", Phantom.A2A.Bridge, tools: ~w[leak]
   agent "all", Phantom.A2A.Bridge, name: "Every tool", description: "All of them"
   agent "chat", Phantom.A2A.Bridge, tools: ~w[echo], fallback: Phantom.A2A.BridgeTest.Chat
 
@@ -30,6 +32,7 @@ defmodule Phantom.A2A.BridgeTest.Router do
   def stats(_params, session), do: {:reply, Tool.text(%{count: 3}), session}
   def explode(_params, session), do: {:reply, Tool.error("It broke"), session}
   def secret(_params, session), do: {:reply, Tool.text("secret"), session}
+  def leak(_params, session), do: {:error, {:db, "postgres://admin:hunter2@db"}, session}
 
   def connect(session, conn) do
     case Plug.Conn.get_req_header(conn, "x-tools") do
@@ -82,7 +85,7 @@ defmodule Phantom.A2A.BridgeTest do
     assert %{"name" => "Every tool", "description" => "All of them", "skills" => skills} =
              get_card(Router, "all")
 
-    assert Enum.map(skills, & &1["id"]) == ~w[echo explode secret stats]
+    assert Enum.map(skills, & &1["id"]) == ~w[echo explode leak secret stats]
   end
 
   test "a data part naming a tool calls it" do
@@ -109,6 +112,13 @@ defmodule Phantom.A2A.BridgeTest do
 
     assert {:error, %{"code" => _}} =
              call("tools", "echo", %{"text" => "hi"}, headers: [{"x-tools", "stats"}])
+  end
+
+  test "an internal error doesn't reach the client" do
+    ExUnit.CaptureLog.capture_log(fn ->
+      assert {:error, %{"code" => -32603} = error} = call("leaky", "leak", %{})
+      refute JSON.encode!(error) =~ "hunter2"
+    end)
   end
 
   test "free text goes to the fallback, or gets the list of tools" do

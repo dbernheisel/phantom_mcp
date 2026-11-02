@@ -39,20 +39,30 @@ defmodule Phantom.A2A.PushConfig do
   def from_json(_json), do: {:error, "push notification config needs a url"}
 
   defp check_strings(json) do
-    if Enum.all?(~w[id taskId token tenant], &(is_nil(json[&1]) or is_binary(json[&1]))),
-      do: :ok,
-      else: {:error, "push notification config has a field of the wrong type"}
+    cond do
+      not Enum.all?(~w[id taskId token tenant], &(is_nil(json[&1]) or is_binary(json[&1]))) ->
+        {:error, "push notification config has a field of the wrong type"}
+
+      not header_value?(json["token"]) ->
+        {:error, "push notification token has a line break"}
+
+      true ->
+        :ok
+    end
   end
 
   defp authentication(nil), do: {:ok, nil}
 
   defp authentication(%{"scheme" => scheme, "credentials" => credentials})
-       when is_binary(scheme) and (is_binary(credentials) or is_nil(credentials)),
-       do: {:ok, %{scheme: scheme, credentials: credentials}}
+       when is_binary(scheme) and (is_binary(credentials) or is_nil(credentials)) do
+    if header_value?(scheme) and header_value?(credentials),
+      do: {:ok, %{scheme: scheme, credentials: credentials}},
+      else: {:error, "authentication has a line break"}
+  end
 
   defp authentication(%{"scheme" => scheme} = json)
        when is_binary(scheme) and not is_map_key(json, "credentials"),
-       do: {:ok, %{scheme: scheme, credentials: nil}}
+       do: authentication(Map.put(json, "credentials", nil))
 
   defp authentication(_json), do: {:error, "authentication needs a scheme"}
 
@@ -72,4 +82,8 @@ defmodule Phantom.A2A.PushConfig do
           })
     })
   end
+
+  # These values go into webhook request headers.
+  defp header_value?(nil), do: true
+  defp header_value?(value), do: not String.contains?(value, ["\r", "\n", <<0>>])
 end

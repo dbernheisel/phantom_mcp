@@ -15,15 +15,17 @@ defmodule Phantom.A2A.Push do
   Set `a2a: [allow_private_push_urls: true]` on the router to allow `http` and
   private addresses, such as in development.
 
-  A delivery that fails on the network or with a 408, 429, or 5xx answer is
-  retried after 1, 5, and 30 seconds. Set `a2a: [push_retry_backoff: [...]]` on
-  the router to change the delays, in milliseconds. Each attempt runs on its
-  own, so events can arrive out of order; the backoff also ends with the node.
-  For ordered or durable delivery, override
-  `c:Phantom.A2A.Agent.deliver_push/3`.
+  Each webhook gets a task's events in order, one at a time. A delivery that
+  fails on the network or with a 408, 429, or 5xx answer is retried after 1, 5,
+  and 30 seconds. Set `a2a: [push_retry_backoff: [...]]` on the router to change
+  the delays, in milliseconds. Up to 100 events wait for each webhook, and later
+  events are dropped. Events that wait are lost when the node stops. For durable
+  delivery, override `c:Phantom.A2A.Agent.deliver_push/3`.
+
+  Phantom doesn't read the body of a 200 answer.
 
   Each delivery emits a `[:phantom, :a2a, :push]` telemetry span, with
-  metadata `~w[config task_id url event]a` and, on `:stop`, `:result`.
+  metadata `~w[config_id task_id url event]a` and, on `:stop`, `:result`.
   """
 
   import Bitwise
@@ -50,7 +52,7 @@ defmodule Phantom.A2A.Push do
   2xx answer. Takes the options of `validate_url/2`.
   """
   def deliver(%PushConfig{} = config, event, opts \\ []) do
-    meta = %{config: config, task_id: config.task_id, url: config.url, event: event}
+    meta = %{config_id: config.id, task_id: config.task_id, url: config.url, event: event}
 
     :telemetry.span([:phantom, :a2a, :push], meta, fn ->
       result = post(config, event, opts)
@@ -59,8 +61,6 @@ defmodule Phantom.A2A.Push do
   end
 
   defp post(config, event, opts) do
-    {:ok, _apps} = Application.ensure_all_started([:inets, :ssl])
-
     with {:ok, uri, [address | _]} <- resolve(config.url, opts) do
       request = {
         address_url(uri, address),
@@ -71,38 +71,54 @@ defmodule Phantom.A2A.Push do
 
       http_opts = [timeout: @timeout, connect_timeout: @timeout, autoredirect: false] ++ ssl(uri)
 
-      case :httpc.request(:post, request, http_opts, [body_format: :binary], httpc_profile()) do
-        {:ok, {{_version, status, _reason}, _headers, _body}} when status in 200..299 -> :ok
-        {:ok, {{_version, status, _reason}, _headers, _body}} -> {:error, {:status, status}}
+      case :httpc.request(:post, request, http_opts, [sync: false, stream: :self], @profile) do
+        {:ok, request_id} -> await_answer(request_id)
         {:error, reason} -> {:error, reason}
       end
     end
   end
 
-  # A profile of its own, so a webhook with only an IPv6 address is reachable
-  # without changing the application's default `:httpc` profile.
-  defp httpc_profile do
+  # `:httpc` streams only the body of a 200 answer.
+  defp await_answer(request_id) do
+    receive do
+      {:http, {^request_id, :stream_start, _headers}} ->
+        :httpc.cancel_request(request_id, @profile)
+        :ok
+
+      {:http, {^request_id, {{_version, status, _reason}, _headers, _body}}}
+      when status in 200..299 ->
+        :ok
+
+      {:http, {^request_id, {{_version, status, _reason}, _headers, _body}}} ->
+        {:error, {:status, status}}
+
+      {:http, {^request_id, {:error, reason}}} ->
+        {:error, reason}
+    after
+      2 * @timeout ->
+        :httpc.cancel_request(request_id, @profile)
+        {:error, :timeout}
+    end
+  end
+
+  @doc false
+  # This profile reaches IPv6-only webhooks and keeps the default `:httpc` profile unchanged.
+  def start_profile do
     case :inets.start(:httpc, profile: @profile) do
       {:ok, _pid} -> :httpc.set_options([ipfamily: :inet6fb4], @profile)
       {:error, {:already_started, _pid}} -> :ok
     end
-
-    @profile
   end
 
   @doc false
   # The default `c:Phantom.A2A.Agent.deliver_push/3`.
-  def deliver_async(%PushConfig{} = config, event, %TaskRef{router: router}) do
+  def deliver_async(%PushConfig{} = config, event, %TaskRef{router: router} = ref) do
     a2a = router.__phantom__(:info).a2a
     opts = [allow_private_networks: a2a[:allow_private_push_urls] == true]
     backoff = Keyword.get(a2a, :push_retry_backoff, @retry_backoff)
+    key = {router, ref.agent_id, config.task_id, config.id}
 
-    {:ok, _pid} =
-      DynamicSupervisor.start_child(
-        Phantom.A2A.PushSupervisor,
-        {Phantom.A2A.Push.Delivery, {config, event, opts, backoff}}
-      )
-
+    Phantom.A2A.Push.Delivery.push(key, {config, event}, opts, backoff)
     :ok
   end
 
@@ -164,13 +180,20 @@ defmodule Phantom.A2A.Push do
       (a == 172 and b in 16..31) or
       (a == 192 and b == 168) or
       (a == 192 and b == 0 and c in [0, 2]) or
-      (a == 198 and b in 18..19)
+      (a == 192 and b == 88 and c == 99) or
+      (a == 198 and b in 18..19) or
+      (a == 198 and b == 51 and c == 100) or
+      (a == 203 and b == 0 and c == 113)
   end
 
   # Unspecified, loopback, and the deprecated IPv4-compatible range.
   defp private?({0, 0, 0, 0, 0, 0, _, _}), do: true
   defp private?({0, 0, 0, 0, 0, 0xFFFF, x, y}), do: private?(v4(x, y))
+  defp private?({0, 0, 0, 0, 0xFFFF, 0, x, y}), do: private?(v4(x, y))
   defp private?({0x64, 0xFF9B, 0, 0, 0, 0, x, y}), do: private?(v4(x, y))
+  # Local-use NAT64 and discard-only addresses.
+  defp private?({0x64, 0xFF9B, 1, _, _, _, _, _}), do: true
+  defp private?({0x100, 0, 0, 0, _, _, _, _}), do: true
   # 6to4 embeds an IPv4 address; Teredo and documentation addresses have no use here.
   defp private?({0x2002, x, y, _, _, _, _, _}), do: private?(v4(x, y))
   defp private?({0x2001, second, _, _, _, _, _, _}) when second in [0, 0xDB8], do: true

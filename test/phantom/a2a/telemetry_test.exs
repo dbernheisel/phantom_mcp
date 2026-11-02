@@ -98,7 +98,7 @@ defmodule Phantom.A2A.TelemetryTest do
              Phantom.A2A.Push.deliver(config, event, allow_private_networks: true)
 
     assert_received {:telemetry, [:phantom, :a2a, :push, :start], _,
-                     %{task_id: "t1", config: ^config}}
+                     %{task_id: "t1", config_id: "c1"}}
 
     assert_received {:telemetry, [:phantom, :a2a, :push, :stop], _, %{result: {:error, _}}}
   end

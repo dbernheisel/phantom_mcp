@@ -377,21 +377,25 @@ defmodule Phantom.A2A.Plug do
     end
   end
 
-  # The agent's path, or the agent's path and a tenant.
+  # Static agents match first, so a dynamic agent can't take a static agent's tenant.
   defp match_rest_agent(router, segments) do
-    case Phantom.Router.A2A.match(router, segments) do
-      {:ok, route, params} ->
-        {:ok, {route, segments, params}, nil}
+    paths = [{segments, nil} | tenant_split(segments)]
 
-      :error when segments != [] ->
-        {agent_segments, [tenant]} = Enum.split(segments, -1)
+    Enum.find_value([false, true], :error, fn params? ->
+      Enum.find_value(paths, fn {agent_segments, tenant} ->
+        case Phantom.Router.A2A.match(router, agent_segments, params?) do
+          {:ok, route, params} -> {:ok, {route, agent_segments, params}, tenant}
+          :error -> nil
+        end
+      end)
+    end)
+  end
 
-        with {:ok, route, params} <- Phantom.Router.A2A.match(router, agent_segments),
-             do: {:ok, {route, agent_segments, params}, tenant}
+  defp tenant_split([]), do: []
 
-      :error ->
-        :error
-    end
+  defp tenant_split(segments) do
+    {agent_segments, [tenant]} = Enum.split(segments, -1)
+    [{agent_segments, tenant}]
   end
 
   defp rest(conn, opts, match, method, path_params, tenant) do
@@ -664,10 +668,8 @@ defmodule Phantom.A2A.Plug do
         {:ok, session}
 
       {status, info} when status in [401, :unauthorized] ->
-        info = if is_map(info), do: Phantom.Plug.www_authenticate(info), else: info
-
         conn
-        |> put_resp_header("www-authenticate", info)
+        |> put_www_authenticate(info)
         |> send_error(opts, nil, Error.invalid_request("Unauthorized"), 401)
 
       {status, message} when status in [403, :forbidden] ->
@@ -677,15 +679,17 @@ defmodule Phantom.A2A.Plug do
         send_error(conn, opts, nil, Error.invalid_request(message), 404)
 
       {:error, reason} ->
-        send_error(
-          conn,
-          opts,
-          nil,
-          Error.invalid_request("Connection failed: #{inspect(reason)}"),
-          400
-        )
+        Logger.warning("A2A connect/2 failed: #{inspect(reason)}")
+        send_error(conn, opts, nil, Error.invalid_request("Connection failed"), 400)
     end
   end
+
+  defp put_www_authenticate(conn, nil), do: conn
+
+  defp put_www_authenticate(conn, info) when is_map(info),
+    do: put_resp_header(conn, "www-authenticate", Phantom.Plug.www_authenticate(info))
+
+  defp put_www_authenticate(conn, info), do: put_resp_header(conn, "www-authenticate", info)
 
   defp check_allowed(%Phantom.Session{allowed_agents: nil}, _route, _segments), do: :ok
 

@@ -26,6 +26,8 @@ defmodule Phantom.A2A.RESTTest.Agent do
 
   def handle_message(_message, ctx), do: {:reply, Message.agent("pong"), ctx}
 
+  def resolve(_params, _session), do: {:error, :not_found}
+
   def get_task("missing", _ctx), do: {:error, :not_found}
 
   def get_task("live", %{task_ref: ref}) do
@@ -78,10 +80,13 @@ defmodule Phantom.A2A.RESTTest.Router do
   use Phantom.Router, name: "REST", vsn: "1.0"
 
   agent "rest", Phantom.A2A.RESTTest.Agent
+  agent ":org/:agent_key", Phantom.A2A.RESTTest.Agent, :resolve
 
   def connect(session, conn) do
     case Plug.Conn.get_req_header(conn, "authorization") do
       ["Bearer nope"] -> {:unauthorized, %{method: "Bearer"}}
+      ["Bearer bare"] -> {:unauthorized, nil}
+      ["Bearer broken"] -> {:error, {:db, "postgres://admin:secret@db"}}
       _ -> {:ok, session}
     end
   end
@@ -155,6 +160,30 @@ defmodule Phantom.A2A.RESTTest do
   test "a segment before the route is the tenant" do
     assert {200, %{"message" => %{"parts" => [%{"text" => "tenant=acme"}]}}} =
              json(request(:post, "/rest/acme/message:send", message("tenant")))
+  end
+
+  test "a static agent and a tenant match before a dynamic agent" do
+    assert {200, %{"message" => %{"parts" => [%{"text" => "tenant=acme"}]}}} =
+             json(request(:post, "/rest/acme/message:send", message("tenant")))
+
+    assert {404, _} = json(request(:post, "/other/acme/message:send", message("tenant")))
+  end
+
+  test "connect/2 can refuse without www-authenticate info" do
+    headers = [{"a2a-version", "1.0"}, {"authorization", "Bearer bare"}]
+    conn = request(:post, "/rest/message:send", message("ping"), headers: headers)
+
+    assert conn.status == 401
+    assert Plug.Conn.get_resp_header(conn, "www-authenticate") == []
+  end
+
+  test "connect/2 errors don't reach the client" do
+    headers = [{"a2a-version", "1.0"}, {"authorization", "Bearer broken"}]
+
+    assert {400, body} =
+             json(request(:post, "/rest/message:send", message("ping"), headers: headers))
+
+    refute JSON.encode!(body) =~ "secret"
   end
 
   test "message:stream streams bare events" do

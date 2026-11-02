@@ -66,6 +66,8 @@ defmodule Phantom.A2A.Bridge do
     input_modes: ~w[application/json text/plain],
     output_modes: ~w[application/json text/plain]
 
+  require Logger
+
   alias Phantom.A2A.{AgentSkill, Artifact, Error, Message, Part, Task, TaskStatus}
 
   @extension "https://github.com/dbernheisel/phantom_mcp/a2a/extensions/mcp-tools/v1"
@@ -377,5 +379,9 @@ defmodule Phantom.A2A.Bridge do
 
   defp error(%{code: -32602, message: message}), do: Error.invalid_params(message)
   defp error(%{code: code, message: message}), do: %Error{code: code, message: message}
-  defp error(other), do: %Error{code: -32603, message: inspect(other)}
+
+  defp error(other) do
+    Logger.warning("A2A bridge tool call failed: #{inspect(other)}")
+    Error.internal_error()
+  end
 end
