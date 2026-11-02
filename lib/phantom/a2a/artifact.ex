@@ -54,7 +54,7 @@ defmodule Phantom.A2A.Artifact do
   end
 
   @doc false
-  def from_json(%{"artifactId" => id, "parts" => parts} = json) when is_binary(id) do
+  def from_json(%{"artifactId" => id, "parts" => [_ | _] = parts} = json) when is_binary(id) do
     with {:ok, parts} <- Part.list_from_json(parts) do
       {:ok,
        %__MODULE__{

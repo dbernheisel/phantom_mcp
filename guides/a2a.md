@@ -11,7 +11,7 @@ over SSE and push notifications to webhooks.
 | Serves agent cards and the A2A methods, and validates requests | Implement each agent's `handle_message/2` |
 | Calls `connect/2` on every request, as for MCP | Authenticate, and assign what the session may use |
 | Streams the events you publish to clients, on any node | Store tasks, run the work, and publish each change |
-| Checks webhook URLs and delivers push notifications | Store push configs, and retry deliveries if you need to |
+| Checks webhook URLs and delivers push notifications | Store push configs, and deliver from a job queue if deliveries must survive a restart |
 
 ## Quick start
 
@@ -88,10 +88,14 @@ before you publish it: clients that ask for the task afterwards get it from
 What a client sees depends on the method it called:
 
 - `SendMessage` waits until the task finishes or needs input, then answers
-  with the task. With `returnImmediately: true`, or without a `:pubsub` on
-  the plug, it answers at once.
+  with the task. With `returnImmediately: true` it answers at once. Without a
+  `:pubsub` on the plug, it polls `get_task/2` instead of waiting on events. It
+  stops waiting after `:blocking_timeout` and answers with the task as it is.
 - `SendStreamingMessage` and `SubscribeToTask` stream the task, then each
-  event you publish, until it finishes or needs input.
+  event you publish, until it finishes or needs input. They stay open through
+  `auth_required`, so an agent that receives the credential out of band can
+  carry on in the same stream. `SendMessage` still returns at `auth_required`,
+  so the client can authenticate.
 - `GetTask` and `ListTasks` read your store.
 
 `get_task/2` is also where you check access: return `{:error, :not_found}`
@@ -379,7 +383,8 @@ addresses. Delivery checks the URL again, connects to the address it checked,
 and doesn't follow redirects. The credentials in a config are the client's
 secrets for its own webhook, so store them encrypted.
 
-By default each event is delivered once, from a supervised process. To retry,
+By default each event is delivered from a supervised process, with retries held
+in memory, so they end with the node. For delivery that survives a restart,
 override `c:Phantom.A2A.Agent.deliver_push/3` and deliver from a job:
 
 ```elixir

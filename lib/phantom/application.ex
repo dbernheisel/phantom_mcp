@@ -5,7 +5,7 @@ defmodule Phantom.Application do
   @impl Application
   def start(_type, _args) do
     Supervisor.start_link(
-      [Phantom.SessionMeta, {Task.Supervisor, name: Phantom.A2A.PushSupervisor}],
+      [Phantom.SessionMeta, {DynamicSupervisor, name: Phantom.A2A.PushSupervisor}],
       strategy: :one_for_one,
       name: Phantom.Supervisor
     )

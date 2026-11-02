@@ -70,7 +70,8 @@ defmodule Phantom.A2A.Agent do
   wherever the work runs: save each event with `Phantom.A2A.Events.apply/2`,
   then send the event it returns with `Phantom.A2A.publish/2`. Phantom forwards each
   event to `SendStreamingMessage` and `SubscribeToTask` streams, and closes
-  them when the task finishes or needs the client.
+  them when the task finishes or needs input. Streams stay open through
+  `auth_required`, so publish the next event once the credential arrives.
   """
 
   alias Phantom.A2A.{Card, Context, Error, Message, PushConfig, Task, TaskRef}
@@ -109,7 +110,8 @@ defmodule Phantom.A2A.Agent do
 
   Return at most `page_size` tasks, and a `next_page_token` for the next page,
   or `nil` on the last one. Phantom trims history and artifacts as the client
-  asked.
+  asked. `total_size` counts the tasks across all pages, and is required unless
+  this is the last page and the only one.
   """
   @callback list_tasks(list_filter(), Context.t()) ::
               {:ok,
@@ -148,8 +150,8 @@ defmodule Phantom.A2A.Agent do
 
   @doc """
   Deliver an event to a webhook. The default sends it in a supervised process
-  with `Phantom.A2A.Push.deliver/3`, without retries. Override it to deliver
-  from a job queue that retries, such as Oban.
+  with `Phantom.A2A.Push.deliver/3`, retrying with a backoff held in memory.
+  Override it to deliver from a durable job queue, such as Oban.
   """
   @callback deliver_push(PushConfig.t(), Phantom.A2A.event(), TaskRef.t()) :: :ok
 
@@ -165,8 +167,10 @@ defmodule Phantom.A2A.Agent do
   @doc """
   The card for `GetExtendedAgentCard`, given the public card, such as with
   skills only members may see. The request has passed
-  `c:Phantom.Router.connect/2`. Return an error to refuse it. Defaults to the
-  public card.
+  `c:Phantom.Router.connect/2`, which the router must implement: A2A requires
+  authentication for extended cards, so a router with the default `connect/2`
+  answers `ExtendedAgentCardNotConfiguredError`. Return an error to refuse the
+  request. Defaults to the public card.
   """
   @callback extended_card(Card.t(), Context.t()) :: {:ok, Card.t()} | {:error, Error.t()}
 

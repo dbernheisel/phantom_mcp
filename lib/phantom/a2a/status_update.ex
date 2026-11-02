@@ -39,7 +39,7 @@ defmodule Phantom.A2A.StatusUpdate do
     remove_nils(%{
       "taskId" => update.task_id,
       "contextId" => update.context_id,
-      "status" => TaskStatus.to_json(update.status),
+      "status" => TaskStatus.to_json(update.status, update.task_id, update.context_id),
       "metadata" => update.metadata
     })
   end

@@ -71,13 +71,10 @@ defmodule Phantom.A2A.PlugTest.Research do
     {:ok, %Task{id: id, context_id: ctx.context_id || "ctx-1", status: %TaskStatus{state: state}}}
   end
 
-  def get_task("slow", %{task_ref: %Phantom.A2A.TaskRef{} = ref}) do
-    spawn(fn ->
-      Process.sleep(60)
-      Phantom.A2A.publish(ref, Task.status(:completed))
-    end)
-
-    {:ok, %Task{id: "slow", context_id: "ctx-1", status: %TaskStatus{state: :working}}}
+  # Works until the test publishes its completion.
+  def get_task("idle", %{task_ref: %Phantom.A2A.TaskRef{} = ref} = ctx) do
+    send(ctx.assigns.test, {:fetched, ref})
+    {:ok, %Task{id: "idle", context_id: "ctx-1", status: %TaskStatus{state: :working}}}
   end
 
   # Event 2 is already in the snapshot when it is published, as when it is
@@ -369,7 +366,7 @@ defmodule Phantom.A2A.PlugTest do
                    "tags" => ["research"],
                    "examples" => ["Review study 42"]
                  },
-                 %{"id" => "quick_answer", "name" => "Quick answer", "tags" => []}
+                 %{"id" => "quick_answer", "name" => "Quick answer", "tags" => ["quick_answer"]}
                ]
              } = card
 
@@ -378,7 +375,11 @@ defmodule Phantom.A2A.PlugTest do
 
     test "serves nested agent paths" do
       assert {200,
-              %{"name" => "Minimal", "skills" => [], "supportedInterfaces" => [interface | _]}} =
+              %{
+                "name" => "Minimal",
+                "skills" => [%{"id" => "default", "name" => "Minimal", "tags" => ["default"]}],
+                "supportedInterfaces" => [interface | _]
+              }} =
                get_json("/a2a/teams/minimal/agent-card.json")
 
       assert interface["url"] == "http://www.example.com/a2a/teams/minimal"
@@ -433,7 +434,7 @@ defmodule Phantom.A2A.PlugTest do
   end
 
   describe "JSON-RPC" do
-    test "requires A2A-Version 1.x" do
+    test "requires A2A-Version 1.0" do
       {conn, body} =
         rpc("/a2a/research", "GetTask", %{"id" => "t1"},
           headers: [{"authorization", "Bearer token"}]
@@ -463,7 +464,7 @@ defmodule Phantom.A2A.PlugTest do
           headers: [{"authorization", "Bearer token"}, {"a2a-version", "1.2"}]
         )
 
-      assert %{"result" => %{"id" => "t1"}} = body
+      assert %{"error" => %{"code" => -32009}} = body
     end
 
     test "unknown methods and agents" do
@@ -557,8 +558,8 @@ defmodule Phantom.A2A.PlugTest do
       assert is_binary(id)
     end
 
-    test "without a pubsub, returns the task as the agent returned it" do
-      assert %{"result" => %{"task" => %{"status" => %{"state" => "TASK_STATE_SUBMITTED"}}}} =
+    test "without a pubsub, polls the agent's store until the task needs input" do
+      assert %{"result" => %{"task" => %{"status" => %{"state" => "TASK_STATE_INPUT_REQUIRED"}}}} =
                send_message("/a2a/research", "work")
     end
 
@@ -879,15 +880,51 @@ defmodule Phantom.A2A.PlugTest do
     end
 
     test "an idle stream sends keepalive comments" do
-      {conn, events} = stream("/keepalive/a2a/research", "SubscribeToTask", %{"id" => "slow"})
+      server =
+        start_supervised!(
+          {Bandit, plug: HTTP, ip: :loopback, port: 0, startup_log: false},
+          id: :keepalive_server
+        )
 
-      assert conn.resp_body =~ ": keepalive\n\n"
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+      {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
 
-      assert [
-               %{"task" => _},
-               %{"statusUpdate" => %{"status" => %{"state" => "TASK_STATE_COMPLETED"}}}
-             ] =
-               Enum.map(events, fn {_id, %{"result" => result}} -> result end)
+      body =
+        JSON.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => 7,
+          "method" => "SubscribeToTask",
+          "params" => %{"id" => "idle"}
+        })
+
+      :ok =
+        :gen_tcp.send(socket, [
+          "POST /keepalive/a2a/research HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n",
+          "a2a-version: 1.0\r\ncontent-type: application/json\r\naccept: text/event-stream\r\n",
+          "authorization: Bearer token\r\n",
+          "x-test-pid: #{self() |> :erlang.term_to_binary() |> Base.encode64()}\r\n",
+          "content-length: #{byte_size(body)}\r\n\r\n",
+          body
+        ])
+
+      assert_receive {:fetched, ref}, 2_000
+      assert read_until(socket, ": keepalive\n\n", "") =~ ~s("task":)
+
+      :ok = Phantom.A2A.publish(ref, Phantom.A2A.Task.status(:completed))
+      assert read_all(socket, "") =~ "TASK_STATE_COMPLETED"
+    end
+
+    defp read_until(socket, marker, acc) do
+      {:ok, data} = :gen_tcp.recv(socket, 0, 2_000)
+      acc = acc <> data
+      if acc =~ marker, do: acc, else: read_until(socket, marker, acc)
+    end
+
+    defp read_all(socket, acc) do
+      case :gen_tcp.recv(socket, 0, 2_000) do
+        {:ok, data} -> read_all(socket, acc <> data)
+        {:error, :closed} -> acc
+      end
     end
 
     test "events already in the current task aren't sent again" do

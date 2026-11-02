@@ -146,7 +146,7 @@ defmodule Phantom.A2A.CodecTest do
       assert %{"history" => [%{"messageId" => "m3"}, %{"messageId" => "m4"}]} =
                Task.to_json(task, history_length: 2)
 
-      assert %{"history" => []} = Task.to_json(task, history_length: 0)
+      refute Map.has_key?(Task.to_json(task, history_length: 0), "history")
       assert %{"history" => [_, _, _, _]} = Task.to_json(task)
     end
 
@@ -189,7 +189,13 @@ defmodule Phantom.A2A.CodecTest do
         context_id: "c",
         status: %TaskStatus{
           state: :input_required,
-          message: %Message{message_id: "m", role: :agent, parts: [Part.text("More?")]},
+          message: %Message{
+            message_id: "m",
+            role: :agent,
+            task_id: "t1",
+            context_id: "c",
+            parts: [Part.text("More?")]
+          },
           timestamp: ~U[2026-10-27 12:00:00Z]
         },
         artifacts: [
@@ -213,6 +219,8 @@ defmodule Phantom.A2A.CodecTest do
 
     test "stream events" do
       status = %{Task.status(:working, "Hi") | task_id: "t1", context_id: "c", sequence: nil}
+      status = put_in(status.status.message.task_id, "t1")
+      status = put_in(status.status.message.context_id, "c")
 
       update = %{
         Artifact.update("a", [Part.text("x")], append: true, last_chunk: true)

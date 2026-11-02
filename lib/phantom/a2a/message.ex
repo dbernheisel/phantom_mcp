@@ -54,9 +54,10 @@ defmodule Phantom.A2A.Message do
   end
 
   @doc false
-  def from_json(%{"messageId" => id, "role" => role, "parts" => parts} = json)
-      when is_binary(id) and is_map_key(@roles, role) and is_list(parts) do
-    with {:ok, parts} <- Part.list_from_json(parts) do
+  def from_json(%{"messageId" => id, "role" => role, "parts" => [_ | _] = parts} = json)
+      when is_binary(id) and is_map_key(@roles, role) do
+    with :ok <- check_fields(json),
+         {:ok, parts} <- Part.list_from_json(parts) do
       {:ok,
        %__MODULE__{
          message_id: id,
@@ -72,6 +73,17 @@ defmodule Phantom.A2A.Message do
   end
 
   def from_json(_json), do: {:error, "message must have a messageId, a role, and parts"}
+
+  defp check_fields(json) do
+    valid? =
+      optional?(json["contextId"], &is_binary/1) and optional?(json["taskId"], &is_binary/1) and
+        optional?(json["metadata"], &is_map/1) and optional?(json["extensions"], &is_list/1) and
+        optional?(json["referenceTaskIds"], &is_list/1)
+
+    if valid?, do: :ok, else: {:error, "message has a field of the wrong type"}
+  end
+
+  defp optional?(value, valid?), do: is_nil(value) or valid?.(value)
 
   @doc false
   def to_json(%__MODULE__{} = message) do

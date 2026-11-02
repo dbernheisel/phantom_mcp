@@ -81,11 +81,13 @@ defmodule Phantom.ACTS.Agent do
   end
 
   defp run("tck-long-running", ref) do
-    spawn(fn ->
-      Store.emit(ref, Task.status(:working, "Working"))
-      Process.sleep(@long_running_ms)
-      Store.emit(ref, Task.status(:completed, "Long-running task completed"))
-    end)
+    spawn(fn -> Store.emit(ref, Task.status(:working, "Working")) end)
+
+    {:ok, _timer} =
+      :timer.apply_after(@long_running_ms, Store, :emit, [
+        ref,
+        Task.status(:completed, "Long-running task completed")
+      ])
   end
 
   defp run("tck-stream-basic", ref) do

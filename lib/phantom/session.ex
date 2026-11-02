@@ -27,6 +27,7 @@ defmodule Phantom.Session do
     :subscription_id,
     :tracker,
     :transport_pid,
+    anonymous: false,
     assigns: %{},
     client_info: %{},
     client_capabilities: %{
@@ -47,6 +48,7 @@ defmodule Phantom.Session do
           allowed_resource_templates: [String.t()],
           allowed_tools: [String.t()],
           state: term() | nil,
+          anonymous: boolean(),
           assigns: map(),
           close_after_complete: boolean(),
           id: binary(),

@@ -87,14 +87,17 @@ defmodule Phantom.A2A.Error do
   @doc false
   # An error a server sent: a JSON-RPC error, or the `error` of a
   # `google.rpc.Status`, whose `ErrorInfo` reason names the A2A error.
-  def from_json(%{"code" => code, "message" => message} = json) when code < 0,
-    do: new(code, message || Map.get(json, "message", ""))
+  def from_json(%{"code" => code, "message" => message})
+      when is_integer(code) and code < 0 and is_binary(message),
+      do: new(code, message)
 
-  def from_json(%{"message" => message} = json) do
-    reason = Enum.find_value(json["details"] || [], &(is_map(&1) && &1["reason"]))
+  def from_json(%{"message" => message} = json) when is_binary(message) do
+    reason = Enum.find_value(List.wrap(json["details"]), &(is_map(&1) && &1["reason"]))
     code = Enum.find_value(@reasons, -32603, fn {code, name} -> name == reason && code end)
     new(code, message)
   end
+
+  def from_json(_json), do: invalid_agent_response()
 
   @doc false
   # The HTTP status of an error on the HTTP+JSON binding.

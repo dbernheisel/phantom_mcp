@@ -21,7 +21,12 @@ defmodule Phantom.A2A.Bridge do
   metadata.
 
   A message that names no tool goes to the `:fallback` agent, or gets a reply
-  that lists the tools.
+  that lists the tools. Tasks the fallback answers with are fetched, canceled,
+  and continued through it.
+
+  The card is public and has no session, so it lists every tool `:tools` allows,
+  whatever `Phantom.Session.allow_tools/2` would later permit. Set `:tools` to
+  what the public may see.
 
   ## Options
 
@@ -35,7 +40,8 @@ defmodule Phantom.A2A.Bridge do
   When the router implements `c:Phantom.Router.get_task/2`, the bridge calls
   tools with the MCP Tasks extension, so a tool may answer with a
   `Phantom.Tasks`. The client gets an A2A task with the same ID, in a context
-  of its own:
+  of its own. MCP tasks can't keep a client's context, so a tool call that names
+  a `contextId` is refused on such a router:
 
     * the task's status, `status_message`, and `error` become the A2A status
       and its message, and a completed `result` becomes a `"result"` artifact;
@@ -90,8 +96,12 @@ defmodule Phantom.A2A.Bridge do
   end
 
   @impl Phantom.A2A.Agent
-  def handle_message(%Message{task_id: task_id} = message, ctx) when is_binary(task_id),
-    do: continue_task(task_id, message, ctx)
+  def handle_message(%Message{task_id: task_id} = message, ctx) when is_binary(task_id) do
+    case {mcp_task(task_id, ctx), ctx.agent.opts[:fallback]} do
+      {:error, fallback} when not is_nil(fallback) -> fallback.handle_message(message, ctx)
+      _mcp_task -> continue_task(task_id, message, ctx)
+    end
+  end
 
   def handle_message(message, ctx) do
     case tool_call(message) do
@@ -110,27 +120,38 @@ defmodule Phantom.A2A.Bridge do
     end)
   end
 
+  defp call(_name, arguments, ctx) when not is_map(arguments),
+    do: {:error, Error.invalid_params("arguments must be an object"), ctx}
+
   defp call(name, arguments, ctx) do
     router = ctx.session.router
+    tasks? = Phantom.Router.tasks_enabled?(router)
 
-    if Enum.any?(tools(router, ctx.session, ctx.agent.opts), &(&1.name == name)) do
-      tasks? = Phantom.Router.tasks_enabled?(router)
+    cond do
+      not Enum.any?(tools(router, ctx.session, ctx.agent.opts), &(&1.name == name)) ->
+        {:error, Error.invalid_params("Unknown tool: #{name}"), ctx}
 
-      case Phantom.Router.call_tool(ctx.session, name, arguments, tasks: tasks?) do
-        {:ok, %Phantom.Tasks{} = task} ->
-          {:reply, to_a2a(task), ctx}
+      tasks? and is_binary(ctx.requested_context_id) ->
+        {:error, Error.invalid_params("This agent can't use a contextId from the client"), ctx}
 
-        {:ok, result} ->
-          {:reply, reply(result), ctx}
+      true ->
+        run_tool(name, arguments, tasks?, ctx)
+    end
+  end
 
-        {:error, :timeout} ->
-          {:error, %Error{code: -32603, message: "Tool #{name} timed out"}, ctx}
+  defp run_tool(name, arguments, tasks?, ctx) do
+    case Phantom.Router.call_tool(ctx.session, name, arguments, tasks: tasks?) do
+      {:ok, %Phantom.Tasks{} = task} ->
+        {:reply, to_a2a(task), ctx}
 
-        {:error, error} ->
-          {:error, error(error), ctx}
-      end
-    else
-      {:error, Error.invalid_params("Unknown tool: #{name}"), ctx}
+      {:ok, result} ->
+        {:reply, reply(result), ctx}
+
+      {:error, :timeout} ->
+        {:error, %Error{code: -32603, message: "Tool #{name} timed out"}, ctx}
+
+      {:error, error} ->
+        {:error, error(error), ctx}
     end
   end
 
@@ -143,12 +164,26 @@ defmodule Phantom.A2A.Bridge do
   def get_task(task_id, ctx) do
     case mcp_task(task_id, ctx) do
       {:ok, task} -> {:ok, to_a2a(task)}
-      :error -> {:error, :not_found}
+      :error -> fallback_task(task_id, ctx)
+    end
+  end
+
+  defp fallback_task(task_id, ctx) do
+    case ctx.agent.opts[:fallback] do
+      nil -> {:error, :not_found}
+      fallback -> fallback.get_task(task_id, ctx)
     end
   end
 
   @impl Phantom.A2A.Agent
-  def cancel_task(%Task{id: task_id}, ctx) do
+  def cancel_task(%Task{id: task_id} = task, ctx) do
+    case {mcp_task(task_id, ctx), ctx.agent.opts[:fallback]} do
+      {:error, fallback} when not is_nil(fallback) -> fallback.cancel_task(task, ctx)
+      _mcp_task -> cancel_mcp_task(task_id, ctx)
+    end
+  end
+
+  defp cancel_mcp_task(task_id, ctx) do
     router = ctx.session.router
 
     with {:ok, task} <- mcp_task(task_id, ctx),
@@ -307,7 +342,14 @@ defmodule Phantom.A2A.Bridge do
         do: [Part.data(result["structuredContent"])],
         else: []
 
-    {content ++ structured, result["isError"] == true}
+    # A message or artifact must have a part, even if the tool said nothing.
+    parts =
+      case content ++ structured do
+        [] -> [Part.text("")]
+        parts -> parts
+      end
+
+    {parts, result["isError"] == true}
   end
 
   defp json(term), do: term |> JSON.encode!() |> JSON.decode!()

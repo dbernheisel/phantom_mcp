@@ -93,9 +93,7 @@ defmodule Phantom.A2A.RESTTest do
   alias Phantom.A2A.RESTTest.Router
 
   setup_all do
-    owner = spawn(fn -> Process.sleep(:infinity) end)
-    :ets.new(__MODULE__, [:named_table, :public, :bag])
-    :ets.give_away(__MODULE__, owner, nil)
+    start_supervised!({Agent, fn -> :ets.new(__MODULE__, [:named_table, :public, :bag]) end})
     start_supervised!({Phoenix.PubSub, name: Phantom.A2A.RESTTest.PubSub})
     :ok
   end

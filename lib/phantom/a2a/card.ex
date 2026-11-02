@@ -56,7 +56,8 @@ defmodule Phantom.A2A.Card do
   def from_json(%{"name" => name} = json) when is_binary(name) do
     capabilities = json["capabilities"] || %{}
 
-    with {:ok, skills} <-
+    with :ok <- check_shape(json, capabilities),
+         {:ok, skills} <-
            Phantom.A2A.Part.list_from_json(json["skills"] || [], &AgentSkill.from_json/1) do
       {:ok,
        %__MODULE__{
@@ -79,6 +80,15 @@ defmodule Phantom.A2A.Card do
   end
 
   def from_json(_json), do: {:error, "agent card needs a name"}
+
+  defp check_shape(json, capabilities) do
+    valid? =
+      is_list(json["supportedInterfaces"] || []) and is_map(capabilities) and
+        is_list(capabilities["extensions"] || []) and
+        Enum.all?(capabilities["extensions"] || [], &is_map/1)
+
+    if valid?, do: :ok, else: {:error, "agent card has a field of the wrong type"}
+  end
 
   defp extension_from_json(json) do
     remove_nils(%{
@@ -114,7 +124,14 @@ defmodule Phantom.A2A.Card do
       "capabilities" => card.capabilities,
       "defaultInputModes" => card.default_input_modes,
       "defaultOutputModes" => card.default_output_modes,
-      "skills" => Enum.map(card.skills, &AgentSkill.to_json/1)
+      "skills" => Enum.map(skills(card), &AgentSkill.to_json/1)
     })
   end
+
+  # A card must list a skill, so an agent that declares none offers itself.
+  defp skills(%__MODULE__{skills: []} = card) do
+    [%AgentSkill{id: "default", name: card.name, description: card.description}]
+  end
+
+  defp skills(%__MODULE__{skills: skills}), do: skills
 end

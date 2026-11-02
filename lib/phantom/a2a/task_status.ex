@@ -58,19 +58,33 @@ defmodule Phantom.A2A.TaskStatus do
 
   defp timestamp(nil), do: {:ok, nil}
 
-  defp timestamp(value) do
+  defp timestamp(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
       {:ok, datetime, _offset} -> {:ok, datetime}
       _error -> {:error, "invalid timestamp #{inspect(value)}"}
     end
   end
 
+  defp timestamp(value), do: {:error, "invalid timestamp #{inspect(value)}"}
+
   @doc false
-  def to_json(%__MODULE__{state: state} = status) when state in @states do
+  # A status message names its task and context, unless it already does.
+  def to_json(%__MODULE__{state: state} = status, task_id \\ nil, context_id \\ nil)
+      when state in @states do
     remove_nils(%{
       "state" => "TASK_STATE_" <> String.upcase(Atom.to_string(state)),
-      "message" => status.message && Message.to_json(status.message),
+      "message" => message_json(status.message, task_id, context_id),
       "timestamp" => status.timestamp && DateTime.to_iso8601(status.timestamp)
+    })
+  end
+
+  defp message_json(nil, _task_id, _context_id), do: nil
+
+  defp message_json(%Message{} = message, task_id, context_id) do
+    Message.to_json(%{
+      message
+      | task_id: message.task_id || task_id,
+        context_id: message.context_id || context_id
     })
   end
 end

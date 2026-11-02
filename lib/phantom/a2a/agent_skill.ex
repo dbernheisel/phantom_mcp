@@ -63,7 +63,8 @@ defmodule Phantom.A2A.AgentSkill do
       "id" => skill.id,
       "name" => skill.name,
       "description" => skill.description,
-      "tags" => skill.tags,
+      # The field is required and can't be empty, so an untagged skill has its ID.
+      "tags" => if(skill.tags == [], do: [skill.id], else: skill.tags),
       "examples" => if(skill.examples != [], do: skill.examples),
       "inputModes" => skill.input_modes,
       "outputModes" => skill.output_modes

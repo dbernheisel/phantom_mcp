@@ -22,7 +22,8 @@ defmodule Phantom.A2A.PushConfig do
 
   @doc false
   def from_json(%{"url" => url} = json) when is_binary(url) do
-    with {:ok, authentication} <- authentication(json["authentication"]) do
+    with :ok <- check_strings(json),
+         {:ok, authentication} <- authentication(json["authentication"]) do
       {:ok,
        %__MODULE__{
          id: json["id"],
@@ -37,10 +38,21 @@ defmodule Phantom.A2A.PushConfig do
 
   def from_json(_json), do: {:error, "push notification config needs a url"}
 
+  defp check_strings(json) do
+    if Enum.all?(~w[id taskId token tenant], &(is_nil(json[&1]) or is_binary(json[&1]))),
+      do: :ok,
+      else: {:error, "push notification config has a field of the wrong type"}
+  end
+
   defp authentication(nil), do: {:ok, nil}
 
-  defp authentication(%{"scheme" => scheme} = json) when is_binary(scheme),
-    do: {:ok, %{scheme: scheme, credentials: json["credentials"]}}
+  defp authentication(%{"scheme" => scheme, "credentials" => credentials})
+       when is_binary(scheme) and (is_binary(credentials) or is_nil(credentials)),
+       do: {:ok, %{scheme: scheme, credentials: credentials}}
+
+  defp authentication(%{"scheme" => scheme} = json)
+       when is_binary(scheme) and not is_map_key(json, "credentials"),
+       do: {:ok, %{scheme: scheme, credentials: nil}}
 
   defp authentication(_json), do: {:error, "authentication needs a scheme"}
 

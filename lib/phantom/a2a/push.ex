@@ -15,16 +15,24 @@ defmodule Phantom.A2A.Push do
   Set `a2a: [allow_private_push_urls: true]` on the router to allow `http` and
   private addresses, such as in development.
 
+  A delivery that fails on the network or with a 408, 429, or 5xx answer is
+  retried after 1, 5, and 30 seconds. Set `a2a: [push_retry_backoff: [...]]` on
+  the router to change the delays, in milliseconds. Each attempt runs on its
+  own, so events can arrive out of order; the backoff also ends with the node.
+  For ordered or durable delivery, override
+  `c:Phantom.A2A.Agent.deliver_push/3`.
+
   Each delivery emits a `[:phantom, :a2a, :push]` telemetry span, with
   metadata `~w[config task_id url event]a` and, on `:stop`, `:result`.
   """
 
-  require Logger
   import Bitwise
 
   alias Phantom.A2A.{PushConfig, TaskRef}
 
   @timeout :timer.seconds(10)
+  @profile :phantom_a2a_push
+  @retry_backoff [:timer.seconds(1), :timer.seconds(5), :timer.seconds(30)]
 
   @doc """
   Check a webhook URL.
@@ -33,7 +41,6 @@ defmodule Phantom.A2A.Push do
 
     * `:allow_private_networks` - allow `http` and private addresses
   """
-  @spec validate_url(String.t(), keyword()) :: :ok | {:error, String.t()}
   def validate_url(url, opts \\ []) do
     with {:ok, _uri, _addresses} <- resolve(url, opts), do: :ok
   end
@@ -42,7 +49,6 @@ defmodule Phantom.A2A.Push do
   Deliver an event to a webhook and wait for the answer. Returns `:ok` for a
   2xx answer. Takes the options of `validate_url/2`.
   """
-  @spec deliver(PushConfig.t(), Phantom.A2A.event(), keyword()) :: :ok | {:error, term()}
   def deliver(%PushConfig{} = config, event, opts \\ []) do
     meta = %{config: config, task_id: config.task_id, url: config.url, event: event}
 
@@ -59,13 +65,13 @@ defmodule Phantom.A2A.Push do
       request = {
         address_url(uri, address),
         headers(config, uri),
-        ~c"application/json",
+        ~c"application/a2a+json",
         JSON.encode!(Phantom.A2A.event_to_json(event))
       }
 
       http_opts = [timeout: @timeout, connect_timeout: @timeout, autoredirect: false] ++ ssl(uri)
 
-      case :httpc.request(:post, request, http_opts, body_format: :binary) do
+      case :httpc.request(:post, request, http_opts, [body_format: :binary], httpc_profile()) do
         {:ok, {{_version, status, _reason}, _headers, _body}} when status in 200..299 -> :ok
         {:ok, {{_version, status, _reason}, _headers, _body}} -> {:error, {:status, status}}
         {:error, reason} -> {:error, reason}
@@ -73,19 +79,29 @@ defmodule Phantom.A2A.Push do
     end
   end
 
+  # A profile of its own, so a webhook with only an IPv6 address is reachable
+  # without changing the application's default `:httpc` profile.
+  defp httpc_profile do
+    case :inets.start(:httpc, profile: @profile) do
+      {:ok, _pid} -> :httpc.set_options([ipfamily: :inet6fb4], @profile)
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
+    @profile
+  end
+
   @doc false
   # The default `c:Phantom.A2A.Agent.deliver_push/3`.
   def deliver_async(%PushConfig{} = config, event, %TaskRef{router: router}) do
-    opts = [
-      allow_private_networks: router.__phantom__(:info).a2a[:allow_private_push_urls] == true
-    ]
+    a2a = router.__phantom__(:info).a2a
+    opts = [allow_private_networks: a2a[:allow_private_push_urls] == true]
+    backoff = Keyword.get(a2a, :push_retry_backoff, @retry_backoff)
 
     {:ok, _pid} =
-      Task.Supervisor.start_child(Phantom.A2A.PushSupervisor, fn ->
-        with {:error, reason} <- deliver(config, event, opts) do
-          Logger.warning("A2A push to #{config.url} failed: #{inspect(reason)}")
-        end
-      end)
+      DynamicSupervisor.start_child(
+        Phantom.A2A.PushSupervisor,
+        {Phantom.A2A.Push.Delivery, {config, event, opts, backoff}}
+      )
 
     :ok
   end
@@ -151,13 +167,18 @@ defmodule Phantom.A2A.Push do
       (a == 198 and b in 18..19)
   end
 
-  defp private?({0, 0, 0, 0, 0, 0, 0, a}) when a in [0, 1], do: true
+  # Unspecified, loopback, and the deprecated IPv4-compatible range.
+  defp private?({0, 0, 0, 0, 0, 0, _, _}), do: true
   defp private?({0, 0, 0, 0, 0, 0xFFFF, x, y}), do: private?(v4(x, y))
   defp private?({0x64, 0xFF9B, 0, 0, 0, 0, x, y}), do: private?(v4(x, y))
+  # 6to4 embeds an IPv4 address; Teredo and documentation addresses have no use here.
+  defp private?({0x2002, x, y, _, _, _, _, _}), do: private?(v4(x, y))
+  defp private?({0x2001, second, _, _, _, _, _, _}) when second in [0, 0xDB8], do: true
 
+  # Unique local, link-local, site-local, and multicast.
   defp private?({first, _, _, _, _, _, _, _}) do
     (first &&& 0xFE00) == 0xFC00 or (first &&& 0xFFC0) == 0xFE80 or
-      (first &&& 0xFF00) == 0xFF00
+      (first &&& 0xFFC0) == 0xFEC0 or (first &&& 0xFF00) == 0xFF00
   end
 
   defp v4(x, y), do: {x >>> 8, x &&& 0xFF, y >>> 8, y &&& 0xFF}
@@ -165,18 +186,14 @@ defmodule Phantom.A2A.Push do
   # Connect to the address that was checked, so a second DNS lookup can't
   # point the request elsewhere. TLS still checks the certificate for the host.
   defp address_url(uri, address) do
-    host =
-      case :inet.ntoa(address) |> to_string() do
-        host when tuple_size(address) == 8 -> "[#{host}]"
-        host -> host
-      end
+    host = address |> :inet.ntoa() |> to_string()
 
     %{uri | host: host} |> URI.to_string() |> to_charlist()
   end
 
   defp headers(config, uri) do
-    host =
-      if uri.port == URI.default_port(uri.scheme), do: uri.host, else: "#{uri.host}:#{uri.port}"
+    name = if String.contains?(uri.host, ":"), do: "[#{uri.host}]", else: uri.host
+    host = if uri.port == URI.default_port(uri.scheme), do: name, else: "#{name}:#{uri.port}"
 
     [{~c"host", to_charlist(host)}]
     |> add_header(~c"authorization", authorization(config.authentication))

@@ -29,7 +29,6 @@ defmodule Phantom.A2A.Events do
   task and aren't numbered. Returns `{:error, :unknown_artifact}` for an append
   to an artifact the task doesn't have.
   """
-  @spec apply(Task.t(), event()) :: {:ok, Task.t(), event()} | {:error, :unknown_artifact}
   def apply(%Task{} = task, %Message{} = message), do: {:ok, task, message}
 
   def apply(%Task{} = task, event) do

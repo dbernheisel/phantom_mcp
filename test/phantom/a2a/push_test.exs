@@ -113,9 +113,7 @@ defmodule Phantom.A2A.PushTest do
   alias Phantom.A2A.PushTest.Router
 
   setup_all do
-    owner = spawn(fn -> Process.sleep(:infinity) end)
-    :ets.new(__MODULE__, [:named_table, :public, :bag, {:heir, owner, nil}])
-    :ets.give_away(__MODULE__, owner, nil)
+    start_supervised!({Agent, fn -> :ets.new(__MODULE__, [:named_table, :public, :bag]) end})
     :ok
   end
 
@@ -135,6 +133,21 @@ defmodule Phantom.A2A.PushTest do
     |> Phantom.A2A.Plug.call(Phantom.A2A.Plug.init(router: Router))
     |> Map.fetch!(:resp_body)
     |> JSON.decode!()
+  end
+
+  describe "validate_url/2 with IPv6 literals" do
+    for host <- ~w[::7f00:1 ::1 ::ffff:127.0.0.1 2002:7f00:1:: 2002:a00:1:: 64:ff9b::7f00:1
+                   fec0::1 fc00::1 fe80::1 ff02::1 2001:db8::1 2001:0:1::1] do
+      test "refuses #{host}" do
+        assert {:error, "resolves to a private address"} =
+                 Push.validate_url("https://[#{unquote(host)}]/hook")
+      end
+    end
+
+    test "allows a public address" do
+      assert :ok = Push.validate_url("https://[2606:4700:4700::1111]/hook")
+      assert :ok = Push.validate_url("https://[2002:808:808::1]/hook")
+    end
   end
 
   describe "PushConfig" do
@@ -305,7 +318,7 @@ defmodule Phantom.A2A.PushTest do
       assert_receive {:webhook, "/hook", headers, body}, 5_000
       assert {"authorization", "Bearer secret"} in headers
       assert {"x-a2a-notification-token", "tok"} in headers
-      assert {"content-type", "application/json"} in headers
+      assert {"content-type", "application/a2a+json"} in headers
 
       assert %{
                "statusUpdate" => %{
@@ -331,6 +344,131 @@ defmodule Phantom.A2A.PushTest do
       end)
     end
 
+    test "retries a failed delivery with backoff" do
+      test = self()
+      {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+      plug = fn conn, _opts ->
+        attempt = Agent.get_and_update(attempts, &{&1 + 1, &1 + 1})
+        send(test, {:attempt, attempt})
+        Plug.Conn.send_resp(conn, if(attempt < 3, do: 503, else: 200), "")
+      end
+
+      {:ok, pid} =
+        start_supervised(
+          {Bandit, plug: plug, ip: :loopback, port: 0, startup_log: false},
+          id: :retry_webhook
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+      config = %PushConfig{id: "c1", task_id: "t1", url: "http://127.0.0.1:#{port}/hook"}
+
+      ref = %Phantom.A2A.TaskRef{
+        router: Phantom.A2A.PushTest.RetryRouter,
+        agent_id: "push",
+        task_id: "t1"
+      }
+
+      assert :ok = Push.deliver_async(config, Phantom.A2A.Task.status(:working), ref)
+
+      assert_receive {:attempt, 1}, 2_000
+      assert_receive {:attempt, 2}, 2_000
+      assert_receive {:attempt, 3}, 2_000
+      refute_receive {:attempt, 4}, 50
+    end
+
+    test "waits for a retry without blocking, and can be stopped meanwhile" do
+      test = self()
+
+      plug = fn conn, _opts ->
+        send(test, :attempt)
+        Plug.Conn.send_resp(conn, 503, "")
+      end
+
+      {:ok, pid} =
+        start_supervised(
+          {Bandit, plug: plug, ip: :loopback, port: 0, startup_log: false},
+          id: :waiting_webhook
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+      config = %PushConfig{id: "c1", task_id: "t1", url: "http://127.0.0.1:#{port}/hook"}
+
+      ref = %Phantom.A2A.TaskRef{
+        router: Phantom.A2A.PushTest.SlowRetryRouter,
+        agent_id: "push",
+        task_id: "t1"
+      }
+
+      assert :ok = Push.deliver_async(config, Phantom.A2A.Task.status(:working), ref)
+      assert_receive :attempt, 2_000
+
+      assert [delivery] =
+               for(
+                 {_id, pid, _type, [Phantom.A2A.Push.Delivery]} <-
+                   DynamicSupervisor.which_children(Phantom.A2A.PushSupervisor),
+                 do: pid
+               )
+
+      assert %{backoff: []} = :sys.get_state(delivery, 100)
+
+      monitor = Process.monitor(delivery)
+      :ok = DynamicSupervisor.terminate_child(Phantom.A2A.PushSupervisor, delivery)
+      assert_receive {:DOWN, ^monitor, :process, ^delivery, _reason}
+    end
+
+    test "doesn't retry a request the webhook refuses" do
+      test = self()
+
+      plug = fn conn, _opts ->
+        send(test, :attempt)
+        Plug.Conn.send_resp(conn, 400, "")
+      end
+
+      {:ok, pid} =
+        start_supervised(
+          {Bandit, plug: plug, ip: :loopback, port: 0, startup_log: false},
+          id: :refusing_webhook
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+      config = %PushConfig{id: "c1", task_id: "t1", url: "http://127.0.0.1:#{port}/hook"}
+
+      ref = %Phantom.A2A.TaskRef{
+        router: Phantom.A2A.PushTest.RetryRouter,
+        agent_id: "push",
+        task_id: "t1"
+      }
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert :ok = Push.deliver_async(config, Phantom.A2A.Task.status(:working), ref)
+        assert_receive :attempt, 2_000
+        refute_receive :attempt, 100
+      end)
+    end
+
+    test "reaches a webhook that only has an IPv6 address" do
+      {:ok, pid} =
+        start_supervised(
+          {Bandit,
+           plug: {Phantom.A2A.PushTest.Receiver, self()},
+           ip: {0, 0, 0, 0, 0, 0, 0, 1},
+           port: 0,
+           startup_log: false},
+          id: :ipv6_webhook
+        )
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+      config = %PushConfig{id: "c1", task_id: "t1", url: "http://[::1]:#{port}/hook"}
+
+      assert :ok =
+               Push.deliver(config, Phantom.A2A.Task.status(:working),
+                 allow_private_networks: true
+               )
+
+      assert_receive {:webhook, "/hook", _headers, _body}
+    end
+
     test "an agent can deliver pushes itself" do
       {:task, %{"id" => task_id}} = send_message(Router, "custom", "go")
 
@@ -341,6 +479,22 @@ defmodule Phantom.A2A.PushTest do
       assert is_binary(context_id)
     end
   end
+end
+
+defmodule Phantom.A2A.PushTest.RetryRouter do
+  use Phantom.Router,
+    name: "Retry",
+    a2a: [allow_private_push_urls: true, push_retry_backoff: [1, 1, 1]]
+
+  agent "push", Phantom.A2A.PushTest.Agent
+end
+
+defmodule Phantom.A2A.PushTest.SlowRetryRouter do
+  use Phantom.Router,
+    name: "Slow retry",
+    a2a: [allow_private_push_urls: true, push_retry_backoff: [:timer.minutes(10)]]
+
+  agent "push", Phantom.A2A.PushTest.Agent
 end
 
 defmodule Phantom.A2A.PushTest.StrictRouter do

@@ -23,9 +23,14 @@ defmodule Phantom.A2A.Client do
 
   ## Options
 
-    * `:bindings` - the bindings to use, most preferred first (default
-      `[:jsonrpc, :http_json]`). The client takes the first one the card lists.
-    * `:headers` - headers for every request, such as `authorization`
+    * `:bindings` - the bindings the client may use (default
+      `[:jsonrpc, :http_json]`). A2A has clients take the card's earliest
+      interface they support, so the card's order decides between them.
+    * `:headers` - headers for every request, such as `authorization`. When
+      `new/2` fetches the card, it refuses a card whose interface is on another
+      origin, as these headers would go there.
+    * `:cross_origin_headers` - set `true` to send `:headers` to an interface on
+      another origin
     * `:extensions` - extension URIs to request in the `A2A-Extensions` header
     * `:req_options` - options for `Req.new/1`, such as `:receive_timeout`, or
       `plug:` to call a Plug instead of the network
@@ -35,12 +40,13 @@ defmodule Phantom.A2A.Client do
 
   alias Phantom.A2A.{Card, Error, Message, PushConfig, Task, TaskStatus}
 
-  defstruct [:url, :binding, :card, headers: [], extensions: [], req_options: []]
+  defstruct [:url, :binding, :card, :tenant, headers: [], extensions: [], req_options: []]
 
   @type t :: %__MODULE__{
           url: String.t(),
           binding: :jsonrpc | :http_json,
           card: Card.t(),
+          tenant: String.t() | nil,
           headers: [{String.t(), String.t()}],
           extensions: [String.t()],
           req_options: keyword()
@@ -53,7 +59,6 @@ defmodule Phantom.A2A.Client do
   `/.well-known/agent-card.json` from. Takes the `:headers` and
   `:req_options` options.
   """
-  @spec get_card(String.t(), keyword()) :: {:ok, Card.t()} | {:error, term()}
   def get_card(url, opts \\ []) do
     url =
       if String.ends_with?(url, ".json"),
@@ -73,26 +78,19 @@ defmodule Phantom.A2A.Client do
   A client for an agent, from its card or a URL to fetch the card from. See the
   moduledoc for options.
   """
-  @spec new(Card.t() | String.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def new(card_or_url, opts \\ [])
 
   def new(%Card{} = card, opts) do
-    preferred = Keyword.get(opts, :bindings, [:jsonrpc, :http_json])
+    bindings = Keyword.get(opts, :bindings, [:jsonrpc, :http_json])
 
-    interfaces =
-      for %{"url" => url, "protocolBinding" => name} = interface <- card.supported_interfaces,
-          binding = @bindings[name],
-          binding in preferred,
-          String.starts_with?(interface["protocolVersion"] || "1.", "1."),
-          do: {binding, url}
-
-    case Enum.find_value(preferred, &List.keyfind(interfaces, &1, 0)) do
-      {binding, url} ->
+    case Enum.find_value(card.supported_interfaces, &usable_interface(&1, bindings)) do
+      {binding, url, tenant} ->
         {:ok,
          %__MODULE__{
            url: url,
            binding: binding,
            card: card,
+           tenant: tenant,
            headers: Keyword.get(opts, :headers, []),
            extensions: Keyword.get(opts, :extensions, []),
            req_options: Keyword.get(opts, :req_options, [])
@@ -104,7 +102,40 @@ defmodule Phantom.A2A.Client do
   end
 
   def new(url, opts) when is_binary(url) do
-    with {:ok, card} <- get_card(url, opts), do: new(card, opts)
+    with {:ok, card} <- get_card(url, opts),
+         {:ok, client} <- new(card, opts),
+         :ok <- check_origin(client, url, opts),
+         do: {:ok, client}
+  end
+
+  defp usable_interface(%{"url" => url, "protocolBinding" => name} = interface, bindings)
+       when is_binary(url) do
+    binding = @bindings[name]
+
+    if binding in bindings and version_one?(interface["protocolVersion"]),
+      do: {binding, url, tenant(interface["tenant"])}
+  end
+
+  defp usable_interface(_interface, _bindings), do: nil
+
+  defp version_one?(nil), do: true
+  defp version_one?(version) when is_binary(version), do: String.starts_with?(version, "1.")
+  defp version_one?(_version), do: false
+
+  defp tenant(tenant) when is_binary(tenant) and tenant != "", do: tenant
+  defp tenant(_tenant), do: nil
+
+  defp check_origin(%__MODULE__{headers: []}, _card_url, _opts), do: :ok
+
+  defp check_origin(%__MODULE__{url: url}, card_url, opts) do
+    if opts[:cross_origin_headers] == true or origin(url) == origin(card_url),
+      do: :ok,
+      else: {:error, {:cross_origin_interface, url}}
+  end
+
+  defp origin(url) do
+    %URI{scheme: scheme, host: host, port: port} = URI.parse(url)
+    {scheme, host, port}
   end
 
   @doc """
@@ -119,8 +150,6 @@ defmodule Phantom.A2A.Client do
     * `:push_config` - a `Phantom.A2A.PushConfig` to register for the task
     * `:metadata` - the request's metadata
   """
-  @spec send_message(t(), String.t() | Message.t(), keyword()) ::
-          {:ok, Message.t() | Task.t()} | {:error, term()}
   def send_message(client, message, opts \\ []) do
     with {:ok, result} <- request(client, "SendMessage", message_params(message, opts)) do
       Phantom.A2A.event_from_json(result)
@@ -129,13 +158,12 @@ defmodule Phantom.A2A.Client do
 
   @doc """
   Send a message and stream the agent's answer: a `Phantom.A2A.Message`, or
-  the task and then each event, until it finishes or needs input. Returns
+  the task and then each event, until it finishes or needs input. It stays
+  open while the task waits on authentication. Returns
   `{:ok, stream}` once the agent starts answering. A `Phantom.A2A.Error` in the
   stream ends it. Consume the stream in the process that called this. Takes
   the options of `send_message/3`.
   """
-  @spec stream_message(t(), String.t() | Message.t(), keyword()) ::
-          {:ok, Enumerable.t()} | {:error, term()}
   def stream_message(client, message, opts \\ []) do
     with :ok <-
            require_capability(
@@ -147,7 +175,6 @@ defmodule Phantom.A2A.Client do
   end
 
   @doc "Fetch a task. Takes `:history_length`."
-  @spec get_task(t(), String.t(), keyword()) :: {:ok, Task.t()} | {:error, term()}
   def get_task(client, task_id, opts \\ []) do
     params = compact(%{"id" => task_id, "historyLength" => opts[:history_length]})
     with {:ok, json} <- request(client, "GetTask", params), do: Task.from_json(json)
@@ -163,7 +190,6 @@ defmodule Phantom.A2A.Client do
       `:page_token`, `:history_length`, `:include_artifacts`, and
       `:status_timestamp_after` (a `DateTime`)
   """
-  @spec list_tasks(t(), keyword()) :: {:ok, map()} | {:error, term()}
   def list_tasks(client, opts \\ []) do
     params =
       compact(%{
@@ -192,7 +218,6 @@ defmodule Phantom.A2A.Client do
   end
 
   @doc "Cancel a task"
-  @spec cancel_task(t(), String.t()) :: {:ok, Task.t()} | {:error, term()}
   def cancel_task(client, task_id) do
     with {:ok, json} <- request(client, "CancelTask", %{"id" => task_id}),
          do: Task.from_json(json)
@@ -200,9 +225,8 @@ defmodule Phantom.A2A.Client do
 
   @doc """
   Stream a task: its current state, then each event, until it finishes or
-  needs input. See `stream_message/3`.
+  needs input, as `stream_message/3` does. See `stream_message/3`.
   """
-  @spec subscribe(t(), String.t()) :: {:ok, Enumerable.t()} | {:error, term()}
   def subscribe(client, task_id) do
     with :ok <-
            require_capability(
@@ -210,11 +234,17 @@ defmodule Phantom.A2A.Client do
              "streaming",
              Error.unsupported_operation("The agent doesn't stream")
            ),
-         do: stream(client, "SubscribeToTask", %{"id" => task_id})
+         do: subscribe_stream(client, %{"id" => task_id})
+  end
+
+  # The method tables name POST and the proto names GET, so servers may route
+  # either.
+  defp subscribe_stream(client, params) do
+    with {:error, {:http_status, 405}} <- stream(client, "SubscribeToTask", params),
+         do: stream(client, "SubscribeToTask:get", params)
   end
 
   @doc "Register a webhook for a task's updates"
-  @spec create_push_config(t(), PushConfig.t()) :: {:ok, PushConfig.t()} | {:error, term()}
   def create_push_config(client, %PushConfig{} = config) do
     with :ok <- require_push(client),
          {:ok, json} <-
@@ -223,7 +253,6 @@ defmodule Phantom.A2A.Client do
   end
 
   @doc "Fetch a task's push notification config"
-  @spec get_push_config(t(), String.t(), String.t()) :: {:ok, PushConfig.t()} | {:error, term()}
   def get_push_config(client, task_id, id) do
     with :ok <- require_push(client),
          {:ok, json} <-
@@ -232,7 +261,6 @@ defmodule Phantom.A2A.Client do
   end
 
   @doc "List a task's push notification configs"
-  @spec list_push_configs(t(), String.t()) :: {:ok, [PushConfig.t()]} | {:error, term()}
   def list_push_configs(client, task_id) do
     with :ok <- require_push(client),
          {:ok, json} <- request(client, "ListTaskPushNotificationConfigs", %{"taskId" => task_id}),
@@ -240,7 +268,6 @@ defmodule Phantom.A2A.Client do
   end
 
   @doc "Delete a task's push notification config"
-  @spec delete_push_config(t(), String.t(), String.t()) :: :ok | {:error, term()}
   def delete_push_config(client, task_id, id) do
     with :ok <- require_push(client),
          {:ok, _result} <-
@@ -249,7 +276,6 @@ defmodule Phantom.A2A.Client do
   end
 
   @doc "Fetch the extended card the agent shows this client"
-  @spec get_extended_card(t()) :: {:ok, Card.t()} | {:error, term()}
   def get_extended_card(client) do
     with :ok <-
            require_capability(
@@ -300,10 +326,16 @@ defmodule Phantom.A2A.Client do
            headers: headers(client),
            req_options: client.req_options
          ) do
-      {:ok, %{status: status, body: body}} -> decode(client, status, body)
+      {:ok, %{status: status, body: body}} -> client |> decode(status, body) |> check_result()
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # Every method answers with an object, or nothing.
+  defp check_result({:ok, result}) when not (is_map(result) or is_nil(result)),
+    do: {:error, Error.invalid_agent_response()}
+
+  defp check_result(result), do: result
 
   defp decode(%{binding: :jsonrpc}, _status, body) do
     case JSON.decode(body) do
@@ -331,14 +363,17 @@ defmodule Phantom.A2A.Client do
     end
   end
 
-  defp http_request(%{binding: :jsonrpc, url: url}, method, params) do
+  defp http_request(%{binding: :jsonrpc, url: url, tenant: tenant}, method, params) do
+    params = if tenant, do: Map.put(params, "tenant", tenant), else: params
+
     {:post, url,
      %{"jsonrpc" => "2.0", "id" => UUIDv7.generate(), "method" => method, "params" => params}, []}
   end
 
-  defp http_request(%{binding: :http_json, url: url}, method, params) do
+  defp http_request(%{binding: :http_json, url: url, tenant: tenant}, method, params) do
     {verb, path, body, query} = rest(method, params)
-    {verb, url <> path, body, query}
+    prefix = if tenant, do: "/" <> segment(tenant), else: ""
+    {verb, url <> prefix <> path, body, query}
   end
 
   # The HTTP+JSON routes from the A2A protobuf.
@@ -352,6 +387,9 @@ defmodule Phantom.A2A.Client do
   defp rest("CancelTask", %{"id" => id}), do: {:post, "/tasks/#{segment(id)}:cancel", %{}, []}
 
   defp rest("SubscribeToTask", %{"id" => id}),
+    do: {:post, "/tasks/#{segment(id)}:subscribe", %{}, []}
+
+  defp rest("SubscribeToTask:get", %{"id" => id}),
     do: {:get, "/tasks/#{segment(id)}:subscribe", nil, []}
 
   defp rest("GetExtendedAgentCard", _params), do: {:get, "/extendedAgentCard", nil, []}
@@ -458,6 +496,9 @@ defmodule Phantom.A2A.Client do
       {^task_ref, result} ->
         Process.demonitor(task_ref, [:flush])
         {:done, result}
+
+      {:DOWN, ^task_ref, :process, _pid, reason} ->
+        {:done, {:error, reason}}
     end
   end
 
@@ -492,9 +533,9 @@ defmodule Phantom.A2A.Client do
           {:halt, :halt}
 
         {buffer, done?} ->
-          case String.split(buffer, "\n\n", parts: 2) do
+          case Regex.split(~r/\r\n\r\n|\n\n|\r\r/, buffer, parts: 2) do
             [event, rest] ->
-              {List.wrap(parse_event(client, event)), {rest, done?}}
+              emit(parse_event(client, event), {rest, done?})
 
             [_incomplete] when done? ->
               {List.wrap(parse_event(client, buffer)), :halt}
@@ -502,17 +543,32 @@ defmodule Phantom.A2A.Client do
             [_incomplete] ->
               case await_chunk(ref, task) do
                 {:data, _status, _headers, data} -> {[], {buffer <> data, false}}
+                {:done, {:error, _reason}} -> {[Error.invalid_agent_response()], :halt}
                 {:done, _result} -> {[], {buffer, true}}
               end
           end
       end,
-      fn _acc -> Elixir.Task.shutdown(task, :brutal_kill) end
+      fn _acc ->
+        Elixir.Task.shutdown(task, :brutal_kill)
+        flush_chunks(ref)
+      end
     )
+  end
+
+  defp emit(%Error{} = error, _next), do: {[error], :halt}
+  defp emit(events, next), do: {List.wrap(events), next}
+
+  defp flush_chunks(ref) do
+    receive do
+      {^ref, :data, _status, _headers, _data} -> flush_chunks(ref)
+    after
+      0 -> :ok
+    end
   end
 
   defp parse_event(client, event) do
     data =
-      for line <- String.split(event, "\n"),
+      for line <- String.split(event, ~r/\r\n|\n|\r/),
           String.starts_with?(line, "data:"),
           do: line |> String.trim_leading("data:") |> String.trim_leading()
 

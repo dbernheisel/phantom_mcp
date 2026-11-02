@@ -34,12 +34,12 @@ defmodule Phantom.A2A do
   the event's task and context IDs from the ref. Without a `:pubsub`
   on `Phantom.A2A.Plug`, nothing is streamed.
   """
-  @spec publish(TaskRef.t(), event()) :: :ok
   def publish(%TaskRef{} = ref, event) do
     event = fill_ids(event, ref)
 
     if ref.pubsub,
-      do: Phoenix.PubSub.broadcast(ref.pubsub, topic(ref), {:phantom_a2a_event, event})
+      do:
+        Phoenix.PubSub.broadcast(ref.pubsub, topic(ref), {:phantom_a2a_event, ref.task_id, event})
 
     push(ref, event)
   end
@@ -84,12 +84,13 @@ defmodule Phantom.A2A do
   def event_from_json(_json), do: {:error, "unknown event"}
 
   @doc false
-  def event_to_json(%Task{} = task), do: %{"task" => Task.to_json(task)}
-  def event_to_json(%Message{} = message), do: %{"message" => Message.to_json(message)}
+  def event_to_json(event, opts \\ [])
+  def event_to_json(%Task{} = task, opts), do: %{"task" => Task.to_json(task, opts)}
+  def event_to_json(%Message{} = message, _opts), do: %{"message" => Message.to_json(message)}
 
-  def event_to_json(%StatusUpdate{} = update),
+  def event_to_json(%StatusUpdate{} = update, _opts),
     do: %{"statusUpdate" => StatusUpdate.to_json(update)}
 
-  def event_to_json(%ArtifactUpdate{} = update),
+  def event_to_json(%ArtifactUpdate{} = update, _opts),
     do: %{"artifactUpdate" => ArtifactUpdate.to_json(update)}
 end

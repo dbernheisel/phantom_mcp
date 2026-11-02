@@ -18,7 +18,7 @@ defmodule Phantom.A2A.Test do
   ## Options
 
     * `:headers` - request headers, such as `authorization`
-    * `:pubsub`, `:blocking_timeout` - passed to `Phantom.A2A.Plug`
+    * `:pubsub`, `:blocking_timeout`, `:poll_interval` - passed to `Phantom.A2A.Plug`
     * `:configuration` - the `SendMessage` configuration, for `send_message/4`
   """
 
@@ -91,12 +91,15 @@ defmodule Phantom.A2A.Test do
   end
 
   defp request(method, router, path, body, opts) do
+    # Without a pubsub there is nothing to publish to, so answer with the task
+    # as it is, rather than poll the agent's store for the whole timeout.
+    defaults = if opts[:pubsub], do: [], else: [blocking_timeout: 0]
+
     plug_opts =
       Phantom.A2A.Plug.init(
-        Keyword.merge(
-          [router: router, validate_origin: false],
-          Keyword.take(opts, [:pubsub, :blocking_timeout])
-        )
+        [router: router, validate_origin: false]
+        |> Keyword.merge(defaults)
+        |> Keyword.merge(Keyword.take(opts, [:pubsub, :blocking_timeout, :poll_interval]))
       )
 
     headers = [{"a2a-version", "1.0"} | Keyword.get(opts, :headers, [])]

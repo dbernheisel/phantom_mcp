@@ -349,7 +349,7 @@ defmodule Phantom.Router do
       Module.register_attribute(__MODULE__, :phantom_prompts, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_resource_templates, accumulate: true)
 
-      def connect(session, _auth_info), do: {:ok, session}
+      def connect(session, _auth_info), do: {:ok, %{session | anonymous: true}}
       def disconnect(session), do: {:ok, session}
       def authorize_resource_subscriptions(resources, _session), do: resources
 
@@ -1168,8 +1168,6 @@ defmodule Phantom.Router do
       `Phantom.Tasks`, which is returned as `{:ok, task}`. Needs the router's
       `c:get_task/2`.
   """
-  @spec call_tool(Session.t(), atom() | String.t(), map() | keyword(), keyword()) ::
-          {:ok, map() | Phantom.Tasks.t()} | {:error, map() | :timeout | :not_found | :expired}
   def call_tool(%Session{} = session, name, args \\ %{}, opts \\ []),
     do: Phantom.Router.CallTool.call(session, name, args, opts)
 

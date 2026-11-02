@@ -12,16 +12,10 @@ defmodule Phantom.A2A.BridgeTasksTest.Tools do
     end
   end
 
-  # Finishes a moment later and notifies listeners, as a job would.
+  # Keeps working until the test finishes it; see `finishing_slow_export/1`.
   def slow_export(_params, session) do
     task = new(status: :working, status_message: "Exporting")
-
-    spawn(fn ->
-      Process.sleep(100)
-      finish(task.id, "Slow report ready")
-      Phantom.Tracker.notify_task_updated(task.id)
-    end)
-
+    :ets.insert(@table, {{:slow, task.id}, true})
     {:reply, task, session}
   end
 
@@ -45,17 +39,71 @@ defmodule Phantom.A2A.BridgeTasksTest.Tools do
     task
   end
 
+  # Asks for input; the answer's work finishes just after the bridge reads it.
+  def racy_confirm(_params, session) do
+    elicit =
+      Phantom.Elicit.form(%{
+        message: "Sure?",
+        requested_schema: [%{name: "ok", type: :boolean, required: true}]
+      })
+
+    task = new(status: :input_required, input_requests: %{"ok" => elicit})
+    :ets.insert(@table, {{:racy, task.id}, :waiting})
+    {:reply, task, session}
+  end
+
   def get(id) do
     case :ets.lookup(@table, id) do
-      [{^id, task}] -> {:ok, task}
-      [] -> {:error, :not_found}
+      [{^id, task}] ->
+        finish_if_racing(id)
+        report_fetch(id)
+        {:ok, task}
+
+      [] ->
+        {:error, :not_found}
     end
+  end
+
+  # Tells the test when a request that listens for the task's updates fetches it.
+  defp report_fetch(id) do
+    me = self()
+
+    with [_slow] <- :ets.lookup(@table, {:slow, id}),
+         [{:observer, pid}] <- :ets.lookup(@table, :observer),
+         true <- Enum.any?(Phantom.Tracker.list_task_listeners(), &match?({^id, %{pid: ^me}}, &1)) do
+      send(pid, {:fetched, id})
+    end
+  end
+
+  defp finish_if_racing(id) do
+    case :ets.lookup(@table, {:racy, id}) do
+      [{_key, :answered}] ->
+        :ets.delete(@table, {:racy, id})
+        finish(id, "Finished in the gap")
+
+      _other ->
+        :ok
+    end
+  end
+
+  def answered(id) do
+    if :ets.member(@table, {:racy, id}) do
+      :ets.insert(@table, {{:racy, id}, :answered})
+      {:ok, task} = lookup(id)
+      put(%{task | status: :working, input_requests: %{}})
+      true
+    end
+  end
+
+  defp lookup(id) do
+    [{^id, task}] = :ets.lookup(@table, id)
+    {:ok, task}
   end
 
   def put(task), do: :ets.insert(@table, {task.id, task})
 
   def finish(id, text) do
-    {:ok, task} = get(id)
+    {:ok, task} = lookup(id)
     put(%{task | status: :completed, input_requests: %{}, result: Tool.response(Tool.text(text))})
   end
 end
@@ -68,13 +116,16 @@ defmodule Phantom.A2A.BridgeTasksTest.Router do
   tool :export, Tools, description: "Export a report", input_schema: %{}
   tool :confirm, Tools, description: "Ask before acting", input_schema: %{}
   tool :slow_export, Tools, description: "Export a report later", input_schema: %{}
+  tool :racy_confirm, Tools, description: "Ask, then finish quickly", input_schema: %{}
 
   agent "tools", Phantom.A2A.Bridge
 
   def get_task(id, _session), do: Tools.get(id)
 
   def update_task(task, responses, _session) do
-    Tools.finish(task.id, "confirmed: #{responses["ok"]["content"]["ok"]}")
+    Tools.answered(task.id) ||
+      Tools.finish(task.id, "confirmed: #{responses["ok"]["content"]["ok"]}")
+
     :ok
   end
 
@@ -103,9 +154,7 @@ defmodule Phantom.A2A.BridgeTasksTest do
   alias Phantom.A2A.BridgeTasksTest.{NoTasksRouter, Router, Tools}
 
   setup_all do
-    owner = spawn(fn -> Process.sleep(:infinity) end)
-    :ets.new(__MODULE__, [:named_table, :public, :set])
-    :ets.give_away(__MODULE__, owner, nil)
+    start_supervised!({Agent, fn -> :ets.new(__MODULE__, [:named_table, :public, :set]) end})
     start_supervised!({Phoenix.PubSub, name: Phantom.A2A.BridgeTasksTest.PubSub})
 
     start_supervised!(
@@ -224,6 +273,19 @@ defmodule Phantom.A2A.BridgeTasksTest do
     defp slow_export,
       do: %{"message" => Message.to_json(Message.user([Part.data(%{"tool" => "slow_export"})]))}
 
+    # Runs the request, and finishes the slow export as a job would once the
+    # request is following it.
+    defp finishing_slow_export(request) do
+      :ets.insert(__MODULE__, {:observer, self()})
+      pending = Task.async(request)
+
+      assert_receive {:fetched, id}, 2_000
+      Tools.finish(id, "Slow report ready")
+      Phantom.Tracker.notify_task_updated(id)
+
+      Task.await(pending)
+    end
+
     defp events(conn) do
       for "id: " <> event <- String.split(conn.resp_body, "\n\n", trim: true) do
         [_id, "data: " <> data] = String.split(event, "\n")
@@ -240,23 +302,59 @@ defmodule Phantom.A2A.BridgeTasksTest do
                  }
                }
              } =
-               JSON.decode!(rpc("SendMessage", slow_export()).resp_body)
+               JSON.decode!(
+                 finishing_slow_export(fn -> rpc("SendMessage", slow_export()) end).resp_body
+               )
     end
 
-    test "SendStreamingMessage streams the updated task" do
+    test "SendStreamingMessage streams the task's changes as update events" do
       assert [
                %{"task" => %{"id" => id, "status" => %{"state" => "TASK_STATE_WORKING"}}},
-               %{"task" => %{"id" => id, "status" => %{"state" => "TASK_STATE_COMPLETED"}}}
-             ] = events(rpc("SendStreamingMessage", slow_export()))
+               %{
+                 "artifactUpdate" => %{
+                   "taskId" => id,
+                   "contextId" => id,
+                   "lastChunk" => true,
+                   "artifact" => %{"parts" => [%{"text" => "Slow report ready"}]}
+                 }
+               },
+               %{
+                 "statusUpdate" => %{
+                   "taskId" => id,
+                   "contextId" => id,
+                   "status" => %{"state" => "TASK_STATE_COMPLETED"}
+                 }
+               }
+             ] =
+               events(finishing_slow_export(fn -> rpc("SendStreamingMessage", slow_export()) end))
     end
 
-    test "SubscribeToTask streams the updated task" do
+    test "a task that finishes before the request listens isn't waited on" do
+      {:task, %{"id" => id}} = call(Router, "racy_confirm")
+
+      answer =
+        Message.user(
+          [Part.data(%{"inputResponses" => %{"ok" => %{"action" => "accept"}}})],
+          task_id: id
+        )
+
+      {elapsed, conn} =
+        :timer.tc(fn -> rpc("SendMessage", %{"message" => Message.to_json(answer)}) end)
+
+      assert %{"result" => %{"task" => %{"status" => %{"state" => "TASK_STATE_COMPLETED"}}}} =
+               JSON.decode!(conn.resp_body)
+
+      assert elapsed < 1_000_000
+    end
+
+    test "SubscribeToTask streams the task's changes as update events" do
       {:task, %{"id" => id}} = call(Router, "slow_export")
 
       assert [
                %{"task" => %{"status" => %{"state" => "TASK_STATE_WORKING"}}},
-               %{"task" => %{"status" => %{"state" => "TASK_STATE_COMPLETED"}}}
-             ] = events(rpc("SubscribeToTask", %{"id" => id}))
+               %{"artifactUpdate" => %{"artifact" => %{"artifactId" => "result"}}},
+               %{"statusUpdate" => %{"status" => %{"state" => "TASK_STATE_COMPLETED"}}}
+             ] = events(finishing_slow_export(fn -> rpc("SubscribeToTask", %{"id" => id}) end))
 
       assert [] = Phantom.Tracker.list_task_listeners()
     end

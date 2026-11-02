@@ -6,6 +6,7 @@ defmodule Phantom.A2A.Plug do
     hosts: :all,
     mount: nil,
     blocking_timeout: :timer.seconds(60),
+    poll_interval: :timer.seconds(1),
     card_max_age: 300,
     bindings: [:jsonrpc, :http_json],
     keepalive: :timer.seconds(15),
@@ -48,7 +49,8 @@ defmodule Phantom.A2A.Plug do
   The well-known path serves the card of the agent named by the router's
   `a2a: [well_known: "research"]` option.
 
-  Requests must send an `A2A-Version` header for version 1. Each request
+  Requests must name version 1.0, in an `A2A-Version` header or query
+  parameter. Each request
   calls `c:Phantom.Router.connect/2` with the conn and the request in
   `conn.body_params`: the JSON-RPC request, or for HTTP+JSON,
   `%{"method" => method, "params" => params}` in the same shape. Agents
@@ -64,9 +66,17 @@ defmodule Phantom.A2A.Plug do
       router's application config, so one `pubsub` there serves both plugs. With it, cards advertise streaming,
       `SendStreamingMessage` and `SubscribeToTask` stream events over SSE, and
       `SendMessage` waits for the task to finish or need input. Without it,
-      `SendMessage` returns the task as the agent returned it.
+      `SendMessage` polls `c:Phantom.A2A.Agent.get_task/2` instead, and returns
+      at once for an agent that doesn't store tasks.
     * `:blocking_timeout` - how long `SendMessage` waits for a task to finish
-      or need input before returning it as it is (default 60 seconds)
+      or need input, in milliseconds or `:infinity` (default 60 seconds). The
+      spec sets no limit, but a blocked request can't notice that its client
+      left, and proxies often close idle connections, so the default stops
+      abandoned requests from waiting forever. A task that outlasts it is
+      returned as it is, and the client continues with `GetTask` or
+      `SubscribeToTask`. Set `:infinity` to wait as the spec says.
+    * `:poll_interval` - milliseconds between polls when `SendMessage` can't
+      wait on events (default 1 second)
     * `:mount` - the path the agents are forwarded from, for the well-known
       route, such as `"/a2a"`
     * `:card_max_age` - seconds clients may cache a card (default 300). Cards
@@ -94,8 +104,7 @@ defmodule Phantom.A2A.Plug do
     * `:exception` with the metadata plus `~w[kind reason stacktrace]a`
 
   `:trace_context` holds the W3C `traceparent`, `tracestate`, and `baggage`
-  headers the client sent. Push deliveries are spans too; see
-  `Phantom.A2A.Push`.
+  headers the client sent.
 
   Defaults:
 
@@ -108,11 +117,24 @@ defmodule Phantom.A2A.Plug do
 
   import Plug.Conn
 
+  require Logger
+
   alias Phantom.A2A
-  alias Phantom.A2A.{Context, Error, Events, Message, PushConfig, Task, TaskRef, TaskStatus}
+
+  alias Phantom.A2A.{
+    ArtifactUpdate,
+    Context,
+    Error,
+    Events,
+    Message,
+    PushConfig,
+    StatusUpdate,
+    Task,
+    TaskRef,
+    TaskStatus
+  }
 
   @protocol_version "1.0"
-  @terminal_states ~w[completed failed canceled rejected]a
 
   @impl Plug
   def init(opts) do
@@ -146,7 +168,7 @@ defmodule Phantom.A2A.Plug do
     with id when is_binary(id) <- opts.router.__phantom__(:info).a2a[:well_known],
          {:ok, %{params?: false} = route, _params} <-
            Phantom.Router.A2A.match(opts.router, String.split(id, "/")) do
-      serve_card(conn, opts, static_agent(route, opts), opts.mount || "")
+      serve_card(conn, opts, static_agent(route, opts), opts.mount || "", "public")
     else
       _ -> not_found(conn, opts)
     end
@@ -168,6 +190,9 @@ defmodule Phantom.A2A.Plug do
     with true <- :http_json in opts.bindings,
          {:ok, rpc_method, path_params, rest} <- rest_route(method, Enum.reverse(segments)),
          {:ok, match, tenant} <- match_rest_agent(opts.router, Enum.reverse(rest)) do
+      path_params = Map.new(path_params, fn {key, value} -> {key, decode_segment(value)} end)
+      tenant = tenant && decode_segment(tenant)
+
       rest(conn, Map.put(opts, :binding, :http_json), match, rpc_method, path_params, tenant)
     else
       _ ->
@@ -181,11 +206,12 @@ defmodule Phantom.A2A.Plug do
 
   # A static agent's card is public. A resolved agent's card needs the session.
   defp card_for(conn, opts, %{params?: false, resolver: nil} = route, _segments, _params),
-    do: serve_card(conn, opts, static_agent(route, opts), mount_path(conn))
+    do: serve_card(conn, opts, static_agent(route, opts), mount_path(conn), "public")
 
   defp card_for(conn, opts, route, segments, params) do
     case open_agent(conn, opts, {route, segments, params}) do
-      {:ok, _session, agent} -> serve_card(conn, opts, agent, mount_path(conn))
+      # Resolved for this session, so a shared cache mustn't keep it.
+      {:ok, _session, agent} -> serve_card(conn, opts, agent, mount_path(conn), "private")
       :not_found -> not_found(conn, opts)
       %Plug.Conn{} = conn -> conn
     end
@@ -244,10 +270,10 @@ defmodule Phantom.A2A.Plug do
 
   ## Agent cards
 
-  defp serve_card(conn, opts, agent, mount) do
+  defp serve_card(conn, opts, agent, mount, cacheability) do
     body = conn |> card(opts, agent, mount) |> A2A.Card.to_json() |> JSON.encode!()
     etag = ~s("#{:sha256 |> :crypto.hash(body) |> Base.url_encode64(padding: false)}")
-    conn = put_resp_header(conn, "cache-control", "public, max-age=#{opts.card_max_age}")
+    conn = put_resp_header(conn, "cache-control", "#{cacheability}, max-age=#{opts.card_max_age}")
 
     if etag in get_req_header(conn, "if-none-match") do
       conn |> put_resp_header("etag", etag) |> send_resp(304, "")
@@ -335,6 +361,14 @@ defmodule Phantom.A2A.Plug do
 
   defp rest_route(_method, _segments), do: :error
 
+  # The plug doesn't decode `path_info`. A malformed escape stays as it was, and
+  # finds nothing.
+  defp decode_segment(segment) do
+    URI.decode(segment)
+  rescue
+    ArgumentError -> segment
+  end
+
   # "t1:cancel" -> {"t1", "cancel"}. Task IDs may contain ":", so split on the last.
   defp task_verb(segment) do
     case String.split(segment, ":") do
@@ -397,7 +431,7 @@ defmodule Phantom.A2A.Plug do
 
   defp query_params(query) do
     Map.new(query, fn
-      {key, value} when key in @integer_params ->
+      {key, value} when key in @integer_params and is_binary(value) ->
         case Integer.parse(value) do
           {integer, ""} -> {key, integer}
           _ -> {key, value}
@@ -470,7 +504,8 @@ defmodule Phantom.A2A.Plug do
   defp serve(conn, opts, match, id, method, params) do
     with :ok <- check_version(conn),
          {:ok, session, agent} <- open_agent(conn, opts, match),
-         {:ok, extensions} <- check_extensions(conn, agent) do
+         {:ok, extensions} <- check_extensions(conn, agent),
+         :ok <- check_params(params) do
       conn = put_extensions_header(conn, extensions, agent)
 
       ctx = %Context{
@@ -482,12 +517,14 @@ defmodule Phantom.A2A.Plug do
         metadata: params["metadata"]
       }
 
-      # The public card, for GetExtendedAgentCard.
       opts = Map.put(opts, :card, fn -> card(conn, opts, agent, mount_path(conn)) end)
-
-      # How to fetch an MCP task again after `notify_task_updated/1`.
       refetch = if agent.handler.follows_mcp_tasks?(), do: &agent.handler.get_task(&1, ctx)
-      opts = Map.put(opts, :refetch, refetch)
+
+      opts =
+        Map.merge(opts, %{
+          refetch: refetch,
+          history_length: (params["configuration"] || params)["historyLength"]
+        })
 
       meta = %{
         router: opts.router,
@@ -508,6 +545,8 @@ defmodule Phantom.A2A.Plug do
         exception ->
           send_error(conn, opts, id, Error.internal_error(), 200)
           reraise exception, __STACKTRACE__
+      after
+        flush_events()
       end
     else
       %Error{} = error -> send_error(conn, opts, id, error, 200)
@@ -515,6 +554,42 @@ defmodule Phantom.A2A.Plug do
       :not_found -> not_found(conn, opts)
     end
   end
+
+  # Requests can share a process, as on a keep-alive connection, so nothing a
+  # request listened for may reach the next one.
+  defp flush_events do
+    receive do
+      {:phantom_a2a_event, _task_id, _event} -> flush_events()
+      {:"$gen_cast", {:task_updated, _task_id}} -> flush_events()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp check_params(%{"configuration" => configuration})
+       when not (is_map(configuration) or is_nil(configuration)),
+       do: Error.invalid_params("configuration must be an object")
+
+  defp check_params(params) do
+    configuration = params["configuration"] || %{}
+
+    checks = [
+      {"historyLength", params["historyLength"], &history_length?/1},
+      {"metadata", params["metadata"], &is_map/1},
+      {"configuration.historyLength", configuration["historyLength"], &history_length?/1},
+      {"configuration.returnImmediately", configuration["returnImmediately"], &is_boolean/1},
+      {"configuration.acceptedOutputModes", configuration["acceptedOutputModes"], &is_list/1},
+      {"configuration.taskPushNotificationConfig", configuration["taskPushNotificationConfig"],
+       &is_map/1}
+    ]
+
+    case Enum.find(checks, fn {_name, value, valid?} -> not (is_nil(value) or valid?.(value)) end) do
+      nil -> :ok
+      {name, _value, _valid?} -> Error.invalid_params("#{name} has an invalid value")
+    end
+  end
+
+  defp history_length?(length), do: is_integer(length) and length >= 0
 
   defp check_extensions(conn, agent) do
     requested =
@@ -560,13 +635,18 @@ defmodule Phantom.A2A.Plug do
 
   defp envelope(_body), do: :error
 
-  # A missing header means version 0.3, which this server doesn't speak.
+  # A missing version means 0.3, which this server doesn't speak.
   defp check_version(conn) do
-    version = conn |> get_req_header("a2a-version") |> List.first("0.3")
+    case request_version(conn) do
+      version when is_binary(version) and version == @protocol_version -> :ok
+      version -> Error.version_not_supported(inspect(version))
+    end
+  end
 
-    case version |> String.split(".") |> hd() |> String.trim() do
-      "1" -> :ok
-      _ -> Error.version_not_supported(version)
+  defp request_version(conn) do
+    case get_req_header(conn, "a2a-version") do
+      [version | _] -> String.trim(version)
+      [] -> Map.get(fetch_query_params(conn).query_params, "A2A-Version", "0.3")
     end
   end
 
@@ -616,12 +696,24 @@ defmodule Phantom.A2A.Plug do
   defp respond(conn, id, {:stream, ref, start}, opts) do
     # Subscribe before the work can start, so no event is missed.
     A2A.subscribe(ref)
+    opts = Map.put(opts, :ref_task_id, ref.task_id)
 
     try do
       case start.() do
         {:ok, events, task, adopted} ->
+          conn = start_stream(conn)
+
           try do
-            conn |> start_stream() |> stream(id, events, task, opts)
+            stream(conn, id, events, task, opts)
+          rescue
+            # The status line is sent, so the error can only be an event.
+            exception ->
+              Logger.error(Exception.format(:error, exception, __STACKTRACE__))
+
+              {_result, conn} =
+                send_sse(conn, nil, error_payload(id, Error.internal_error(), 200, opts))
+
+              conn
           after
             if adopted, do: A2A.unsubscribe(adopted)
             if task, do: unfollow_mcp(task.id, opts)
@@ -689,11 +781,11 @@ defmodule Phantom.A2A.Plug do
             {:ok, %{"message" => Message.to_json(message)}}
 
           {:ok, %Task{} = task} ->
-            follow_mcp(task.id, opts)
-            {task, adopted} = adopt_task(task, agent, ctx)
+            followed = follow_mcp(task.id, opts)
+            {task, adopted} = adopt_task(task, agent, ctx, opts)
 
             try do
-              with {:ok, task} <- await(task, ctx, opts) do
+              with {:ok, task} <- await(task, agent, ctx, followed, opts) do
                 {:ok,
                  %{
                    "task" =>
@@ -724,9 +816,9 @@ defmodule Phantom.A2A.Plug do
              {:ok, [message], nil, nil}
 
            {:ok, %Task{} = task} ->
-             follow_mcp(task.id, opts)
-             {task, adopted} = adopt_task(task, agent, ctx)
-             {:ok, [task], task, adopted}
+             followed = follow_mcp(task.id, opts)
+             {task, adopted} = adopt_task(task, agent, ctx, opts)
+             start_following(task, adopted, followed)
 
            error ->
              error
@@ -741,15 +833,16 @@ defmodule Phantom.A2A.Plug do
 
       {:stream, ctx.task_ref,
        fn ->
-         follow_mcp(id, opts)
+         followed = follow_mcp(id, opts)
 
-         case existing_task(id, agent, ctx, allow_terminal: true) do
-           {:ok, %Task{status: %{state: state}}} when state in @terminal_states ->
+         with {:ok, task} <- existing_task(id, agent, ctx, allow_terminal: true),
+              false <- Events.terminal?(task.status.state),
+              {:ok, _events, _task, _adopted} = started <- start_following(task, nil, followed) do
+           started
+         else
+           true ->
              unfollow_mcp(id, opts)
              {:error, Error.unsupported_operation("Task #{id} is already finished")}
-
-           {:ok, task} ->
-             {:ok, [task], task, nil}
 
            error ->
              unfollow_mcp(id, opts)
@@ -761,7 +854,8 @@ defmodule Phantom.A2A.Plug do
 
   defp dispatch("ListTasks", params, agent, ctx, _opts) do
     with {:ok, filter} <- list_filter(params),
-         {:ok, page} <- list_tasks(agent, filter, ctx) do
+         {:ok, page} <- list_tasks(agent, filter, ctx),
+         {:ok, total_size} <- total_size(page) do
       opts = [
         history_length: params["historyLength"],
         include_artifacts: params["includeArtifacts"] == true
@@ -772,7 +866,7 @@ defmodule Phantom.A2A.Plug do
          "tasks" => Enum.map(page.tasks, &Task.to_json(&1, opts)),
          "nextPageToken" => Map.get(page, :next_page_token) || "",
          "pageSize" => filter.page_size,
-         "totalSize" => Map.get(page, :total_size) || length(page.tasks)
+         "totalSize" => total_size
        }}
     end
   end
@@ -798,14 +892,20 @@ defmodule Phantom.A2A.Plug do
        do: {:error, Error.invalid_params("id is required")}
 
   defp dispatch("GetExtendedAgentCard", _params, agent, ctx, opts) do
-    if extended_card?(agent, opts) do
-      case agent.handler.extended_card(opts.card.(), ctx) do
-        {:ok, %A2A.Card{} = card} -> {:ok, A2A.Card.to_json(card)}
-        {:error, %Error{} = error} -> {:error, error}
-        _other -> {:error, Error.invalid_agent_response()}
-      end
-    else
-      {:error, Error.unsupported_operation("Extended agent cards are not supported")}
+    cond do
+      not extended_card?(agent, opts) ->
+        {:error, Error.unsupported_operation("Extended agent cards are not supported")}
+
+      # A2A requires authentication here, and the default connect/2 has none.
+      ctx.session.anonymous ->
+        {:error, Error.extended_card_not_configured()}
+
+      true ->
+        case agent.handler.extended_card(opts.card.(), ctx) do
+          {:ok, %A2A.Card{} = card} -> {:ok, A2A.Card.to_json(card)}
+          {:error, %Error{} = error} -> {:error, error}
+          _other -> {:error, Error.invalid_agent_response()}
+        end
     end
   end
 
@@ -850,7 +950,7 @@ defmodule Phantom.A2A.Plug do
        )
        when is_binary(task_id) do
     with {:ok, ctx} <- push_task(task_id, agent, ctx, opts),
-         {:ok, page_size} <- page_size(params["pageSize"]) do
+         {:ok, page_size} <- push_page_size(params["pageSize"]) do
       case agent.handler.list_push_configs(task_id, ctx) do
         {:ok, configs} when is_list(configs) ->
           offset = page_offset(params["pageToken"])
@@ -900,11 +1000,22 @@ defmodule Phantom.A2A.Plug do
   defp dispatch(method, _params, _agent, _ctx, _opts),
     do: {:error, Error.method_not_found(method)}
 
+  # Listening started just before this, so fetch the task again: a notification
+  # sent since the handler read it would otherwise never arrive.
+  defp adopt_task(%Task{id: id} = task, _agent, %{task_ref: %{task_id: id}}, %{refetch: refetch})
+       when is_function(refetch) do
+    case refetch.(id) do
+      {:ok, %Task{} = fetched} -> {fetched, nil}
+      _gone -> {task, nil}
+    end
+  end
+
+  defp adopt_task(%Task{id: id} = task, _agent, %{task_ref: %{task_id: id}}, _opts),
+    do: {task, nil}
+
   # A handler may answer with a task another system named. Listen on its ID
   # too, then fetch it again, so an event published before that isn't missed.
-  defp adopt_task(%Task{id: id} = task, _agent, %{task_ref: %{task_id: id}}), do: {task, nil}
-
-  defp adopt_task(%Task{} = task, agent, ctx) do
+  defp adopt_task(%Task{} = task, agent, ctx, _opts) do
     ref = %{ctx.task_ref | task_id: task.id, context_id: task.context_id}
     A2A.subscribe(ref)
 
@@ -926,6 +1037,7 @@ defmodule Phantom.A2A.Plug do
         | message: %{message | context_id: context_id},
           task_ref: %{task_ref(task_id, agent, opts) | context_id: context_id},
           context_id: context_id,
+          requested_context_id: message.context_id,
           configuration: params["configuration"] || %{}
       }
 
@@ -1031,6 +1143,8 @@ defmodule Phantom.A2A.Plug do
 
   defp list_filter(params) do
     with {:ok, page_size} <- page_size(params["pageSize"]),
+         :ok <- check_string("contextId", params["contextId"]),
+         :ok <- check_string("pageToken", params["pageToken"]),
          {:ok, status} <- list_status(params["status"]),
          {:ok, after_time} <- timestamp(params["statusTimestampAfter"]) do
       {:ok,
@@ -1043,6 +1157,10 @@ defmodule Phantom.A2A.Plug do
        }}
     end
   end
+
+  defp push_page_size(nil), do: {:ok, 50}
+  defp push_page_size(size) when is_integer(size) and size > 0, do: {:ok, size}
+  defp push_page_size(_size), do: {:error, Error.invalid_params("pageSize must be positive")}
 
   defp page_size(nil), do: {:ok, 50}
   defp page_size(size) when is_integer(size) and size in 1..100, do: {:ok, size}
@@ -1071,6 +1189,18 @@ defmodule Phantom.A2A.Plug do
 
   defp timestamp(_value),
     do: {:error, Error.invalid_params("statusTimestampAfter must be an ISO 8601 timestamp")}
+
+  defp check_string(_name, value) when is_binary(value) or is_nil(value), do: :ok
+  defp check_string(name, _value), do: {:error, Error.invalid_params("#{name} must be a string")}
+
+  # Only the last page's length can stand in for a total the agent didn't give.
+  defp total_size(%{total_size: total_size}) when is_integer(total_size), do: {:ok, total_size}
+
+  defp total_size(%{tasks: tasks} = page) do
+    if Map.get(page, :next_page_token) in [nil, ""],
+      do: {:ok, length(tasks)},
+      else: {:error, Error.invalid_agent_response()}
+  end
 
   defp non_empty(""), do: nil
   defp non_empty(value), do: value
@@ -1140,31 +1270,69 @@ defmodule Phantom.A2A.Plug do
   defp context_id(%Message{context_id: requested}, %Task{} = task),
     do: {:error, Error.invalid_params("contextId #{requested} does not match task #{task.id}")}
 
-  # Wait for published events until the task finishes or needs the client,
-  # unless the client asked to return at once or there is no pubsub to wait on.
-  defp await(task, ctx, opts) do
-    cond do
-      settled?(task) or ctx.configuration["returnImmediately"] == true or is_nil(opts.pubsub) ->
-        {:ok, task}
+  # Wait until the task finishes or needs the client, unless the client asked to
+  # return at once: on published events, or by polling when they can't arrive.
+  defp await(task, agent, ctx, followed, opts) do
+    if settled?(task) or ctx.configuration["returnImmediately"] == true do
+      {:ok, task}
+    else
+      wait = %{
+        ref_task_id: ctx.task_ref.task_id,
+        deadline: deadline(opts.blocking_timeout),
+        poll:
+          if(is_nil(opts.pubsub) or followed == :unavailable,
+            do: &agent.handler.get_task(&1, ctx)
+          )
+      }
 
-      true ->
-        await_events(task, System.monotonic_time(:millisecond) + opts.blocking_timeout, opts)
+      await_events(task, wait, opts)
     end
   end
 
-  defp await_events(task, deadline, opts) do
+  defp await_events(task, %{ref_task_id: ref_task_id} = wait, opts) do
+    remaining = remaining(wait.deadline)
+    # A number is less than `:infinity` in term order, so `min/2` takes the interval.
+    timeout = if wait.poll, do: min(remaining, opts.poll_interval), else: remaining
+
     receive do
-      {:phantom_a2a_event, event} ->
-        await_event(task, event, deadline, opts)
+      {:phantom_a2a_event, task_id, event} when task_id == ref_task_id or task_id == task.id ->
+        await_event(task, event, wait, opts)
 
       {:"$gen_cast", {:task_updated, task_id}}
       when task_id == task.id and is_function(opts.refetch) ->
         case opts.refetch.(task_id) do
-          {:ok, %Task{} = fetched} -> await_event(task, fetched, deadline, opts)
-          _gone -> await_events(task, deadline, opts)
+          {:ok, %Task{} = fetched} -> await_event(task, fetched, wait, opts)
+          _gone -> await_events(task, wait, opts)
         end
     after
-      max(deadline - System.monotonic_time(:millisecond), 0) -> {:ok, task}
+      timeout ->
+        if timeout < remaining, do: poll(task, wait, opts), else: last_poll(task, wait)
+    end
+  end
+
+  defp deadline(:infinity), do: :infinity
+  defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
+
+  defp remaining(:infinity), do: :infinity
+  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
+
+  # The task may have settled since the last poll, so look once more.
+  defp last_poll(task, %{poll: nil}), do: {:ok, task}
+
+  defp last_poll(task, wait) do
+    with {:ok, %Task{} = fetched} <- wait.poll.(task.id),
+         {:ok, task} <- follow(task, fetched) do
+      {:ok, task}
+    else
+      _unchanged -> {:ok, task}
+    end
+  end
+
+  # An agent that doesn't store its tasks has nothing to wait on.
+  defp poll(task, wait, opts) do
+    case wait.poll.(task.id) do
+      {:ok, %Task{} = fetched} -> await_event(task, fetched, wait, opts)
+      _not_stored -> {:ok, task}
     end
   end
 
@@ -1185,19 +1353,38 @@ defmodule Phantom.A2A.Plug do
   defp numbered?(%Task{sequence: sequence}), do: sequence > 0
   defp numbered?(%{sequence: sequence}), do: is_integer(sequence)
 
-  defp await_event(task, event, deadline, opts) do
+  defp await_event(task, event, wait, opts) do
     case follow(task, event) do
-      :seen -> await_events(task, deadline, opts)
-      {:ok, task} -> if settled?(task), do: {:ok, task}, else: await_events(task, deadline, opts)
+      :seen -> await_events(task, wait, opts)
+      {:ok, task} -> if settled?(task), do: {:ok, task}, else: await_events(task, wait, opts)
       {:error, :unknown_artifact} -> {:error, Error.invalid_agent_response()}
     end
   end
 
   # Listen for `Phantom.Tracker.notify_task_updated/1` on an MCP task.
-  defp follow_mcp(task_id, %{refetch: refetch}) when is_function(refetch),
-    do: Phantom.Tracker.subscribe_task(task_id)
+  defp follow_mcp(task_id, %{refetch: refetch}) when is_function(refetch) do
+    case Phantom.Tracker.subscribe_task(task_id) do
+      {:error, reason} when reason in [:tracker_not_in_supervision_tree, :not_available] ->
+        :unavailable
+
+      _tracked ->
+        :ok
+    end
+  end
 
   defp follow_mcp(_task_id, _opts), do: :ok
+
+  # Nothing would ever close a stream on an unfinished task nobody can follow.
+  defp start_following(task, adopted, :unavailable) do
+    if stream_done?(task) do
+      {:ok, [task], task, adopted}
+    else
+      if adopted, do: A2A.unsubscribe(adopted)
+      {:error, Error.unsupported_operation("Following this task needs Phantom.Tracker")}
+    end
+  end
+
+  defp start_following(task, adopted, :ok), do: {:ok, [task], task, adopted}
 
   defp unfollow_mcp(task_id, %{refetch: refetch}) when is_function(refetch),
     do: Phantom.Tracker.unsubscribe_task(task_id)
@@ -1213,14 +1400,13 @@ defmodule Phantom.A2A.Plug do
     |> send_chunked(200)
   end
 
-  # Send the first events, then each published event until the task settles.
   defp stream(conn, id, events, task, opts) do
     case send_events(conn, id, 1, events, opts) do
       {:ok, conn, _n} when is_nil(task) ->
         conn
 
       {:ok, conn, n} ->
-        if settled?(task), do: conn, else: stream_events(conn, id, n, task, opts)
+        if stream_done?(task), do: conn, else: stream_events(conn, id, n, task, opts)
 
       {:error, conn} ->
         conn
@@ -1228,22 +1414,29 @@ defmodule Phantom.A2A.Plug do
   end
 
   defp stream_events(conn, id, n, task, opts) do
+    ref_task_id = opts.ref_task_id
+
     receive do
       {:"$gen_cast", {:task_updated, task_id}}
       when task_id == task.id and is_function(opts.refetch) ->
         case opts.refetch.(task_id) do
-          {:ok, %Task{} = fetched} -> send(self(), {:phantom_a2a_event, fetched})
+          {:ok, %Task{} = fetched} -> enqueue_changes(task, fetched)
           _gone -> :ok
         end
 
         stream_events(conn, id, n, task, opts)
 
-      {:phantom_a2a_event, event} ->
+      {:phantom_a2a_event, task_id, %Task{} = fetched}
+      when task_id == ref_task_id or task_id == task.id ->
+        enqueue_changes(task, fetched)
+        stream_events(conn, id, n, task, opts)
+
+      {:phantom_a2a_event, task_id, event} when task_id == ref_task_id or task_id == task.id ->
         event = fill_ids(event, task)
 
         with {:ok, task} <- follow(task, event),
              {:ok, conn, n} <- send_events(conn, id, n, [event], opts) do
-          if settled?(task), do: conn, else: stream_events(conn, id, n, task, opts)
+          if stream_done?(task), do: conn, else: stream_events(conn, id, n, task, opts)
         else
           :seen ->
             stream_events(conn, id, n, task, opts)
@@ -1265,13 +1458,52 @@ defmodule Phantom.A2A.Plug do
     end
   end
 
+  # After its first event, a stream only carries update events, so a newer copy
+  # of the task goes out as what changed: artifacts, then the status that may
+  # close the stream.
+  defp enqueue_changes(task, fetched) do
+    if not Events.seen?(task, fetched) do
+      task
+      |> task_changes(fetched)
+      |> number_last(fetched.sequence)
+      |> Enum.each(&send(self(), {:phantom_a2a_event, task.id, &1}))
+    end
+  end
+
+  defp task_changes(task, fetched) do
+    artifacts =
+      for artifact <- fetched.artifacts, artifact not in task.artifacts do
+        %ArtifactUpdate{
+          task_id: task.id,
+          context_id: task.context_id,
+          artifact: artifact,
+          last_chunk: true
+        }
+      end
+
+    status =
+      if fetched.status == task.status,
+        do: [],
+        else: [
+          %StatusUpdate{task_id: task.id, context_id: task.context_id, status: fetched.status}
+        ]
+
+    artifacts ++ status
+  end
+
+  defp number_last([], _sequence), do: []
+  defp number_last(events, 0), do: events
+  defp number_last(events, sequence), do: List.update_at(events, -1, &%{&1 | sequence: sequence})
+
   defp send_events(conn, _id, n, [], _opts), do: {:ok, conn, n}
 
   defp send_events(conn, id, n, [event | rest], opts) do
+    json = A2A.event_to_json(event, history_length: opts[:history_length])
+
     body =
       case opts do
-        %{binding: :http_json} -> A2A.event_to_json(event)
-        _ -> %{"jsonrpc" => "2.0", "id" => id, "result" => A2A.event_to_json(event)}
+        %{binding: :http_json} -> json
+        _ -> %{"jsonrpc" => "2.0", "id" => id, "result" => json}
       end
 
     case send_sse(conn, n, body) do
@@ -1281,7 +1513,9 @@ defmodule Phantom.A2A.Plug do
   end
 
   defp send_sse(conn, n, body) do
-    case chunk(conn, ["id: ", Integer.to_string(n), "\ndata: ", JSON.encode!(body), "\n\n"]) do
+    id = if n, do: ["id: ", Integer.to_string(n), "\n"], else: []
+
+    case chunk(conn, [id, "data: ", JSON.encode!(body), "\n\n"]) do
       {:ok, conn} -> {:ok, conn}
       {:error, _reason} -> {:error, conn}
     end
@@ -1296,4 +1530,10 @@ defmodule Phantom.A2A.Plug do
 
   defp settled?(%Task{status: %{state: state}}),
     do: Events.terminal?(state) or Events.interrupted?(state)
+
+  # A stream stays open through AUTH_REQUIRED, as the agent may get the
+  # credential out of band and carry on (§7.6.1), and closes at INPUT_REQUIRED,
+  # which only the client's next message can answer.
+  defp stream_done?(%Task{status: %{state: state}}),
+    do: Events.terminal?(state) or state == :input_required
 end

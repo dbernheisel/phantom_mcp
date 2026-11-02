@@ -13,6 +13,7 @@ defmodule Phantom.A2A.Context do
       canceled, or subscribed to. A new task must use `task_ref.task_id` as
       its ID.
     * `:context_id` - the message's context, or a new one
+    * `:requested_context_id` - the context the client named, if any
     * `:tenant` - the request's `tenant`, passed through. A2A lets one
       endpoint serve several tenants, such as customer organizations: a
       card's interface names a tenant, and clients send it with each request.
@@ -34,6 +35,7 @@ defmodule Phantom.A2A.Context do
     :message,
     :task_ref,
     :context_id,
+    :requested_context_id,
     :tenant,
     :metadata,
     assigns: %{},
@@ -47,6 +49,7 @@ defmodule Phantom.A2A.Context do
           message: Message.t() | nil,
           task_ref: TaskRef.t() | nil,
           context_id: String.t() | nil,
+          requested_context_id: String.t() | nil,
           tenant: String.t() | nil,
           metadata: map() | nil,
           assigns: map(),

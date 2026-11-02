@@ -34,7 +34,8 @@ defmodule Phantom.A2A.Part do
 
   @doc false
   def from_json(%{} = json) do
-    with {:ok, part} <- content(json) do
+    with :ok <- one_kind_of_content(json),
+         {:ok, part} <- content(json) do
       {:ok,
        %{
          part
@@ -66,6 +67,12 @@ defmodule Phantom.A2A.Part do
   end
 
   def list_from_json(_list, _decode), do: {:error, "expected a list"}
+
+  defp one_kind_of_content(json) do
+    if Enum.count(~w[text raw url data], &(json[&1] != nil)) == 1,
+      do: :ok,
+      else: {:error, "part must have exactly one of text, raw, url, or data"}
+  end
 
   defp content(%{"text" => text}) when is_binary(text), do: {:ok, %__MODULE__{text: text}}
   defp content(%{"url" => url}) when is_binary(url), do: {:ok, %__MODULE__{url: url}}

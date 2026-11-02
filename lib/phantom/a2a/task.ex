@@ -19,7 +19,7 @@ defmodule Phantom.A2A.Task do
 
   alias Phantom.A2A.{Artifact, Context, Message, Part, StatusUpdate, TaskStatus}
 
-  @enforce_keys [:id, :context_id, :status]
+  @enforce_keys [:id, :status]
   defstruct [:id, :context_id, :status, :metadata, artifacts: [], history: [], sequence: 0]
 
   @type t :: %__MODULE__{
@@ -67,9 +67,9 @@ defmodule Phantom.A2A.Task do
   end
 
   @doc false
-  def from_json(%{"id" => id, "contextId" => context_id, "status" => status} = json)
-      when is_binary(id) and is_binary(context_id) do
-    with {:ok, status} <- TaskStatus.from_json(status),
+  def from_json(%{"id" => id, "status" => status} = json) when is_binary(id) do
+    with {:ok, context_id} <- context_id(json["contextId"]),
+         {:ok, status} <- TaskStatus.from_json(status),
          {:ok, artifacts} <- Part.list_from_json(json["artifacts"] || [], &Artifact.from_json/1),
          {:ok, history} <- Part.list_from_json(json["history"] || [], &Message.from_json/1) do
       {:ok,
@@ -84,24 +84,29 @@ defmodule Phantom.A2A.Task do
     end
   end
 
-  def from_json(_json), do: {:error, "task needs an id, a contextId, and a status"}
+  def from_json(_json), do: {:error, "task needs an id and a status"}
+
+  defp context_id(id) when is_binary(id) or is_nil(id), do: {:ok, id}
+  defp context_id(_id), do: {:error, "task contextId must be a string"}
 
   @doc false
   def to_json(%__MODULE__{} = task, opts \\ []) do
     remove_nils(%{
       "id" => task.id,
       "contextId" => task.context_id,
-      "status" => TaskStatus.to_json(task.status),
+      "status" => TaskStatus.to_json(task.status, task.id, task.context_id),
       "metadata" => task.metadata,
       "artifacts" => artifacts_json(task.artifacts, Keyword.get(opts, :include_artifacts, true)),
-      "history" =>
-        task.history |> trim_history(opts[:history_length]) |> Enum.map(&Message.to_json/1)
+      "history" => history_json(trim_history(task.history, opts[:history_length]))
     })
   end
 
   defp artifacts_json([], _include?), do: nil
   defp artifacts_json(_artifacts, false), do: nil
   defp artifacts_json(artifacts, true), do: Enum.map(artifacts, &Artifact.to_json/1)
+
+  defp history_json([]), do: nil
+  defp history_json(history), do: Enum.map(history, &Message.to_json/1)
 
   defp trim_history(history, nil), do: history
   defp trim_history(_history, length) when length <= 0, do: []
