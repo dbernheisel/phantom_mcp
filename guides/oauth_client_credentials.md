@@ -82,7 +82,8 @@ def connect(session, conn) do
       {:unauthorized,
        %{
          method: "Bearer",
-         resource_metadata: "https://mcp.myapp.example/.well-known/oauth-protected-resource"
+         resource_metadata: "https://mcp.myapp.example/.well-known/oauth-protected-resource",
+         scope: "mcp:read"
        }}
   end
 end
@@ -105,6 +106,34 @@ defp authorize(session, %{"client_id" => client_id, "scope" => scope}) do
   else
     {:forbidden, "This client may not use the MCP server"}
   end
+end
+
+defp authorize(_session, _claims), do: {:forbidden, "Unrecognized access token"}
+```
+
+`scope` in the `401` tells the client which scopes to ask your authorization
+server for. `MyApp.MCP.tools_for_scopes/1` stands for your own mapping from
+scopes to tool names; `Phantom.Session.allow_tools/2` hides every other tool
+from `tools/list` and refuses calls to it.
+
+## Testing a machine client's tools
+
+Build a session the way `connect/2` would for a machine client, then call a
+tool it isn't allowed. See `Phantom.Test` for starting Phantom in your tests:
+
+```elixir
+import Phantom.Test
+
+test "a read-only machine client can't create questions" do
+  session =
+    build_session(MyApp.MCP.Router,
+      assigns: %{client_id: "ci-job"},
+      allowed_tools: MyApp.MCP.tools_for_scopes(["mcp:read"])
+    )
+
+  session
+  |> call_tool(:create_question, %{study_id: 1, label: "Q", description: "D"})
+  |> assert_jsonrpc_error(code: -32602)
 end
 ```
 
