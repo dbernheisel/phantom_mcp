@@ -110,7 +110,13 @@ defmodule Phantom.MixProject do
   defp docs do
     [
       main: "Phantom",
-      extras: ["guides/mcp_apps.md", "guides/skills.md", "guides/tasks.md", "CHANGELOG.md"],
+      extras: [
+        "guides/mcp_apps.md",
+        "guides/skills.md",
+        "guides/tasks.md",
+        "guides/oauth_client_credentials.md",
+        "CHANGELOG.md"
+      ],
       assets: %{"assets" => "assets"},
       before_closing_body_tag: %{html: @mermaidjs}
     ]
