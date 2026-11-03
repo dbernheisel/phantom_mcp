@@ -824,6 +824,9 @@ defmodule MyApp.MCP.Router do
   end
 ```
 
+For machine clients that authenticate with the OAuth `client_credentials` grant, such as CI jobs
+and other services, see the [OAuth Client Credentials guide](guides/oauth_client_credentials.md).
+
 ## Optional callbacks
 
 There are several optional callbacks to help you hook into the lifecycle of the connections.

@@ -19,6 +19,10 @@ defmodule Phantom.Router do
     `config/runtime.exs`, or `{MyAppWeb.Endpoint, :config, [:secret_key_base]}`.
   - `:request_state_salt` — required with `:secret_key_base`; a stable
     string used to derive the `requestState` key.
+  - `:extensions` — a map of extension identifiers to their settings, added to
+    `capabilities.extensions` in `initialize` and `server/discover`. Use it for
+    extensions your router supports that Phantom doesn't advertise itself, such
+    as `%{"io.modelcontextprotocol/oauth-client-credentials" => %{}}`.
 
   ## Telemetry
 
@@ -278,6 +282,7 @@ defmodule Phantom.Router do
     website_url = Keyword.get(opts, :website_url, nil)
     secret_key_base = Keyword.get(opts, :secret_key_base, nil)
     request_state_salt = Keyword.get(opts, :request_state_salt, nil)
+    extensions = Keyword.get(opts, :extensions, Macro.escape(%{}))
 
     quote location: :keep, generated: true do
       @behaviour Phantom.Router
@@ -312,6 +317,7 @@ defmodule Phantom.Router do
       @website_url unquote(website_url)
       @secret_key_base unquote(secret_key_base)
       @request_state_salt unquote(request_state_salt)
+      @extensions unquote(extensions)
 
       Module.register_attribute(__MODULE__, :phantom_tools, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_prompts, accumulate: true)
@@ -529,6 +535,7 @@ defmodule Phantom.Router do
              protocolVersion: protocol_version,
              capabilities:
                %{elicitation: %{}}
+               |> Phantom.Router.extensions_capability(@extensions)
                |> Phantom.Router.tool_capability(__MODULE__, session)
                |> Phantom.Router.prompt_capability(__MODULE__, session)
                |> Phantom.Router.resource_capability(__MODULE__, session)
@@ -557,6 +564,7 @@ defmodule Phantom.Router do
 
         capabilities =
           %{elicitation: %{}}
+          |> Phantom.Router.extensions_capability(@extensions)
           |> Phantom.Router.tool_capability(__MODULE__, session)
           |> Phantom.Router.prompt_capability(__MODULE__, session)
           |> Phantom.Router.resource_capability(__MODULE__, session)
@@ -1649,6 +1657,14 @@ defmodule Phantom.Router do
 
   def logging_capability(capabilities, _router, _session) do
     Map.put(capabilities, :logging, %{})
+  end
+
+  @doc false
+  def extensions_capability(capabilities, extensions) when map_size(extensions) == 0,
+    do: capabilities
+
+  def extensions_capability(capabilities, extensions) do
+    Map.update(capabilities, :extensions, extensions, &Map.merge(&1, extensions))
   end
 
   @doc false
