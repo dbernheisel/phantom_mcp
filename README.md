@@ -734,6 +734,154 @@ end
 See `Phantom.Elicit` for what each protocol version sends, and for waiting
 inline with `Phantom.Session.elicit/3`.
 
+## Serving A2A agents
+
+Phantom also serves [A2A](https://a2a-protocol.org) agents, for clients that
+delegate a whole job to an agent rather than call its tools. Declare agents in
+the same router, so they share `connect/2`:
+
+```elixir
+defmodule MyApp.MCP.Router do
+  use Phantom.Router,
+    name: "MyApp",
+    vsn: "1.0",
+    a2a: [well_known: "research"]
+
+  agent "research", MyApp.Agents.Research
+  agent "billing", MyApp.Agents.Billing
+end
+```
+
+Each agent is a module that answers messages with a message, or with a task
+it stores and runs:
+
+```elixir
+defmodule MyApp.Agents.Research do
+  use Phantom.A2A.Agent,
+    name: "MyApp Research",
+    description: "Designs and reviews research studies"
+
+  alias Phantom.A2A.{Message, Task}
+
+  @description "Review a study and suggest missing questions"
+  skill :study_review, tags: ["research"]
+
+  def handle_message(message, ctx) do
+    {:ok, _job} = MyApp.Reviews.start(ctx.task_ref, message, ctx.assigns.user)
+    {:reply, Task.submitted(ctx), ctx}
+  end
+
+  def get_task(task_id, ctx), do: MyApp.Reviews.get_a2a_task(task_id, ctx.assigns.user)
+end
+```
+
+Agents found at runtime, such as ones each organization configures, take a
+route with path params and a function that resolves them. It runs after
+`connect/2`, so it can scope agents to the session, and returns the agent's
+card and any state its handler needs:
+
+```elixir
+# In the router: /a2a/acme/triage, /a2a/acme/benchmarks, ...
+agent ":org/:agent_key", MyApp.Agents.Hosted, :resolve
+
+defmodule MyApp.Agents.Hosted do
+  use Phantom.A2A.Agent, name: "Hosted", description: "Agents configured per organization"
+
+  def resolve(%{"org" => org, "agent_key" => key}, session) do
+    case MyApp.Agents.get(session.assigns.user, org, key) do
+      nil ->
+        {:error, :not_found}
+
+      agent ->
+        {:ok,
+         %Phantom.A2A.Card{
+           name: agent.name,
+           description: agent.description,
+           default_input_modes: ["text/plain"],
+           default_output_modes: ["text/plain"]
+         }, agent}
+    end
+  end
+
+  # ctx.agent.params and ctx.agent.state hold the params and the resolved agent.
+  def handle_message(message, ctx) do
+    {:ok, run} = MyApp.Agents.start_run(ctx.agent.state, ctx.task_ref, message)
+    {:reply, Phantom.A2A.Task.submitted(ctx), ctx}
+  end
+end
+```
+
+Wherever the work runs, save each change with `Phantom.A2A.Events.apply/2`,
+then report it with `Phantom.A2A.publish/2`:
+
+```elixir
+event = Phantom.A2A.Task.status(:working, "Reading study…")
+{:ok, task, event} = Phantom.A2A.Events.apply(stored_task, event)
+MyApp.Reviews.save!(task)
+Phantom.A2A.publish(task_ref, event)
+```
+
+Serve the agents with `Phantom.A2A.Plug`, without `Plug.Parsers`, so invalid
+JSON gets the JSON-RPC error A2A requires. With a `pubsub`, agents stream
+over SSE:
+
+```elixir
+get "/.well-known/agent-card.json", Phantom.A2A.Plug,
+  router: MyApp.MCP.Router,
+  mount: "/a2a"
+
+scope "/a2a" do
+  forward "/", Phantom.A2A.Plug, router: MyApp.MCP.Router, pubsub: MyApp.PubSub
+end
+```
+
+Requests go through `connect/2` as MCP requests do, with the JSON-RPC request
+in `conn.body_params`. A client may name a `tenant`, such as an organization,
+in each request; it is only the client's claim, so check it there and assign
+what the session may use:
+
+```elixir
+def connect(session, conn) do
+  tenant = get_in(conn.body_params, ["params", "tenant"])
+
+  with {:ok, user} <- MyApp.Auth.verify(conn),
+       {:ok, org} <- MyApp.Orgs.for_user(user, tenant) do
+    {:ok, Phantom.Session.assign(session, user: user, org: org)}
+  else
+    _ -> {:forbidden, "Not allowed"}
+  end
+end
+```
+
+With `push_notifications: true` on an agent, clients can register webhooks
+for a task, and Phantom posts each event you publish to them. The agent stores
+the configs; Phantom checks each webhook URL so it can't reach your private
+network. See `Phantom.A2A.Push`.
+
+To serve your MCP tools as an A2A agent without writing one, mount
+`Phantom.A2A.Bridge`. A client calls a tool with a data part naming it, and
+the card lists each tool with its input schema:
+
+```elixir
+agent "tools", Phantom.A2A.Bridge, tools: ~w[search_studies create_question]
+```
+
+To call other agents, use `Phantom.A2A.Client`, which needs the optional
+`{:req, "~> 0.5"}` dependency:
+
+```elixir
+{:ok, client} = Phantom.A2A.Client.new("https://agents.example")
+{:ok, reply} = Phantom.A2A.Client.send_message(client, "Hello")
+```
+
+Phantom serves the JSON-RPC and HTTP+JSON bindings: `SendMessage`,
+`SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`,
+`SubscribeToTask`, `GetExtendedAgentCard`, and the push notification config
+methods. Agents can
+declare protocol extensions, and each request is a
+`[:phantom, :a2a, :dispatch]` telemetry span carrying the client's W3C trace
+context. See the [A2A guide](guides/a2a.md).
+
 ## What PhantomMCP supports
 
 Phantom will implement these MCP requests on your behalf:
@@ -823,6 +971,9 @@ defmodule MyApp.MCP.Router do
     |> Phantom.Session.allowed_resource_templates(~w[study])
   end
 ```
+
+For machine clients that authenticate with the OAuth `client_credentials` grant, such as CI jobs
+and other services, see the [OAuth Client Credentials guide](guides/oauth_client_credentials.md).
 
 ## Optional callbacks
 

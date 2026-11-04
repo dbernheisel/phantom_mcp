@@ -12,4 +12,4 @@ unless :clustered in exclude do
   ])
 end
 
-ExUnit.start(exclude: [:conformance | exclude])
+ExUnit.start(exclude: [:conformance, :acts | exclude])

@@ -28,7 +28,8 @@ defmodule Phantom.MixProject do
   def application do
     [
       mod: {Phantom.Application, []},
-      extra_applications: [:logger | extra_applications(Mix.env())]
+      # :inets and :ssl deliver A2A push notifications with :httpc.
+      extra_applications: [:logger, :inets, :ssl | extra_applications(Mix.env())]
     ]
   end
 
@@ -36,7 +37,7 @@ defmodule Phantom.MixProject do
   defp extra_applications(env) when env in [:dev, :test], do: [:mnesia]
   defp extra_applications(_env), do: []
 
-  defp elixirc_paths(:test), do: ["lib", "test/support", "test/conformance"]
+  defp elixirc_paths(:test), do: ["lib", "test/support", "test/conformance", "test/acts"]
 
   defp elixirc_paths(:stdio), do: ["lib", "test/support/app"]
 
@@ -52,14 +53,15 @@ defmodule Phantom.MixProject do
       {:phoenix_pubsub, "~> 2.0", optional: true, only: [:dev, :test, :prod, :stdio]},
       {:uuid_v7, "~> 0.6"},
       {:yamerl, "~> 0.10", optional: true},
+      # Phantom.A2A.Client
+      {:req, "~> 0.5", optional: true},
       ## Test
       {:phoenix_live_view, "~> 1.0", only: [:dev, :test, :stdio]},
       {:ex_doc, "~> 0.31", only: :dev, warn_if_outdated: true, runtime: false},
       {:tidewave, "~> 0.5", only: [:dev, :test], warn_if_outdated: true},
       {:makeup_javascript, "~> 0.1", only: :dev},
       {:phoenix_live_reload, "~> 1.5", only: [:dev, :test, :stdio]},
-      {:bandit, "~> 1.0", only: [:dev, :test]},
-      {:req, "~> 0.5", only: [:dev, :test]}
+      {:bandit, "~> 1.0", only: [:dev, :test]}
     ]
   end
 
@@ -110,7 +112,14 @@ defmodule Phantom.MixProject do
   defp docs do
     [
       main: "Phantom",
-      extras: ["guides/mcp_apps.md", "guides/skills.md", "guides/tasks.md", "CHANGELOG.md"],
+      extras: [
+        "guides/mcp_apps.md",
+        "guides/skills.md",
+        "guides/tasks.md",
+        "guides/oauth_client_credentials.md",
+        "guides/a2a.md",
+        "CHANGELOG.md"
+      ],
       assets: %{"assets" => "assets"},
       before_closing_body_tag: %{html: @mermaidjs}
     ]

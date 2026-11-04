@@ -10,6 +10,7 @@ defmodule Phantom.Session do
 
   @enforce_keys [:id]
   defstruct [
+    :allowed_agents,
     :allowed_prompts,
     :allowed_resource_templates,
     :allowed_tools,
@@ -26,6 +27,7 @@ defmodule Phantom.Session do
     :subscription_id,
     :tracker,
     :transport_pid,
+    anonymous: false,
     assigns: %{},
     client_info: %{},
     client_capabilities: %{
@@ -41,10 +43,12 @@ defmodule Phantom.Session do
   ]
 
   @type t :: %__MODULE__{
+          allowed_agents: [String.t()] | nil,
           allowed_prompts: [String.t()],
           allowed_resource_templates: [String.t()],
           allowed_tools: [String.t()],
           state: term() | nil,
+          anonymous: boolean(),
           assigns: map(),
           close_after_complete: boolean(),
           id: binary(),
@@ -91,6 +95,11 @@ defmodule Phantom.Session do
   @doc "Set an allow-list of usable Resource Templates for the session"
   def allow_resource_templates(%__MODULE__{} = session, resource_templates) do
     %{session | allowed_resource_templates: resource_templates}
+  end
+
+  @doc "Set an allow-list of A2A agents, by the path of their `agent` route"
+  def allow_agents(%__MODULE__{} = session, agents) do
+    %{session | allowed_agents: agents}
   end
 
   @doc "Set an allow-list of usable Prompts for the session"

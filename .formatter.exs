@@ -9,6 +9,8 @@ locals_without_parens = [
   resource: 4,
   skill: 2,
   skill: 3,
+  agent: 2,
+  agent: 3,
   embed_skills: 1,
   input_schema: 1,
   field: 2,

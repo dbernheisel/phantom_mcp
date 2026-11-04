@@ -19,6 +19,10 @@ defmodule Phantom.Router do
     `config/runtime.exs`, or `{MyAppWeb.Endpoint, :config, [:secret_key_base]}`.
   - `:request_state_salt` — required with `:secret_key_base`; a stable
     string used to derive the `requestState` key.
+  - `:extensions` — a map of extension identifiers to their settings, added to
+    `capabilities.extensions` in `initialize` and `server/discover`. Use it for
+    extensions your router supports that Phantom doesn't advertise itself, such
+    as `%{"io.modelcontextprotocol/oauth-client-credentials" => %{}}`.
 
   ## Telemetry
 
@@ -183,6 +187,27 @@ defmodule Phantom.Router do
               | {:error, any(), Session.t()}
 
   @doc """
+  List the paths of the A2A agents the session may use, a page at a time.
+  Return the paths of one page and the cursor of the next, or `nil` on the
+  last page. The cursor is opaque to Phantom.
+
+  The default lists every `agent` route without path params that
+  `Phantom.Session.allow_agents/2` allows. Override it to add the agents your
+  routes with path params resolve:
+
+      def list_agents(_cursor, session) do
+        hosted = for a <- MyApp.Agents.for_org(session.assigns.org), do: "\#{a.org}/\#{a.key}"
+        {:ok, ["research" | hosted], nil}
+      end
+
+  Phantom doesn't serve the list over A2A, which has no method for it; use it
+  to build a directory of your agents, or in tests with
+  `Phantom.A2A.Test.list_agents/2`.
+  """
+  @callback list_agents(cursor :: String.t() | nil, Session.t()) ::
+              {:ok, [String.t()], next_cursor :: String.t() | nil}
+
+  @doc """
   Authorize subscriptions and update notifications for resolved resources.
 
   Each resource is represented as `{uri, path_params, resource_template}`. Return either the
@@ -278,6 +303,8 @@ defmodule Phantom.Router do
     website_url = Keyword.get(opts, :website_url, nil)
     secret_key_base = Keyword.get(opts, :secret_key_base, nil)
     request_state_salt = Keyword.get(opts, :request_state_salt, nil)
+    extensions = Keyword.get(opts, :extensions, Macro.escape(%{}))
+    a2a = Keyword.get(opts, :a2a, [])
 
     quote location: :keep, generated: true do
       @behaviour Phantom.Router
@@ -293,7 +320,9 @@ defmodule Phantom.Router do
           prompt: 2,
           prompt: 3,
           skill: 2,
-          skill: 3
+          skill: 3,
+          agent: 2,
+          agent: 3
         ]
 
       require Phantom.ClientLogger
@@ -312,12 +341,15 @@ defmodule Phantom.Router do
       @website_url unquote(website_url)
       @secret_key_base unquote(secret_key_base)
       @request_state_salt unquote(request_state_salt)
+      @extensions unquote(extensions)
+      @a2a unquote(a2a)
 
       Module.register_attribute(__MODULE__, :phantom_tools, accumulate: true)
+      Module.register_attribute(__MODULE__, :phantom_agents, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_prompts, accumulate: true)
       Module.register_attribute(__MODULE__, :phantom_resource_templates, accumulate: true)
 
-      def connect(session, _auth_info), do: {:ok, session}
+      def connect(session, _auth_info), do: {:ok, %{session | anonymous: true}}
       def disconnect(session), do: {:ok, session}
       def authorize_resource_subscriptions(resources, _session), do: resources
 
@@ -352,6 +384,8 @@ defmodule Phantom.Router do
       def list_skills(cursor, session) do
         Phantom.Router.Skills.default_list(__MODULE__, session, cursor)
       end
+
+      def list_agents(_cursor, session), do: Phantom.Router.A2A.default_list(__MODULE__, session)
 
       @doc """
       Return the Resource URI for the resource by name and params.
@@ -529,6 +563,7 @@ defmodule Phantom.Router do
              protocolVersion: protocol_version,
              capabilities:
                %{elicitation: %{}}
+               |> Phantom.Router.extensions_capability(@extensions)
                |> Phantom.Router.tool_capability(__MODULE__, session)
                |> Phantom.Router.prompt_capability(__MODULE__, session)
                |> Phantom.Router.resource_capability(__MODULE__, session)
@@ -557,6 +592,7 @@ defmodule Phantom.Router do
 
         capabilities =
           %{elicitation: %{}}
+          |> Phantom.Router.extensions_capability(@extensions)
           |> Phantom.Router.tool_capability(__MODULE__, session)
           |> Phantom.Router.prompt_capability(__MODULE__, session)
           |> Phantom.Router.resource_capability(__MODULE__, session)
@@ -745,6 +781,7 @@ defmodule Phantom.Router do
       @doc false
       defoverridable list_resources: 2,
                      list_skills: 2,
+                     list_agents: 2,
                      authorize_resource_subscriptions: 2,
                      authorize_task_subscriptions: 2,
                      server_info: 1,
@@ -1063,6 +1100,77 @@ defmodule Phantom.Router do
     )
   end
 
+  @doc """
+  Route an A2A agent to a module that implements `Phantom.A2A.Agent`.
+
+  The path is the agent's ID and its URL under `Phantom.A2A.Plug`'s mount.
+  `opts` are passed to the agent as `ctx.agent.opts`, so one module can serve
+  several agents.
+
+      agent "research", MyApp.Agents.Research
+      agent "support-es", MyApp.Agents.Support, locale: "es"
+
+  A path with params routes to agents found at runtime, such as ones stored
+  per organization. Name a function of the module that resolves them:
+
+      agent ":org/:agent_key", MyApp.Agents.Hosted, :resolve
+
+  It is called with the path params and the session from
+  `c:Phantom.Router.connect/2`, and returns `{:ok, %Phantom.A2A.Card{}, state}`
+  or `{:error, :not_found}`. The handler gets the params and `state` in
+  `ctx.agent`. A resolved agent's card needs the session, so it isn't public.
+  Routes without params match first.
+
+  Configure the cards with the `:a2a` option of `use Phantom.Router`:
+
+    * `:well_known` - the path of the agent, without params, served at
+      `/.well-known/agent-card.json`
+    * `:provider` - `%{"organization" => ..., "url" => ...}`
+    * `:security_schemes`, `:security_requirements` - as ProtoJSON maps
+
+  Limit agents per session with `Phantom.Session.allow_agents/2`, by the
+  route's path or the agent's. See `Phantom.A2A`.
+  """
+  defmacro agent(path, handler, opts_or_resolver \\ []) do
+    quote generated: true do
+      @phantom_agents Phantom.Router.agent_route(
+                        unquote(path),
+                        unquote(handler),
+                        unquote(opts_or_resolver)
+                      )
+    end
+  end
+
+  @doc false
+  defdelegate agent_route(path, handler, opts_or_resolver), to: Phantom.Router.A2A, as: :route
+
+  @doc """
+  Call one of the session's router's tools from your own code, such as an A2A
+  agent answering with the tools it already has, and wait for its result.
+
+      def handle_message(message, ctx) do
+        {:ok, result} = Phantom.Router.call_tool(ctx.session, :search_studies, query: "churn")
+        # ...
+      end
+
+  The tool runs in the calling process with the session's assigns and
+  allow-lists, and arguments are validated as for `tools/call`. There is no
+  client, so `Phantom.Session.elicit/3` returns `:not_supported`. Returns
+  `{:ok, result}` with the tool's result, `{:error, error}` with the JSON-RPC
+  error, or `{:error, :timeout}`.
+
+  ## Options
+
+    * `:timeout` - how long to wait for a tool that answers later (default 60 seconds)
+    * `:on_progress` - a function called with `progress, total, message` for
+      each progress notification the tool sends
+    * `:tasks` - declare the Tasks extension, so a tool may answer with a
+      `Phantom.Tasks`, which is returned as `{:ok, task}`. Needs the router's
+      `c:get_task/2`.
+  """
+  def call_tool(%Session{} = session, name, args \\ %{}, opts \\ []),
+    do: Phantom.Router.CallTool.call(session, name, args, opts)
+
   @doc false
   defp maybe_register_app(name, opts, caller) do
     {app_module, opts} = Keyword.pop(opts, :app)
@@ -1318,11 +1426,14 @@ defmodule Phantom.Router do
           %{
             name: @name,
             version: @vsn,
+            instructions: @instructions,
             tools: @phantom_tools,
             resource_templates: @phantom_resource_templates,
             prompts: @phantom_prompts,
             secret_key_base: @secret_key_base,
-            request_state_salt: @request_state_salt
+            request_state_salt: @request_state_salt,
+            a2a: @a2a,
+            agents: Enum.reverse(@phantom_agents)
           }
         end
       end,
@@ -1649,6 +1760,14 @@ defmodule Phantom.Router do
 
   def logging_capability(capabilities, _router, _session) do
     Map.put(capabilities, :logging, %{})
+  end
+
+  @doc false
+  def extensions_capability(capabilities, extensions) when map_size(extensions) == 0,
+    do: capabilities
+
+  def extensions_capability(capabilities, extensions) do
+    Map.update(capabilities, :extensions, extensions, &Map.merge(&1, extensions))
   end
 
   @doc false

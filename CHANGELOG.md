@@ -1,3 +1,43 @@
+## Unreleased
+
+- New: the `:extensions` option on `use Phantom.Router` adds extensions your
+  router supports to `capabilities.extensions` in `initialize` and
+  `server/discover`, such as `io.modelcontextprotocol/oauth-client-credentials`.
+- New: the [OAuth Client Credentials guide](guides/oauth_client_credentials.md),
+  for machine clients that authenticate with the `client_credentials` grant.
+- New: serve [A2A](https://a2a-protocol.org) v1.0 agents. Declare them in a
+  router with `agent "research", MyApp.Agents.Research`, implement them with
+  `Phantom.A2A.Agent`, and serve them with `Phantom.A2A.Plug` over the
+  JSON-RPC and HTTP+JSON bindings, streaming over SSE with a pubsub. Agents store their own tasks and report
+  progress with `Phantom.A2A.publish/2`, numbering events with
+  `Phantom.A2A.Events.apply/2` so a client that subscribes mid-task gets no
+  duplicates. `Phantom.Session.allow_agents/2`
+  limits agents per session, and `Phantom.A2A.Test` drives agents in tests.
+  Routes with path params, such as `agent ":org/:agent_key", Mod, :resolve`,
+  serve agents found at runtime. Agents with `push_notifications: true`
+  push each event to clients' webhooks, which Phantom checks against private
+  networks. Agents can offer an extended card (`extended_card: true`) and
+  declare protocol extensions, and requests and push deliveries emit
+  `[:phantom, :a2a, :dispatch]` and `[:phantom, :a2a, :push]` telemetry spans.
+  Phantom passes the A2A conformance suite (ACTS) on both bindings, apart from
+  its client tests.
+- New: the [A2A guide](guides/a2a.md), with storing tasks in Ecto, running
+  them with Oban, and retrying push deliveries.
+- New: `Phantom.A2A.Client` calls A2A agents over either binding, with the
+  optional `{:req, "~> 0.5"}` dependency. With it, Phantom passes every ACTS
+  test on both bindings.
+- New: `c:Phantom.Router.list_agents/2` lists the agents a session may use.
+- New: `Phantom.A2A.Bridge` serves a router's MCP tools as an A2A agent.
+  Mount it with `agent "tools", Phantom.A2A.Bridge`, and clients call a tool
+  with a data part naming it. Tools that answer with a `Phantom.Tasks` become
+  A2A tasks backed by the router's task callbacks, and A2A clients waiting on
+  them get each `Phantom.Tracker.notify_task_updated/1`.
+- New: `Phantom.Router.call_tool/4` takes `tasks: true` to let a tool answer
+  with a `Phantom.Tasks`.
+- New: `c:Phantom.A2A.Agent.card/2` adjusts an agent's card for its route.
+- New: `Phantom.Router.call_tool/4` calls a router's tool from your own code,
+  such as an A2A agent answering with the tools the router already has.
+
 ## 0.7.3 (2026-10-18)
 
 - Fixup canceling work due to inactivity

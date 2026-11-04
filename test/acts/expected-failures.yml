@@ -1,0 +1,5 @@
+# ACTS tests Phantom is known to fail, each with its cause, as `- TEST-ID`
+# lines. The ACTS test fails when a test outside this list fails, or a listed
+# one passes.
+#
+# None: Phantom passes every test on both bindings.

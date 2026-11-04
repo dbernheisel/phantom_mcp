@@ -1,0 +1,41 @@
+defmodule Phantom.ACTS.HTTP do
+  @moduledoc """
+  Serves the ACTS agent's card at `/.well-known/agent-card.json` and the agent
+  at `/a2a/acts`. Without `:pubsub`, and with `push_notifications: false` and
+  `extended_card: false`, it advertises none of those capabilities: that is
+  the suite's reduced-capabilities agent.
+  """
+
+  @behaviour Plug
+
+  import Plug.Conn
+
+  @impl Plug
+  def init(opts) do
+    %{
+      a2a:
+        Phantom.A2A.Plug.init(
+          router: Keyword.get(opts, :router, Phantom.ACTS.Router),
+          pubsub: opts[:pubsub],
+          push_notifications: Keyword.get(opts, :push_notifications, true),
+          extended_card: Keyword.get(opts, :extended_card, true),
+          mount: "/a2a",
+          validate_origin: false
+        )
+    }
+  end
+
+  @impl Plug
+  def call(conn, opts) do
+    case conn.path_info do
+      [".well-known", "agent-card.json"] ->
+        Phantom.A2A.Plug.call(conn, opts.a2a)
+
+      ["a2a" | rest] ->
+        Phantom.A2A.Plug.call(%{conn | path_info: rest, script_name: ["a2a"]}, opts.a2a)
+
+      _ ->
+        send_resp(conn, 404, "")
+    end
+  end
+end
