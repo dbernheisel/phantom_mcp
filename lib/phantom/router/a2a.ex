@@ -28,7 +28,8 @@ defmodule Phantom.Router.A2A do
               "HTTP+JSON binding"
     end
 
-    params? = Enum.any?(segments, &String.starts_with?(&1, ":"))
+    {params, _match} = Plug.Router.Utils.build_path_match(path)
+    params? = params != []
 
     if params? and is_nil(resolver) do
       raise ArgumentError,
@@ -38,7 +39,6 @@ defmodule Phantom.Router.A2A do
 
     %{
       id: path,
-      segments: segments,
       handler: handler,
       opts: opts,
       resolver: resolver,
@@ -56,32 +56,34 @@ defmodule Phantom.Router.A2A do
     {:ok, paths, nil}
   end
 
+  @doc false
+  # The router's `__phantom_agent__/2`: a function head per route, matched with
+  # `Plug.Router`'s path syntax, so a request path finds its route by pattern match.
+  def compile(routes) do
+    clauses =
+      for route <- routes do
+        {params, match} = Plug.Router.Utils.build_path_match(route.id)
+        path_params = for name <- params, do: {Atom.to_string(name), Macro.var(name, nil)}
+
+        quote generated: true do
+          def __phantom_agent__(unquote(match), unquote(route.params?)),
+            do: {:ok, unquote(Macro.escape(route)), %{unquote_splicing(path_params)}}
+        end
+      end
+
+    quote generated: true do
+      @doc false
+      unquote(clauses)
+      def __phantom_agent__(_segments, _params?), do: :error
+    end
+  end
+
   @doc "The route for a request path, static routes first, with its path params"
   def match(router, segments) do
-    with :error <- match(router, segments, false), do: match(router, segments, true)
+    with :error <- router.__phantom_agent__(segments, false),
+         do: router.__phantom_agent__(segments, true)
   end
 
   @doc "The static (`false`) or dynamic (`true`) route for a request path"
-  def match(router, segments, params?) do
-    Enum.find_value(router.__phantom__(:info).agents, :error, fn
-      %{params?: ^params?} = route ->
-        case match_segments(route.segments, segments, %{}) do
-          {:ok, params} -> {:ok, route, params}
-          :error -> nil
-        end
-
-      _route ->
-        nil
-    end)
-  end
-
-  defp match_segments([], [], params), do: {:ok, params}
-
-  defp match_segments([":" <> name | pattern], [segment | segments], params),
-    do: match_segments(pattern, segments, Map.put(params, name, segment))
-
-  defp match_segments([segment | pattern], [segment | segments], params),
-    do: match_segments(pattern, segments, params)
-
-  defp match_segments(_pattern, _segments, _params), do: :error
+  def match(router, segments, params?), do: router.__phantom_agent__(segments, params?)
 end

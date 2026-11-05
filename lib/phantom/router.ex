@@ -1437,6 +1437,7 @@ defmodule Phantom.Router do
           }
         end
       end,
+      Phantom.Router.A2A.compile(Enum.reverse(Module.get_attribute(env.module, :phantom_agents))),
       Macro.escape(
         Phantom.Router.__create_resource_routers__(
           Module.get_attribute(env.module, :phantom_resource_templates),

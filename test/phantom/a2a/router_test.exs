@@ -10,7 +10,7 @@ defmodule Phantom.A2A.RouterTest do
       end
     end
 
-    assert %{id: "teams/a.b-c_d~e", segments: ["teams", "a.b-c_d~e"], opts: [x: 1]} =
+    assert %{id: "teams/a.b-c_d~e", params?: false, opts: [x: 1]} =
              Phantom.Router.agent_route("teams/a.b-c_d~e", __MODULE__, x: 1)
   end
 

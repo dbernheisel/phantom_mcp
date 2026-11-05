@@ -116,6 +116,16 @@ defmodule Phantom.A2A.DynamicTest do
              send_message(Router, "acme/bench", "hi", as("acme", [{"x-allow", "acme/triage"}]))
   end
 
+  test "a router compiles its static and dynamic routes apart" do
+    assert {:ok, %{id: "acme/static"}, %{}} = Router.__phantom_agent__(["acme", "static"], false)
+
+    assert {:ok, %{id: ":org/:agent_key"}, %{"org" => "acme", "agent_key" => "static"}} =
+             Router.__phantom_agent__(["acme", "static"], true)
+
+    assert :error = Router.__phantom_agent__(["acme"], false)
+    assert :error = Router.__phantom_agent__(["acme", "static", "x"], true)
+  end
+
   test "routes with params need a resolver" do
     assert_raise ArgumentError, ~r/needs a resolver/, fn ->
       Phantom.Router.agent_route(":org/agent", __MODULE__, [])
