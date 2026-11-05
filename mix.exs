@@ -5,7 +5,7 @@ defmodule Phantom.MixProject do
     [
       compilers: Mix.compilers(),
       app: :phantom_mcp,
-      description: "Elixir MCP (Model Context Protocol) server library with Plug",
+      description: "Elixir MCP (Model Context Protocol) and A2A server library with Plug",
       deps: deps(),
       dialyzer: [plt_add_apps: [:ex_unit]],
       docs: docs(),
@@ -14,7 +14,7 @@ defmodule Phantom.MixProject do
       escript: escript(Mix.env()),
       package: package(),
       start_permanent: Mix.env() == :prod,
-      version: "0.7.3",
+      version: "0.8.0",
       source_url: "https://github.com/dbernheisel/phantom_mcp"
     ]
   end
