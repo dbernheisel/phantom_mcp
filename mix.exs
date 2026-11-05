@@ -120,6 +120,17 @@ defmodule Phantom.MixProject do
         "guides/a2a.md",
         "CHANGELOG.md"
       ],
+      groups_for_extras: [
+        MCP: ~r"guides/(oauth_client_credentials|mcp_apps|skills|tasks)\.md",
+        A2A: ~r"guides/a2a\.md",
+      ],
+      groups_for_modules: [
+        MCP: ~r/^Phantom\.(?!A2A|App|UI$|Tasks$|Skill$|Cache|ErrorWrapper|Plug|Request|Router|Test|Tracker|Stdio)/,
+        "MCP Extension - Tasks": [Phantom.Tasks],
+        "MCP Extension - UI": ~r/^Phantom\.(App|UI$)/,
+        "MCP Extension - Skills": [Phantom.Skill],
+        A2A: ~r/^Phantom\.A2A/
+      ],
       assets: %{"assets" => "assets"},
       before_closing_body_tag: %{html: @mermaidjs}
     ]
