@@ -1,5 +1,7 @@
 ## Unreleased
 
+## 0.8.0 (2026-11-04)
+
 - New: the `:extensions` option on `use Phantom.Router` adds extensions your
   router supports to `capabilities.extensions` in `initialize` and
   `server/discover`, such as `io.modelcontextprotocol/oauth-client-credentials`.
