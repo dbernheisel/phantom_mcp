@@ -123,6 +123,8 @@ defmodule Phantom.A2A.PushTest do
     :ok
   end
 
+  def handle_push_stop(_event, _measurements, meta, test), do: send(test, {:telemetry, meta})
+
   defp eventually(fun, tries \\ 50) do
     cond do
       fun.() ->
@@ -503,14 +505,11 @@ defmodule Phantom.A2A.PushTest do
     end
 
     test "telemetry gets the config's ID, not its secrets", %{url: url} do
-      test = self()
-      handler = "push-telemetry-#{inspect(test)}"
-
       :telemetry.attach(
-        handler,
+        "push-telemetry-#{inspect(self())}",
         [:phantom, :a2a, :push, :stop],
-        fn _event, _measurements, meta, _config -> send(test, {:telemetry, meta}) end,
-        nil
+        &__MODULE__.handle_push_stop/4,
+        self()
       )
 
       config = %PushConfig{

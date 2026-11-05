@@ -19,7 +19,6 @@ defmodule Phantom.A2A.TelemetryTest do
   alias Phantom.A2A.TelemetryTest.Router
 
   setup do
-    test = self()
     id = {__MODULE__, make_ref()}
 
     :telemetry.attach_many(
@@ -31,14 +30,16 @@ defmodule Phantom.A2A.TelemetryTest do
         [:phantom, :a2a, :push, :start],
         [:phantom, :a2a, :push, :stop]
       ],
-      fn event, measurements, meta, _config ->
-        if meta[:router] == Router or meta[:url] == "http://127.0.0.1:1/hook",
-          do: send(test, {:telemetry, event, measurements, meta})
-      end,
-      nil
+      &__MODULE__.handle_event/4,
+      self()
     )
 
     on_exit(fn -> :telemetry.detach(id) end)
+  end
+
+  def handle_event(event, measurements, meta, test) do
+    if meta[:router] == Router or meta[:url] == "http://127.0.0.1:1/hook",
+      do: send(test, {:telemetry, event, measurements, meta})
   end
 
   defp send_message(text, headers \\ []) do
