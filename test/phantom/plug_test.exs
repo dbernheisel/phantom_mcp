@@ -2006,4 +2006,54 @@ defmodule Phantom.PlugTest do
       assert JSON.decode!(conn.resp_body)["error"]["code"] == -32600
     end
   end
+
+  describe "initialize protocol version negotiation" do
+    defp initialize(session_id, params) do
+      :post
+      |> conn("/mcp", %{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params:
+          Map.merge(%{capabilities: %{}, clientInfo: %{name: "Client", version: "1.0"}}, params)
+      })
+      |> put_req_header("content-type", "application/json")
+      |> call(%{session_id: session_id})
+
+      assert_receive {:response, 1, "message", response}, 500
+      assert_receive {:conn, %{status: 200}}, 500
+      response
+    end
+
+    test "a supported legacy version is agreed as requested", context do
+      assert %{result: %{protocolVersion: "2025-06-18"}} =
+               initialize(to_string(context.test), %{protocolVersion: "2025-06-18"})
+    end
+
+    test "a stateless version is answered with the latest legacy version", context do
+      session_id = to_string(context.test)
+
+      assert %{result: %{protocolVersion: "2025-11-25"}} =
+               initialize(session_id, %{protocolVersion: "2026-07-28"})
+
+      # The client continues on the negotiated version with legacy requests.
+      :post
+      |> conn("/mcp", %{jsonrpc: "2.0", method: "tools/list", id: 2})
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("mcp-protocol-version", "2025-11-25")
+      |> call(%{session_id: session_id})
+
+      assert_receive {:response, 2, "message", %{result: %{tools: [_ | _]}}}, 500
+      assert_receive {:conn, %{status: 200}}, 500
+    end
+
+    test "an unknown version is answered with the latest legacy version", context do
+      assert %{result: %{protocolVersion: "2025-11-25"}} =
+               initialize(to_string(context.test), %{protocolVersion: "2099-01-01"})
+    end
+
+    test "a missing version is an invalid params error", context do
+      assert %{error: %{code: -32602}} = initialize(to_string(context.test), %{})
+    end
+  end
 end

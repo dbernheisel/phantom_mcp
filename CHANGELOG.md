@@ -1,5 +1,12 @@
 ## Unreleased
 
+- Fix: `initialize` now only agrees on a session-based protocol version. A
+  client asking for `2026-07-28` (or a version Phantom does not know) is
+  answered with `2025-11-25` instead of having its version echoed back or
+  rejected. Echoing `2026-07-28` made clients send legacy requests with an
+  `MCP-Protocol-Version: 2026-07-28` header, which Phantom then rejected with
+  `params._meta.io.modelcontextprotocol/protocolVersion is required`.
+
 ## 0.8.0 (2026-11-04)
 
 - New: the `:extensions` option on `use Phantom.Router` adds extensions your

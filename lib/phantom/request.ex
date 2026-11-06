@@ -272,6 +272,9 @@ defmodule Phantom.Request do
   @doc "Every protocol version Phantom supports."
   def supported_protocols, do: @legacy_protocols ++ @stateless_protocols
 
+  @doc "Protocol versions negotiated with `initialize` and served over a session."
+  def legacy_protocols, do: @legacy_protocols
+
   @doc "Protocol versions that use the stateless core (no `initialize` or session)."
   def stateless_protocols, do: @stateless_protocols
 

@@ -119,7 +119,9 @@ defmodule Phantom.RouterTest do
     end
   end
 
-  test "initialize accepts the 2026-07-28 stateless-core protocol version" do
+  # `initialize` is session-based, so a 2026-07-28 request is answered with
+  # the latest session-based version rather than echoed back.
+  test "initialize answers the 2026-07-28 stateless-core version with 2025-11-25" do
     :post
     |> conn("/mcp", %{
       jsonrpc: "2.0",
@@ -136,7 +138,7 @@ defmodule Phantom.RouterTest do
 
     assert_connected(_conn)
     assert_receive {:response, 1, "message", response}, 500
-    assert response[:result][:protocolVersion] == "2026-07-28"
+    assert response[:result][:protocolVersion] == "2025-11-25"
   end
 
   test "returns error for unknown method" do

@@ -557,7 +557,7 @@ defmodule Phantom.Router do
         })
 
         with {:ok, protocol_version} <-
-               Phantom.Router.validate_protocol(params["protocolVersion"], session) do
+               Phantom.Router.negotiate_protocol(params["protocolVersion"], session) do
           {:reply,
            %{
              protocolVersion: protocol_version,
@@ -1307,15 +1307,29 @@ defmodule Phantom.Router do
     end
   end
 
+  # `initialize` exists only in the session-based protocols, so it may only
+  # agree on one of those. A client asking for a version this server does not
+  # negotiate here (unknown, or a stateless version such as 2026-07-28) is
+  # answered with the latest legacy version, as MCP version negotiation
+  # requires; the client then decides whether it can continue. Echoing a
+  # stateless version back would make the client send legacy, `_meta`-less
+  # requests with a stateless `MCP-Protocol-Version` header, which are then
+  # rejected.
   @doc false
-  def validate_protocol(protocol_version, session) do
-    supported = Request.supported_protocols()
+  def negotiate_protocol(protocol_version, _session) when is_binary(protocol_version) do
+    legacy = Request.legacy_protocols()
 
-    if protocol_version in supported,
+    if protocol_version in legacy,
       do: {:ok, protocol_version},
-      else:
-        {:error, Request.invalid_params(%{supported: supported, requested: protocol_version}),
-         session}
+      else: {:ok, List.last(legacy)}
+  end
+
+  def negotiate_protocol(protocol_version, session) do
+    {:error,
+     Request.invalid_params(%{
+       supported: Request.legacy_protocols(),
+       requested: protocol_version
+     }), session}
   end
 
   @doc false
