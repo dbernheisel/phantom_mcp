@@ -63,20 +63,6 @@ Phantom sends these notifications:
 - [OAuth Client Credentials](oauth_client_credentials.md): machine clients
   with no user present.
 
-## Not yet supported
-
-- `roots/list`, where the server asks the client for the files available for
-  interaction. This is like `resources/list` but for the client.
-- `sampling/createMessage`, where the server asks the client to query its LLM
-  and return the response.
-- Resuming a broken SSE stream with the `last-event-id` header.
-
-## Batched requests
-
-Batched JSON-RPC requests are handled transparently. There is no abstraction
-for providing them to your handler as a group; since the MCP specification
-deprecated batching, there is no plan to make this more efficient.
-
 ## A2A
 
 The same router can also serve [A2A](https://a2a-protocol.org) agents. See

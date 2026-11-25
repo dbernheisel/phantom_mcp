@@ -75,14 +75,33 @@ end
 
 ## Completing path params
 
-The `completion_function` helps the client fill in path params. It works the
-same as for prompts; see [Prompts](prompts.md#completing-arguments).
+The `completion_function` helps the client fill in path params. It receives
+the param's name, what the user has typed so far, and the session:
 
 ```elixir
+import Ecto.Query
+
 def study_complete("study_id", value, session) do
-  {:reply, MyApp.Studies.ids_starting_with(session.assigns.user, value), session}
+  study_ids =
+    Repo.all(
+      from s in Study,
+        select: s.id,
+        where: like(type(s.id, :string), ^"#{value}%"),
+        where: s.account_id == ^session.assigns.user.account_id,
+        order_by: s.id,
+        limit: 101
+    )
+
+  # You may also return a map with more info:
+  # `%{values: study_ids, has_more: true, total: 1_000_000}`
+  # If you return more than 100, then Phantom will set `has_more: true`
+  # and only return the first 100.
+  {:reply, study_ids, session}
 end
 ```
+
+Prompts use completion functions the same way; see
+[Prompts](prompts.md#completing-arguments).
 
 ## Listing resources
 

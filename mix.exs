@@ -139,6 +139,7 @@ defmodule Phantom.MixProject do
         Reference: ["guides/protocol_support.md", "CHANGELOG.md"]
       ],
       groups_for_modules: [
+        Infra: [Phantom.Plug, Phantom.Stdio, Phantom.Tracker, Phantom.Cache],
         MCP:
           ~r/^Phantom\.(?!A2A|App|UI$|Tasks$|Skill$|Cache|ErrorWrapper|Plug|Request|Router|Test|Tracker|Stdio)/,
         "MCP Extension - Tasks": [Phantom.Tasks],

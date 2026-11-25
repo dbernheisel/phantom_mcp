@@ -1,44 +1,20 @@
 # Elicitation
 
 Elicitation lets a handler ask the user for input before it answers, such as
-a confirmation, a missing field, or a sign-in on a page you host. Phantom
-offers two shapes, picked by how you want to structure the handler, and both
-work under every protocol version.
+a confirmation, a missing field, or a sign-in on a page you host.
+
+Use the re-entry pattern: the handler asks, returns, and is called again with
+the answer. It works under every protocol version, and under MCP
+`2026-07-28` any node can serve the follow-up.
 
 See `Phantom.Elicit` for what each protocol version sends, and
 `Phantom.Session.elicit/3` for every option.
 
-## Inline blocking
-
-The handler awaits the response in place and continues inline:
-
-```elixir
-def my_tool(params, session) do
-  case Phantom.Session.elicit(session, @elicit_name, await: true) do
-    {:ok, %{"action" => "accept", "content" => content}} ->
-      {:reply, Tool.text("Hello #{content["name"]}"), session}
-
-    {:ok, _rejected} ->
-      {:reply, Tool.error("Rejected"), session}
-
-    :not_supported ->
-      {:reply, Tool.text("Hello stranger"), session}
-  end
-end
-```
-
-Under MCP `2026-07-28` the call is answered with an `input_required` result
-while the calling process waits; the client's follow-up call, on any node in
-the cluster, resumes it and receives the tool's response. The process lives on
-the node that started it, so a follow-up after that node restarts, or after
-`:timeout` (default 5 minutes), gets an error. The same holds for
-`Session.elicit/2` called from a process the handler started, such as a `Task`.
-
 ## Re-entry
 
-Call `Phantom.Session.elicit/3` without `:await`, and pass `:state`, to get
-the re-entry pattern: the handler is invoked again with `session.state`
-populated on continuation. The same source works under both protocols:
+Call `Phantom.Session.elicit/3` with `:state` to get the re-entry pattern:
+the handler is invoked again with `session.state` populated on continuation.
+The same source works under both protocols:
 
 ```elixir
 use Phantom.Router,
@@ -154,6 +130,37 @@ def connect(conn, %{"elicitation_id" => elicitation_id}) do
   end
 end
 ```
+
+## Inline blocking
+
+Prefer re-entry. Inline blocking suits the older, session-based protocols,
+where the server pushes `elicitation/create` over a stream the client holds
+open. Under `2026-07-28` it ties the call to one process on one node.
+
+With `await: true`, the handler waits for the response in place and continues
+inline:
+
+```elixir
+def my_tool(params, session) do
+  case Phantom.Session.elicit(session, @elicit_name, await: true) do
+    {:ok, %{"action" => "accept", "content" => content}} ->
+      {:reply, Tool.text("Hello #{content["name"]}"), session}
+
+    {:ok, _rejected} ->
+      {:reply, Tool.error("Rejected"), session}
+
+    :not_supported ->
+      {:reply, Tool.text("Hello stranger"), session}
+  end
+end
+```
+
+Under MCP `2026-07-28` the call is answered with an `input_required` result
+while the calling process waits; the client's follow-up call, on any node in
+the cluster, resumes it and receives the tool's response. The process lives on
+the node that started it, so a follow-up after that node restarts, or after
+`:timeout` (default 5 minutes), gets an error. The same holds for
+`Session.elicit/2` called from a process the handler started, such as a `Task`.
 
 ## Testing
 
