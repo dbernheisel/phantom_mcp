@@ -551,13 +551,14 @@ defmodule Phantom.Router do
             client_capabilities: client_capabilities
         }
 
-        Phantom.SessionMeta.put(session.pubsub, session.id, %{
-          client_info: params["clientInfo"],
-          client_capabilities: client_capabilities
-        })
-
         with {:ok, protocol_version} <-
                Phantom.Router.negotiate_protocol(params["protocolVersion"], session) do
+          Phantom.SessionMeta.put(session.pubsub, session.id, %{
+            client_info: params["clientInfo"],
+            client_capabilities: client_capabilities,
+            protocol_version: protocol_version
+          })
+
           {:reply,
            %{
              protocolVersion: protocol_version,

@@ -2008,7 +2008,7 @@ defmodule Phantom.PlugTest do
   end
 
   describe "initialize protocol version negotiation" do
-    defp initialize(session_id, params) do
+    defp initialize(session_id, params, headers \\ []) do
       :post
       |> conn("/mcp", %{
         jsonrpc: "2.0",
@@ -2018,6 +2018,7 @@ defmodule Phantom.PlugTest do
           Map.merge(%{capabilities: %{}, clientInfo: %{name: "Client", version: "1.0"}}, params)
       })
       |> put_req_header("content-type", "application/json")
+      |> then(&Enum.reduce(headers, &1, fn {k, v}, conn -> put_req_header(conn, k, v) end))
       |> call(%{session_id: session_id})
 
       assert_receive {:response, 1, "message", response}, 500
@@ -2054,6 +2055,32 @@ defmodule Phantom.PlugTest do
 
     test "a missing version is an invalid params error", context do
       assert %{error: %{code: -32602}} = initialize(to_string(context.test), %{})
+    end
+
+    test "a stateless version header on initialize is answered with the latest legacy version",
+         context do
+      assert %{result: %{protocolVersion: "2025-11-25"}} =
+               initialize(to_string(context.test), %{protocolVersion: "2026-07-28"}, [
+                 {"mcp-protocol-version", "2026-07-28"},
+                 {"mcp-method", "initialize"}
+               ])
+    end
+
+    test "requests on a negotiated session use the agreed version over the header", context do
+      session_id = to_string(context.test)
+
+      assert %{result: %{protocolVersion: "2025-11-25"}} =
+               initialize(session_id, %{protocolVersion: "2026-07-28"})
+
+      :post
+      |> conn("/mcp", %{jsonrpc: "2.0", method: "tools/list", id: 2})
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("mcp-protocol-version", "2026-07-28")
+      |> put_req_header("mcp-method", "tools/list")
+      |> call(%{session_id: session_id})
+
+      assert_receive {:response, 2, "message", %{result: %{tools: [_ | _]}}}, 500
+      assert_receive {:conn, %{status: 200}}, 500
     end
   end
 end

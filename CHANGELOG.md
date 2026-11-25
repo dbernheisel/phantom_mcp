@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Fix: a session that agreed on a session-based protocol version in
+  `initialize` keeps using it when later requests send an
+  `MCP-Protocol-Version: 2026-07-28` header, as does `initialize` itself sent
+  with that header. Phantom now saves the agreed version with the session.
 - Fix: `initialize` now only agrees on a session-based protocol version. A
   client asking for `2026-07-28` (or a version Phantom does not know) is
   answered with `2025-11-25` instead of having its version echoed back or

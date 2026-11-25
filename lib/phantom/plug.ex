@@ -780,9 +780,26 @@ defmodule Phantom.Plug do
   defp legacy_request?(%Plug.Conn{} = conn) do
     header_version = mcp_header(conn, "mcp-protocol-version")
     body_version = body_protocol_version(conn.body_params)
+    stateless_envelope? = Request.modern?(body_version) or stateless_body?(conn.body_params)
 
-    not Request.modern?(header_version) and not Request.modern?(body_version) and
-      not stateless_body?(conn.body_params)
+    cond do
+      stateless_envelope? -> false
+      not Request.modern?(header_version) -> true
+      initialize?(conn.body_params) -> true
+      true -> session_agreed_legacy?(conn)
+    end
+  end
+
+  defp initialize?(%{"method" => "initialize"}), do: true
+  defp initialize?(_), do: false
+
+  defp session_agreed_legacy?(conn) do
+    with [session_id | _] <- get_req_header(conn, "mcp-session-id"),
+         %{protocol_version: version} <- Phantom.SessionMeta.get(session_id) do
+      version in Request.legacy_protocols()
+    else
+      _ -> false
+    end
   end
 
   defp stateless_body?(%{"params" => %{"_meta" => meta}}) when is_map(meta),
