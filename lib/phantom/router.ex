@@ -155,7 +155,7 @@ defmodule Phantom.Router do
 
   This will expect the response to use `Phantom.Resource.list/2` as the result.
   You may also want to leverage `resource_for/3` and `Phantom.Resource.resource_link/3`
-  to construct the response. See `m:Phantom#module-defining-resources` for an exmaple.
+  to construct the response. See the [Resources](resources.md#listing-resources) guide for an example.
 
   Remember to check for allowed resources according to `session.allowed_resource_templates`
   """

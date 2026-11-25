@@ -235,8 +235,8 @@ defmodule MyApp.MCP.Router do
 
   alias MyApp.MCP.TaskRecords
 
-  @description "Export a report as CSV. Large reports run as a task."
-  tool :export_report do
+  tool :export_report,
+    description: "Export a report as CSV. Large reports run as a task." do
     field :report_id, :integer, required: true
   end
 

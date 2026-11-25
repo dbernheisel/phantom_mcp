@@ -111,18 +111,32 @@ defmodule Phantom.MixProject do
 
   defp docs do
     [
-      main: "Phantom",
+      main: "readme",
       extras: [
-        "guides/mcp_apps.md",
-        "guides/skills.md",
+        "README.md",
+        "guides/getting_started.md",
+        "guides/tools.md",
+        "guides/prompts.md",
+        "guides/resources.md",
+        "guides/authentication.md",
+        "guides/elicitation.md",
+        "guides/testing.md",
+        "guides/deployment.md",
+        "guides/protocol_support.md",
         "guides/tasks.md",
+        "guides/skills.md",
+        "guides/mcp_apps.md",
         "guides/oauth_client_credentials.md",
         "guides/a2a.md",
         "CHANGELOG.md"
       ],
       groups_for_extras: [
-        MCP: ~r"guides/(oauth_client_credentials|mcp_apps|skills|tasks)\.md",
-        A2A: ~r"guides/a2a\.md"
+        "Getting Started": ["README.md", "guides/getting_started.md"],
+        Guides:
+          ~r"guides/(tools|prompts|resources|authentication|elicitation|testing|deployment)\.md",
+        "MCP Extensions": ~r"guides/(tasks|skills|mcp_apps|oauth_client_credentials)\.md",
+        A2A: ["guides/a2a.md"],
+        Reference: ["guides/protocol_support.md", "CHANGELOG.md"]
       ],
       groups_for_modules: [
         MCP:

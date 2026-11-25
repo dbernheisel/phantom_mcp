@@ -16,7 +16,7 @@ defmodule Phantom.Tracker do
   new response connection will notify the first request connection with the result
   and the tool can continue with the elicited information.
 
-  See `m:Phantom#module-persistent-streams` section for more information.
+  See the [Deployment](deployment.md#persistent-streams) guide for more information.
   """
 
   if phoenix_tracker_available? do

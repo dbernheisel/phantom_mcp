@@ -362,7 +362,7 @@ defmodule Phantom.Tool do
   - `:state` — any term the handler needs to resume work; arrives at
     `session.state` on the follow-up call
 
-  See `m:Phantom#module-defining-tools` for the full multi-round-trip pattern.
+  See the [Elicitation](elicitation.md#re-entry) guide for the full multi-round-trip pattern.
   """
   def input_required(opts) do
     input_requests = Keyword.get(opts, :input_requests)
